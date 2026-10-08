@@ -2,8 +2,8 @@
 """校验一份源码树是否已完整应用 ZBSwork 品牌包（只读，不改文件）。
 
 用法:
-    uv run --with pyyaml brand/check.py --tree <源码根目录>
-    uv run --with pyyaml brand/check.py --self     # 只校验品牌包自身（素材齐全、已知缺陷）
+    uv run --with pyyaml shared/tools/brand_check.py --tree <源码根目录>
+    uv run --with pyyaml shared/tools/brand_check.py --self     # 只校验品牌包自身（素材齐全、已知缺陷）
 
 检查项:
   1. 每个槽位目标文件与品牌素材逐字节一致
@@ -20,7 +20,8 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
+SERVER = ROOT / "server"
 sys.stdout.reconfigure(encoding="utf-8")
 
 
@@ -82,7 +83,7 @@ def main() -> int:
     g.add_argument("--tree")
     g.add_argument("--self", action="store_true")
     args = ap.parse_args()
-    spec = yaml.safe_load((ROOT / "brand" / "brand.yaml").read_text(encoding="utf-8"))
+    spec = yaml.safe_load((SERVER / "brand" / "brand.yaml").read_text(encoding="utf-8"))
     errors, warns = check_self(spec)
     if args.tree:
         errors += check_tree(spec, Path(args.tree).resolve())

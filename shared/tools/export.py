@@ -2,11 +2,11 @@
 """从施工树导出一个模块的补丁（编码 agent 改完代码后用）。
 
 约定：在施工树里为模块单独提交（git commit），然后：
-    uv run --no-project --with pyyaml tools/export.py --module 50-desk --base <起点提交> [--work .work/src]
+    uv run --no-project --with pyyaml shared/tools/export.py --module 50-desk --base <起点提交> [--work .work/src]
 
-把 <起点提交>..HEAD 的差异写入 patches/<module>/ 下唯一的 .patch（覆盖；无则新建 0001-*.patch）。
+把 <起点提交>..HEAD 的差异写入 server/patches/<module>/ 下唯一的 .patch（覆盖；无则新建 0001-*.patch）。
 <起点提交> 通常是“上游 tag + 排在它前面的补丁”应用完后的那次提交。
-导出后请重新执行 tools/prepare.py --check-only 验证。
+导出后请重新执行 shared/tools/prepare.py --check-only 验证。
 """
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
+SERVER = ROOT / "server"
 sys.stdout.reconfigure(encoding="utf-8")
 
 
@@ -25,9 +26,9 @@ def main() -> int:
     ap.add_argument("--base", required=True)
     ap.add_argument("--work", default=str(ROOT / ".work" / "src"))
     args = ap.parse_args()
-    out_dir = ROOT / "patches" / args.module
+    out_dir = SERVER / "patches" / args.module
     if not out_dir.is_dir():
-        print(f"[ERROR] 模块目录不存在: {out_dir}（先在 modules.yaml 登记并建目录）")
+        print(f"[ERROR] 模块目录不存在: {out_dir}（先在 server/modules.yaml 登记并建目录）")
         return 2
     diff = subprocess.run(
         ["git", "diff", "--binary", "--full-index", f"{args.base}..HEAD"],

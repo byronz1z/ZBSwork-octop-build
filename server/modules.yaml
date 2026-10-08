@@ -1,6 +1,6 @@
 # 模块清单（机读 + 中文说明）—— 本库唯一的模块登记处
-# - tools/prepare.py      按 order 顺序应用 status=enabled 的补丁
-# - tools/check_ownership.py  模块隔离门禁：同一上游文件只能有一个主人模块
+# - shared/tools/prepare.py      按 order 顺序应用 status=enabled 的补丁
+# - shared/tools/check_ownership.py  模块隔离门禁：同一上游文件只能有一个主人模块
 #
 # 分层、编号、隔离规则只写在一处：私有库 ZBSwork-OCTOP-service → docs/总览.md §2
 # 编号 = 一块改动区域，终身不变；重做不换号；只有需求取消或官方已实现才作废（作废号不再使用）
@@ -12,9 +12,9 @@ upstream_lock: UPSTREAM.lock
 
 brand:
   name_zh: 品牌包（三类 logo + 产品名；网页端 + 桌面端）
-  spec: brand/brand.yaml
-  apply: brand/apply.py
-  check: brand/check.py
+  spec: server/brand/brand.yaml
+  apply: shared/tools/brand_apply.py
+  check: shared/tools/brand_check.py
   status: enabled
   verified: {v1.0.2b4: clean, v1.0.2b6: clean}
   pending: "第一期扩充：语言包全量、桌面 Mac 全量、桌面图标改为直接取定稿（见 Issue）"
