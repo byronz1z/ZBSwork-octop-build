@@ -2,9 +2,9 @@
 """准备施工树：上游锁定 tag + 启用补丁（按 order）+ 品牌包。
 
 用法:
-    uv run --no-project --with pyyaml tools/prepare.py [--tag v1.0.2b6] [--work .work/src] [--no-brand] [--check-only] [--reference <本地克隆>]
+    uv run --no-project --with pyyaml shared/tools/prepare.py [--tag v1.0.2b6] [--work .work/src] [--no-brand] [--check-only] [--reference <本地克隆>]
 
-默认从 UPSTREAM.lock 读 tag，把上游源码检出到 .work/src（不进库）。
+默认从 server/UPSTREAM.lock 读 tag，把上游源码检出到 .work/src（不进库）。
 --check-only 只对每个补丁做 `git apply --check`，不改动工作树（CI 用）。
 """
 from __future__ import annotations
@@ -16,7 +16,8 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
+SERVER = ROOT / "server"
 sys.stdout.reconfigure(encoding="utf-8")
 
 
@@ -26,7 +27,7 @@ def run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subproce
 
 
 def load(name: str) -> dict:
-    return yaml.safe_load((ROOT / name).read_text(encoding="utf-8"))
+    return yaml.safe_load((SERVER / name).read_text(encoding="utf-8"))
 
 
 def enabled_patches(modules: dict) -> list[dict]:
@@ -70,7 +71,7 @@ def main() -> int:
         patches = [p for p in patches if p["order"] < stop]
     failed = []
     for p in patches:
-        for f in sorted((ROOT / "patches" / p["id"]).glob("*.patch")):
+        for f in sorted((SERVER / "patches" / p["id"]).glob("*.patch")):
             mode = ["--check"] if args.check_only else []
             r = run(["git", "apply", "--whitespace=nowarn", *mode, str(f)], cwd=work, check=False)
             print(f"  {p['id']} / {f.name}: {'OK' if r.returncode == 0 else 'FAIL'}")
@@ -84,9 +85,9 @@ def main() -> int:
         return 0
     if not args.no_brand:
         py = [sys.executable]
-        if run(py + [str(ROOT / "brand" / "apply.py"), "--tree", str(work)], check=False).returncode:
+        if run(py + [str(ROOT / "shared" / "tools" / "brand_apply.py"), "--tree", str(work)], check=False).returncode:
             return 1
-        if run(py + [str(ROOT / "brand" / "check.py"), "--tree", str(work)], check=False).returncode:
+        if run(py + [str(ROOT / "shared" / "tools" / "brand_check.py"), "--tree", str(work)], check=False).returncode:
             return 1
     if args.commit_base:
         run(["git", "add", "-A"], cwd=work)

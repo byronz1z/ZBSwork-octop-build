@@ -26,9 +26,9 @@ jobs:
         id: tag
         run: |
           if [ "${{ matrix.target }}" = "lock" ]; then
-            TAG=$(uv run --no-project --with pyyaml python -c "import yaml;print(yaml.safe_load(open('UPSTREAM.lock'))['tag'])")
+            TAG=$(uv run --no-project --with pyyaml python -c "import yaml;print(yaml.safe_load(open('server/UPSTREAM.lock'))['tag'])")
           else
-            TAG=$(uv run --no-project --with pyyaml python -c "import yaml;d=yaml.safe_load(open('UPSTREAM.lock'));print((d.get('next_target') or {}).get('tag',''))")
+            TAG=$(uv run --no-project --with pyyaml python -c "import yaml;d=yaml.safe_load(open('server/UPSTREAM.lock'));print((d.get('next_target') or {}).get('tag',''))")
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -36,26 +36,26 @@ jobs:
         run: |
           uv run --no-project --with pyyaml python - <<'EOF'
           import sys, yaml, pathlib
-          m = yaml.safe_load(open("modules.yaml", encoding="utf-8"))
+          m = yaml.safe_load(open("server/modules.yaml", encoding="utf-8"))
           bad = []
           ids = [p["id"] for p in m["patches"]]
           if len(ids) != len(set(ids)): bad.append("模块 id 重复")
           for p in m["patches"]:
-              d = pathlib.Path("patches") / p["id"]
+              d = pathlib.Path("server/patches") / p["id"]
               if not list(d.glob("*.patch")): bad.append(f"{p['id']}: 无 .patch")
               if not (d / "README.md").is_file(): bad.append(f"{p['id']}: 缺 README.md")
               if p["status"] not in ("enabled", "candidate"): bad.append(f"{p['id']}: 非法状态")
-          for d in pathlib.Path("patches").iterdir():
+          for d in pathlib.Path("server/patches").iterdir():
               if d.is_dir() and d.name not in ids: bad.append(f"未登记目录: {d.name}")
           print("\n".join(bad) or "modules.yaml OK"); sys.exit(1 if bad else 0)
           EOF
 
       - name: 模块隔离（同一上游文件只能有一个主人模块）
-        run: uv run --no-project --with pyyaml tools/check_ownership.py
+        run: uv run --no-project --with pyyaml shared/tools/check_ownership.py
 
       - name: 品牌包自检
-        run: uv run --no-project --with pyyaml brand/check.py --self
+        run: uv run --no-project --with pyyaml shared/tools/brand_check.py --self
 
       - name: 准备施工树（上游 + 补丁 + 品牌 + 校验）
         if: steps.tag.outputs.tag != ''
-        run: uv run --no-project --with pyyaml tools/prepare.py --tag "${{ steps.tag.outputs.tag }}"
+        run: uv run --no-project --with pyyaml shared/tools/prepare.py --tag "${{ steps.tag.outputs.tag }}"
