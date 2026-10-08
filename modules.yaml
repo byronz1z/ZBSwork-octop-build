@@ -1,24 +1,22 @@
-# 模块清单（机读 + 中文说明）。tools/prepare.py 按 order 顺序应用 status=enabled 的补丁。
+# 模块清单（机读 + 中文说明）—— 本库唯一的模块登记处
+# - tools/prepare.py      按 order 顺序应用 status=enabled 的补丁
+# - tools/check_ownership.py  模块隔离门禁：同一上游文件只能有一个主人模块
 #
-# 编号段：10–19 修复(fix) · 20–49 功能(feat) · 50–59 桌面端(desk) · 60–69 服务端/镜像(svc)
-# 状态：enabled 启用 / candidate 候选（未决定，不参与构建）/ retired 退役
-# upstream_pr：该修复是否适合提给上游；一旦上游合并，本模块即退役
-#
-# 功能分层（升级成本由低到高）：
-#   L0 后台配置即可 → 不进本库，写入 service 库运维手册
-#   L1 插件（tool/skill/hook）→ 独立库 ZBSwork-octop-plugin-<名>
-#   L3 外部服务 → 独立库（如 localoctop）
-#   L2 核心补丁 → 本库 patches/（最后手段）
+# 编号段：10–19 修复(fix) · 20–49 功能(feat) · 50–59 桌面端(desk) · 60–69 服务端/镜像(svc)；退役编号不复用
+# 状态：enabled 启用 / candidate 候选（不参与构建）
+# 退役模块不保留目录：登记到文末 retired，代码留在归档 tag 里，不作为参考
+# 功能分层与隔离规则：docs/总体方案与架构.md §4、§5
 
 upstream_lock: UPSTREAM.lock
 
 brand:
-  name_zh: 品牌包（三类 logo + 产品名）
+  name_zh: 品牌包（三类 logo + 产品名；网页端 + 桌面端）
   spec: brand/brand.yaml
   apply: brand/apply.py
   check: brand/check.py
   status: enabled
   verified: {v1.0.2b4: clean, v1.0.2b6: clean}
+  pending: "第一期扩充：语言包全量、桌面 Mac 全量、桌面图标改为直接取定稿（见 Issue）"
 
 patches:
   - id: 10-fix-pg-bootstrap-marker
@@ -27,42 +25,10 @@ patches:
     scope: [docker]
     status: enabled
     order: 10
-    upstream_pr: yes          # 上游 b6/main 仍未修，应提 PR
+    upstream_pr: yes          # 上游 b6/main 仍未修，应提 PR；上游合并后本模块退役
     verified: {v1.0.2b4: strict, v1.0.2b6: strict}
+    in_production: yes        # 生产镜像 octop:pg-1.0.2b4-r2 含此逻辑（2026-10-08 实测）
     legacy_ids: [SRV-1]
-
-  - id: 20-feat-model-per-user
-    name_zh: 模型按用户/角色分配（allowed_models 白名单）
-    layer: L2
-    scope: [server, dashboard]
-    status: enabled
-    order: 20
-    upstream_pr: maybe        # 通用能力，可先问上游意向
-    verified: {v1.0.2b4: strict, v1.0.2b6: strict}
-    acceptance: pending       # 未在生产验收
-    legacy_ids: [FEA-1, M70]
-
-  - id: 50-desk-cloud-shell
-    name_zh: 桌面端云壳（默认连公司服务器 + 托盘菜单 + 可靠退出）
-    layer: L2
-    scope: [desktop]
-    status: enabled
-    order: 50
-    upstream_pr: partial      # 退出/托盘修复可提上游；默认地址为私有定制
-    verified: {v1.0.2b4: strict, v1.0.2b6: strict}
-    origin: "在用 EXE（ZBSwork 1.0.2b2）源自 zbswork-brand@366560cf，归档 tag archive/2026-10/desktop-cloud-shell；本补丁为其在 b4 上的重生成版"
-    note: "OCTOP_DESKTOP_URL 环境变量仍可覆盖默认地址"
-
-  - id: 51-desk-window-resize
-    name_zh: 桌面端 8 向窗口拉伸
-    layer: L2
-    scope: [desktop]
-    status: candidate         # 不在在用 EXE 中；补丁不完整（缺 main.go / index.html 注入）
-    order: 51
-    upstream_pr: maybe
-    verified: {v1.0.2b4: "strict(仅窗口文件)", v1.0.2b6: "strict(仅窗口文件)"}
-    origin: "r2 安装器线，归档 tag archive/2026-10/r2-production-source"
-    legacy_ids: [DSK-1]
 
   - id: 60-svc-runtime-extras
     name_zh: 镜像加装本地向量与知识库 OCR 依赖（uv extras）
@@ -72,6 +38,33 @@ patches:
     order: 60
     upstream_pr: no           # 体积取舍属部署偏好
     verified: {v1.0.2b4: strict, v1.0.2b6: strict}
+    in_production: yes        # fastembed / rapidocr 等 5 包已装（2026-10-08 实测）
     legacy_ids: [SRV-2]
 
-# 旧 WorkBuddy 模块册（实为 19 条；其文字总结误称 20 条）去向见 docs/迁移说明.md
+# 同一上游文件被多个模块修改时，必须在此登记主人（owner）与允许共改的模块（also），否则 CI 失败。
+# 例：
+#   desktop/src/main.go: {owner: 52-desk-server-url, also: [brand], reason: "品牌只改窗口标题文字"}
+shared_files: {}
+
+# 已退役（不参与构建、不作参考；需要追溯时看归档 tag）
+retired:
+  - id: 20-feat-model-per-user
+    name_zh: 模型按用户/角色分配
+    reason: "AI 线产物，生产镜像中不存在（服务端 allowed_models 0 处）。需求保留到后期，届时从判层重新开始"
+    archive: tag archive/2026-10/build-init
+    date: 2026-10-08
+  - id: 50-desk-cloud-shell
+    name_zh: 桌面端云壳（旧，含托盘菜单/强制退出）
+    reason: "AI 桌面线产物。第一期改为基于官方原版的最小改动：写死服务器地址（新模块另立）"
+    archive: tag archive/2026-10/build-init
+    date: 2026-10-08
+  - id: 51-desk-window-resize
+    name_zh: 桌面端窗口拉伸
+    reason: "AI 安装器线产物，不在生产。窗口拉伸后期基于官方原版重做"
+    archive: tag archive/2026-10/build-init
+    date: 2026-10-08
+  - id: brand/legacy
+    name_zh: 旧品牌脚本与旧品牌补丁
+    reason: "写死本机路径 / 补丁二进制段无数据无法应用；已由 brand/apply.py + check.py 取代"
+    archive: tag archive/2026-10/build-init
+    date: 2026-10-08

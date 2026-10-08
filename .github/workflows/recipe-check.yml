@@ -50,16 +50,12 @@ jobs:
           print("\n".join(bad) or "modules.yaml OK"); sys.exit(1 if bad else 0)
           EOF
 
+      - name: 模块隔离（同一上游文件只能有一个主人模块）
+        run: uv run --no-project --with pyyaml tools/check_ownership.py
+
       - name: 品牌包自检
         run: uv run --no-project --with pyyaml brand/check.py --self
 
       - name: 准备施工树（上游 + 补丁 + 品牌 + 校验）
         if: steps.tag.outputs.tag != ''
         run: uv run --no-project --with pyyaml tools/prepare.py --tag "${{ steps.tag.outputs.tag }}"
-
-      - name: 模型分用户验收（24 项）
-        if: steps.tag.outputs.tag != ''
-        working-directory: .work/src
-        env:
-          PYTHONPATH: src
-        run: python3 ../../patches/20-feat-model-per-user/verify/test-allowed-models.py
