@@ -156,6 +156,8 @@ forbidden:
     - desktop/src/build/config.yml
     - desktop/src/build/windows/info.json
 
-# 未纳入（待用户决定，见 docs/决策台账 / Issue）：
-# - 服务端 src/octop/i18n/*.json 与后端提示（旧 BRD-5）
-# - desktop/src/build/darwin/Info.plist（Mac 包显示名；在用 EXE 线也未改）
+# 范围说明（2026-10-08 用户决定）：
+# - 不做：服务端 src/octop/i18n/*.json、后端 Python 提示语与 AI 回复（旧 BRD-5）
+# - 第一期待做（见 Issue）：语言包全量与页面写死文字；Mac 全量（Info.plist 显示名与 bundle id、
+#   appicon-macos.png、tray-icon-template.png、dmg-background.jpeg）；桌面图标改为由定稿直接生成
+# - 小章鱼插图保留，只替换 Octop 的 logo 与文字

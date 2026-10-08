@@ -12,6 +12,7 @@ ZBSwork 的**配方库**：上游 [TencentCloud/Octop](https://github.com/Tencen
 uv run --no-project --with pyyaml tools/prepare.py                 # 上游 + 补丁 + 品牌 → .work/src，并校验
 uv run --no-project --with pyyaml tools/prepare.py --check-only    # 只检查补丁能否应用（CI 用）
 uv run --no-project --with pyyaml brand/check.py --self            # 只检查品牌包自身
+uv run --no-project --with pyyaml tools/check_ownership.py         # 模块隔离检查（CI 同款）
 ```
 
 ## 文档
@@ -21,17 +22,17 @@ uv run --no-project --with pyyaml brand/check.py --self            # 只检查�
 | [docs/总体方案与架构.md](docs/总体方案与架构.md) | 目标、功能分层、仓库与目录布局、品牌槽位、交付形态 |
 | [docs/协作规范.md](docs/协作规范.md) | 角色、Issue 流转、分支命名、升级/新功能/品牌三条标准流程 |
 | [docs/迁移说明.md](docs/迁移说明.md) | 旧体系资产去向 |
-| [modules.yaml](modules.yaml) | 补丁清单（中文名、层级、状态、实测结果） |
+| [modules.yaml](modules.yaml) | 补丁清单（中文名、层级、状态、实测结果、共改文件登记、退役登记） |
+| [tools/check_ownership.py](tools/check_ownership.py) | 模块隔离门禁：同一上游文件只能有一个主人模块 |
 
 ## 当前模块
 
 | 编号 | 中文名 | 状态 |
 |---|---|---|
-| brand | 品牌包（方形/横版/竖版 logo + 产品名） | 启用 |
-| 10 | PostgreSQL 模式重启死循环修复 | 启用 |
-| 20 | 模型按用户/角色分配 | 启用（待生产验收） |
-| 50 | 桌面端云壳（默认连公司服务器） | 启用 |
-| 51 | 桌面端窗口拉伸 | 候选 |
-| 60 | 镜像加装本地向量/OCR 依赖 | 启用 |
+| brand | 品牌包（方形/横版/竖版 logo + 产品名；网页端 + 桌面端） | 启用（第一期扩充中，见 Issue） |
+| 10 | PostgreSQL 模式重启死循环修复 | 启用（生产在用） |
+| 60 | 镜像加装本地向量/OCR 依赖 | 启用（生产在用） |
+
+第一期计划新增：`52-desk-server-url`（桌面端写死服务器地址）。已退役模块（20、50、51、brand/legacy）只登记在 `modules.yaml` 的 `retired:`，代码留在归档 tag `archive/2026-10/build-init`，不作参考。
 
 上游许可证：MIT（保留于上游源码 `LICENSE`）。

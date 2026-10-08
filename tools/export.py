@@ -2,7 +2,7 @@
 """从施工树导出一个模块的补丁（编码 agent 改完代码后用）。
 
 约定：在施工树里为模块单独提交（git commit），然后：
-    uv run --with pyyaml tools/export.py --module 20-feat-model-per-user --base <起点提交> [--work .work/src]
+    uv run --no-project --with pyyaml tools/export.py --module 52-desk-server-url --base <起点提交> [--work .work/src]
 
 把 <起点提交>..HEAD 的差异写入 patches/<module>/ 下唯一的 .patch（覆盖；无则新建 0001-*.patch）。
 <起点提交> 通常是“上游 tag + 排在它前面的补丁”应用完后的那次提交。
