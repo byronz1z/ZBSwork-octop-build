@@ -44,7 +44,7 @@ jobs:
               d = pathlib.Path("patches") / p["id"]
               if not list(d.glob("*.patch")): bad.append(f"{p['id']}: 无 .patch")
               if not (d / "README.md").is_file(): bad.append(f"{p['id']}: 缺 README.md")
-              if p["status"] not in ("enabled", "candidate", "retired"): bad.append(f"{p['id']}: 非法状态")
+              if p["status"] not in ("enabled", "candidate"): bad.append(f"{p['id']}: 非法状态")
           for d in pathlib.Path("patches").iterdir():
               if d.is_dir() and d.name not in ids: bad.append(f"未登记目录: {d.name}")
           print("\n".join(bad) or "modules.yaml OK"); sys.exit(1 if bad else 0)
