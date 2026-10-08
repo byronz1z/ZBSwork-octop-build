@@ -1,0 +1,65 @@
+# 配方门禁：每个 PR / main 推送都要过。不构建镜像、不发布（构建发布见 docs/协作规范.md 第 6 节，待建）。
+name: recipe-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [lock, next]   # lock = UPSTREAM.lock 的 tag；next = next_target（提前暴露升级冲突）
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: 解析目标 tag
+        id: tag
+        run: |
+          if [ "${{ matrix.target }}" = "lock" ]; then
+            TAG=$(uv run --no-project --with pyyaml python -c "import yaml;print(yaml.safe_load(open('UPSTREAM.lock'))['tag'])")
+          else
+            TAG=$(uv run --no-project --with pyyaml python -c "import yaml;d=yaml.safe_load(open('UPSTREAM.lock'));print((d.get('next_target') or {}).get('tag',''))")
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: 模块清单自检（登记的补丁目录必须存在且非空）
+        run: |
+          uv run --no-project --with pyyaml python - <<'EOF'
+          import sys, yaml, pathlib
+          m = yaml.safe_load(open("modules.yaml", encoding="utf-8"))
+          bad = []
+          ids = [p["id"] for p in m["patches"]]
+          if len(ids) != len(set(ids)): bad.append("模块 id 重复")
+          for p in m["patches"]:
+              d = pathlib.Path("patches") / p["id"]
+              if not list(d.glob("*.patch")): bad.append(f"{p['id']}: 无 .patch")
+              if not (d / "README.md").is_file(): bad.append(f"{p['id']}: 缺 README.md")
+              if p["status"] not in ("enabled", "candidate", "retired"): bad.append(f"{p['id']}: 非法状态")
+          for d in pathlib.Path("patches").iterdir():
+              if d.is_dir() and d.name not in ids: bad.append(f"未登记目录: {d.name}")
+          print("\n".join(bad) or "modules.yaml OK"); sys.exit(1 if bad else 0)
+          EOF
+
+      - name: 品牌包自检
+        run: uv run --no-project --with pyyaml brand/check.py --self
+
+      - name: 准备施工树（上游 + 补丁 + 品牌 + 校验）
+        if: steps.tag.outputs.tag != ''
+        run: uv run --no-project --with pyyaml tools/prepare.py --tag "${{ steps.tag.outputs.tag }}"
+
+      - name: 模型分用户验收（24 项）
+        if: steps.tag.outputs.tag != ''
+        working-directory: .work/src
+        env:
+          PYTHONPATH: src
+        run: python3 ../../patches/20-feat-model-per-user/verify/test-allowed-models.py

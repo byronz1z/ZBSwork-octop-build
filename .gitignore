@@ -1,0 +1,10 @@
+# 施工树（上游源码检出 + 补丁 + 品牌），永不入库
+.work/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx

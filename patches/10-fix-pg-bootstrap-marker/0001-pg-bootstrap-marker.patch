@@ -1,0 +1,40 @@
+diff --git a/docker/docker-entrypoint.sh b/docker/docker-entrypoint.sh
+index 42b8b32b..7e50a919 100644
+--- a/docker/docker-entrypoint.sh
++++ b/docker/docker-entrypoint.sh
+@@ -44,7 +44,24 @@ octop_random_password() {
+ 
+ DEFAULT_PASSWORD="${OCTOP_DEFAULT_PASSWORD:-}"
+ 
+-if [ ! -f "$DB_FILE" ]; then
++# --- 初始化状态判定（兼容 SQLite / PostgreSQL） -----------------------------
++# 上游原逻辑只检查本地 SQLite 文件 octop.db。切到 PostgreSQL 后，数据库不在
++# 数据卷里，该文件永远不会出现，会导致每次容器重启都重复执行 octop init，
++# 而 octop init 在非空 ~/.octop 目录上会直接报错退出 → 容器反复重启。
++# 这里改为标记文件判定，两种后端一致。
++BOOTSTRAP_MARKER="${OCTOP_HOME}/.bootstrapped"
++
++db_is_initialized() {
++    [ -f "$BOOTSTRAP_MARKER" ] && return 0
++    # PostgreSQL 模式：卷内没有 octop.db，只能靠标记文件判断
++    if [ "${OCTOP_DATABASE_DRIVER:-}" = "postgresql" ] || [ -n "${OCTOP_DATABASE_URL:-}" ]; then
++        return 1
++    fi
++    # SQLite 模式：兼容旧部署（无标记文件但库已存在）
++    [ -f "$DB_FILE" ]
++}
++
++if ! db_is_initialized; then
+     echo "[entrypoint] 首次启动，正在初始化 Octop..."
+ 
+     if [ -z "$DEFAULT_PASSWORD" ]; then
+@@ -82,6 +99,9 @@ If you changed the password inside the Web console, that password wins.
+ EOF
+     chmod 600 "$CREDENTIAL_FILE"
+     echo "[entrypoint] 凭据已保存至: $CREDENTIAL_FILE"
++
++    # 记录初始化完成，避免 PostgreSQL 模式下重启重复 bootstrap
++    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$BOOTSTRAP_MARKER"
+ fi
+ 
+ if [ $# -eq 0 ]; then

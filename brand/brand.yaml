@@ -1,0 +1,161 @@
+# ZBSwork 品牌包定义（唯一事实来源）
+# - slots: 三类 logo 槽位 → 上游文件。apply.py 按此复制素材。
+# - text:  逐文件“精确字符串替换”。不用全局正则，上游改了原文时 check.py 会报“规则未命中”，
+#          由人决定怎么改，而不是悄悄漏改或误改代码标识符。
+# - locales: 语言包只替换“值”，不动 key；keep 里的词保持原样。
+# - forbidden: check.py 在品牌化后的树里检查残留的上游品牌（仅用户可见范围）。
+
+name: ZBSwork               # 产品显示名
+upstream_name: Octop        # 上游显示名（被替换的词）
+
+slots:
+  square:                   # 方形 logo：浏览器图标、PWA 安装图标、桌面应用/托盘图标
+    source: brand/assets/source/icon.svg            # 母本（矢量）
+    source_raster: brand/assets/source/icon-1024.png # 母本（1024 位图）
+    targets:
+      - { from: brand/assets/dashboard-public/favico.svg,           to: dashboard/public/favico.svg }
+      - { from: brand/assets/dashboard-public/apple-touch-icon.png, to: dashboard/public/apple-touch-icon.png }
+      - { from: brand/assets/dashboard-public/pwa-192.png,          to: dashboard/public/pwa-192.png }
+      - { from: brand/assets/dashboard-public/pwa-512.png,          to: dashboard/public/pwa-512.png }
+      - { from: brand/assets/desktop/appicon.png,                   to: desktop/src/build/appicon.png }
+      - { from: brand/assets/desktop/tray-icon.png,                 to: desktop/src/assets/tray-icon.png }
+  horizontal:               # 横版 logo：网页侧栏、页头（移动端）、登录页、初始化页
+    source: brand/assets/source/brand-horizontal.svg
+    targets:
+      - { from: brand/assets/dashboard-public/logo_horizontal_dark.png,  to: dashboard/public/logo_horizontal_dark.png,  note: 浅色主题用（深色字） }
+      - { from: brand/assets/dashboard-public/logo_horizontal_white.png, to: dashboard/public/logo_horizontal_white.png, note: 深色主题用（白色字） }
+  vertical:                 # 竖版 logo：网页启动闪屏、离线页
+    source: brand/assets/source/brand-vertical.svg
+    targets:
+      - { from: brand/assets/dashboard-public/logo_vertical_dark.svg,  to: dashboard/public/logo_vertical_dark.svg,  note: 浅色主题用（深色字） }
+      - { from: brand/assets/dashboard-public/logo_vertical_white.svg, to: dashboard/public/logo_vertical_white.svg, note: "深色主题用（应为白色字）⚠ 当前与深色版相同，待补素材" }
+
+text:
+  # ---------- 网页端（dashboard） ----------
+  dashboard/index.html:
+    - ['<meta name="apple-mobile-web-app-title" content="Octop" />', '<meta name="apple-mobile-web-app-title" content="ZBSwork" />']
+    - ['<title>Octop</title>', '<title>ZBSwork</title>']
+  dashboard/public/manifest.json:
+    - ['"name": "Octop"', '"name": "ZBSwork"']
+    - ['"short_name": "Octop"', '"short_name": "ZBSwork"']
+  dashboard/public/offline.html:
+    - ['<title>Octop — 离线中</title>', '<title>ZBSwork — 离线中</title>']
+    - ['alt="Octop"', 'alt="ZBSwork"']
+    - ['无法连接到 Octop 服务端', '无法连接到 ZBSwork 服务端']
+  dashboard/src/components/PwaInstallPrompt/index.tsx:
+    - ['将 Octop 安装为 App', '将 ZBSwork 安装为 App']
+    - ['"安装"} Octop」', '"安装"} ZBSwork」']
+    - ['Install Octop', 'Install ZBSwork']
+  dashboard/src/layouts/Sidebar.tsx:
+    - ['alt="Octop"', 'alt="ZBSwork"']
+  dashboard/src/pages/Login/index.tsx:
+    - ['alt="Octop"', 'alt="ZBSwork"']
+  dashboard/src/pages/Setup/index.tsx:
+    - ['alt="Octop"', 'alt="ZBSwork"']
+  dashboard/src/pages/Chat/components/ChatInput.tsx:
+    - ['"Message Octop..."', '"Message ZBSwork..."']
+  dashboard/src/pages/Chat/components/WelcomeScreen.tsx:
+    - ['aria-label="Octop mascot"', 'aria-label="ZBSwork mascot"']
+  dashboard/src/pages/Agent/Connectors/index.tsx:
+    - ['在 Octop 主机终端', '在 ZBSwork 主机终端']
+  dashboard/src/pages/Agent/Memory/CandidatesReview.tsx:
+    - ['Octop 的建议', 'ZBSwork 的建议']
+    - ['由 Octop 从对话中', '由 ZBSwork 从对话中']
+  dashboard/src/pages/Agent/Memory/EpisodesList.tsx:
+    - ['你与 Octop 相处', '你与 ZBSwork 相处']
+    - ['帮 Octop 更好地', '帮 ZBSwork 更好地']
+  dashboard/src/pages/Agent/Memory/MigrateMemory.tsx:
+    - ['将当前 Octop 的全部记忆', '将当前 ZBSwork 的全部记忆']
+    - ['对当前 Octop 的记忆库', '对当前 ZBSwork 的记忆库']
+  dashboard/src/pages/Agent/Memory/ProactiveConfig.tsx:
+    - ['让 Octop 在合适的时机', '让 ZBSwork 在合适的时机']
+    - ['"Octop 会从你的情绪日记', '"ZBSwork 会从你的情绪日记']
+  dashboard/src/pages/Agent/Memory/ProfileOverview.tsx:
+    - ['Octop 还在了解你', 'ZBSwork 还在了解你']
+    - ['最近被 Octop 记下', '最近被 ZBSwork 记下']
+  dashboard/src/pages/Agent/Memory/ProfileOverview.test.tsx:
+    - ['/Octop 还在了解你/', '/ZBSwork 还在了解你/']
+  dashboard/src/pages/Control/RemoteBrowser/index.tsx:
+    - ['卸载 Octop 自动安装', '卸载 ZBSwork 自动安装']
+    - ['发给 Octop 排查', '发给 ZBSwork 排查']
+    - ['"Octop 需要浏览器', '"ZBSwork 需要浏览器']
+  dashboard/src/pages/Control/RemoteDesktop/DesktopPanel.tsx:
+    - ['然后重启 Octop"', '然后重启 ZBSwork"', all]
+    - ['发给 Octop 排查', '发给 ZBSwork 排查']
+    - ['查看并操控 Octop 主机', '查看并操控 ZBSwork 主机']
+    - ['控制 Octop 主机', '控制 ZBSwork 主机']
+    - ['"重启 Octop（octop run）', '"重启 ZBSwork（octop run）']
+
+  # ---------- 桌面端（desktop，Wails 壳） ----------
+  desktop/src/Taskfile.yml:
+    - ['APP_NAME: "Octop"', 'APP_NAME: "ZBSwork"']
+    - ['Builds the Octop desktop shell', 'Builds the ZBSwork desktop shell']
+  desktop/src/build/config.yml:
+    - ['companyName: "Octop"', 'companyName: "ZBSwork"']
+    - ['productName: "Octop"', 'productName: "ZBSwork"']
+    - ['description: "Octop desktop shell"', 'description: "ZBSwork desktop shell"']
+    - ['copyright: "(c) 2026, Octop"', 'copyright: "(c) 2026, ZBSwork"']
+  desktop/src/build/windows/info.json:
+    - ['"CompanyName": "Octop"', '"CompanyName": "ZBSwork"']
+    - ['"FileDescription": "Octop desktop"', '"FileDescription": "ZBSwork desktop"']
+    - ['"ProductName": "Octop"', '"ProductName": "ZBSwork"']
+    - ['"Comments": "Octop desktop shell"', '"Comments": "ZBSwork desktop shell"']
+  desktop/src/build/windows/nsis/wails_tools.nsh:
+    - ['!define INFO_PROJECTNAME "Octop"', '!define INFO_PROJECTNAME "ZBSwork"']
+    - ['!define INFO_COMPANYNAME "Octop"', '!define INFO_COMPANYNAME "ZBSwork"']
+    - ['!define INFO_PRODUCTNAME "Octop"', '!define INFO_PRODUCTNAME "ZBSwork"']
+    - ['!define INFO_COPYRIGHT "(c) 2026, Octop"', '!define INFO_COPYRIGHT "(c) 2026, ZBSwork"']
+  desktop/src/main.go:
+    - ['Name:        "Octop",', 'Name:        "ZBSwork",']
+    - ['Description: "Octop desktop",', 'Description: "ZBSwork desktop",']
+    - ['Title:                "Octop",', 'Title:                "ZBSwork",']
+    - ['Title:            "Octop 设置",', 'Title:            "ZBSwork 设置",']
+    - ['tray.SetTooltip("Octop")', 'tray.SetTooltip("ZBSwork")']
+  desktop/src/preventsleep_linux.go:
+    - ['"Octop",', '"ZBSwork",']
+    - ['"Octop desktop is running",', '"ZBSwork desktop is running",']
+  desktop/src/desktop_copy.go:
+    - ['Octop', 'ZBSwork', all]
+  desktop/src/desktop_copy_test.go:
+    - ['"Octop 已就绪"', '"ZBSwork 已就绪"']
+    - ['"Octop is ready"', '"ZBSwork is ready"', all]
+  desktop/src/download_test.go:
+    - ['"Octop 服务未在"', '"ZBSwork 服务未在"']
+    - ['"Octop did not become ready within"', '"ZBSwork did not become ready within"', all]
+    - ['"make sure Octop is running"', '"make sure ZBSwork is running"']
+  desktop/src/assets/index.html:
+    - ['<title>Octop</title>', '<title>ZBSwork</title>']
+    - ['alt="Octop"', 'alt="ZBSwork"']
+    - ['id="loading-brand">Octop</p>', 'id="loading-brand">ZBSwork</p>']
+    - ['<h1 id="title">Octop 设置</h1>', '<h1 id="title">ZBSwork 设置</h1>']
+    - ['id="show-main">显示 Octop</button>', 'id="show-main">显示 ZBSwork</button>']
+    - ['title: "Octop 设置"', 'title: "ZBSwork 设置"']
+    - ['showMain: "显示 Octop"', 'showMain: "显示 ZBSwork"']
+    - ['title: "Octop Settings"', 'title: "ZBSwork Settings"']
+    - ['keep Octop in the tray', 'keep ZBSwork in the tray']
+    - ['while Octop is running', 'while ZBSwork is running']
+    - ['showMain: "Show Octop"', 'showMain: "Show ZBSwork"']
+
+locales:
+  files:
+    - dashboard/src/locales/zh.json
+    - dashboard/src/locales/en.json
+  keep: [OctopBot, OpenClaw]   # 外部产品名，保持原样
+
+forbidden:
+  # 品牌化后这些位置不允许再出现独立词 "Octop"（代码注释、文件名模式不在此列）
+  word: Octop
+  scan:
+    - dashboard/index.html
+    - dashboard/public/manifest.json
+    - dashboard/public/offline.html
+    - dashboard/src/locales/zh.json
+    - dashboard/src/locales/en.json
+    - desktop/src/desktop_copy.go
+    - desktop/src/assets/index.html
+    - desktop/src/build/config.yml
+    - desktop/src/build/windows/info.json
+
+# 未纳入（待用户决定，见 docs/决策台账 / Issue）：
+# - 服务端 src/octop/i18n/*.json 与后端提示（旧 BRD-5）
+# - desktop/src/build/darwin/Info.plist（Mac 包显示名；在用 EXE 线也未改）

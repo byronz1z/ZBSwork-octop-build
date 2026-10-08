@@ -1,0 +1,43 @@
+name: 任务（新功能 / 修复 / 升级）
+description: 总控拆任务后由此登记；编码 agent 按此施工
+title: "[任务] "
+labels: ["状态:待确认"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 类型
+      options: [品牌, 修复(fix), 功能(feat), 桌面端(desk), 服务端(svc), 上游升级, 插件, 文档/规范]
+    validations: { required: true }
+  - type: dropdown
+    id: layer
+    attributes:
+      label: 实现层级（越靠前越好）
+      description: L0 后台配置 → L1 插件 → L3 外部服务 → L2 核心补丁（最后手段）
+      options: [L0 后台配置, L1 插件, L3 外部服务, L2 核心补丁, 不涉及代码]
+    validations: { required: true }
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标（用户原话 / 业务结果）
+      description: 只写已确认的需求；推断写到“假设”里
+    validations: { required: true }
+  - type: textarea
+    id: assumptions
+    attributes:
+      label: 假设与未决项
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围（改哪些文件/模块；明确不改什么）
+    validations: { required: true }
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准（可执行、可复核）
+      description: 例：prepare.py 在锁定 tag 上 CLEAN；某验收脚本 N/N 通过；截图/日志
+    validations: { required: true }
+  - type: input
+    id: owner
+    attributes:
+      label: 施工方（agent / 人）

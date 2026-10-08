@@ -1,0 +1,77 @@
+# 模块清单（机读 + 中文说明）。tools/prepare.py 按 order 顺序应用 status=enabled 的补丁。
+#
+# 编号段：10–19 修复(fix) · 20–49 功能(feat) · 50–59 桌面端(desk) · 60–69 服务端/镜像(svc)
+# 状态：enabled 启用 / candidate 候选（未决定，不参与构建）/ retired 退役
+# upstream_pr：该修复是否适合提给上游；一旦上游合并，本模块即退役
+#
+# 功能分层（升级成本由低到高）：
+#   L0 后台配置即可 → 不进本库，写入 service 库运维手册
+#   L1 插件（tool/skill/hook）→ 独立库 ZBSwork-octop-plugin-<名>
+#   L3 外部服务 → 独立库（如 localoctop）
+#   L2 核心补丁 → 本库 patches/（最后手段）
+
+upstream_lock: UPSTREAM.lock
+
+brand:
+  name_zh: 品牌包（三类 logo + 产品名）
+  spec: brand/brand.yaml
+  apply: brand/apply.py
+  check: brand/check.py
+  status: enabled
+  verified: {v1.0.2b4: clean, v1.0.2b6: clean}
+
+patches:
+  - id: 10-fix-pg-bootstrap-marker
+    name_zh: PostgreSQL 模式重启死循环修复
+    layer: L2
+    scope: [docker]
+    status: enabled
+    order: 10
+    upstream_pr: yes          # 上游 b6/main 仍未修，应提 PR
+    verified: {v1.0.2b4: strict, v1.0.2b6: strict}
+    legacy_ids: [SRV-1]
+
+  - id: 20-feat-model-per-user
+    name_zh: 模型按用户/角色分配（allowed_models 白名单）
+    layer: L2
+    scope: [server, dashboard]
+    status: enabled
+    order: 20
+    upstream_pr: maybe        # 通用能力，可先问上游意向
+    verified: {v1.0.2b4: strict, v1.0.2b6: strict}
+    acceptance: pending       # 未在生产验收
+    legacy_ids: [FEA-1, M70]
+
+  - id: 50-desk-cloud-shell
+    name_zh: 桌面端云壳（默认连公司服务器 + 托盘菜单 + 可靠退出）
+    layer: L2
+    scope: [desktop]
+    status: enabled
+    order: 50
+    upstream_pr: partial      # 退出/托盘修复可提上游；默认地址为私有定制
+    verified: {v1.0.2b4: strict, v1.0.2b6: strict}
+    origin: "在用 EXE（ZBSwork 1.0.2b2）源自 zbswork-brand@366560cf，归档 tag archive/2026-10/desktop-cloud-shell；本补丁为其在 b4 上的重生成版"
+    note: "OCTOP_DESKTOP_URL 环境变量仍可覆盖默认地址"
+
+  - id: 51-desk-window-resize
+    name_zh: 桌面端 8 向窗口拉伸
+    layer: L2
+    scope: [desktop]
+    status: candidate         # 不在在用 EXE 中；补丁不完整（缺 main.go / index.html 注入）
+    order: 51
+    upstream_pr: maybe
+    verified: {v1.0.2b4: "strict(仅窗口文件)", v1.0.2b6: "strict(仅窗口文件)"}
+    origin: "r2 安装器线，归档 tag archive/2026-10/r2-production-source"
+    legacy_ids: [DSK-1]
+
+  - id: 60-svc-runtime-extras
+    name_zh: 镜像加装本地向量与知识库 OCR 依赖（uv extras）
+    layer: L2
+    scope: [docker]
+    status: enabled
+    order: 60
+    upstream_pr: no           # 体积取舍属部署偏好
+    verified: {v1.0.2b4: strict, v1.0.2b6: strict}
+    legacy_ids: [SRV-2]
+
+# 旧 WorkBuddy 模块册（实为 19 条；其文字总结误称 20 条）去向见 docs/迁移说明.md

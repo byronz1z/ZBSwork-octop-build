@@ -1,0 +1,117 @@
+diff --git a/desktop/src/main.go b/desktop/src/main.go
+index 96e5a44f50f60797205437e0ec73b805a6943403..cce54782b516086bafc5a3617aea4cd6c1947165 100644
+--- a/desktop/src/main.go
++++ b/desktop/src/main.go
+@@ -156,18 +156,22 @@ func (a *App) setStatus(msg string) {
+ 	a.app.Event.Emit("desktop:status", msg)
+ }
+ 
++// zbsworkDefaultServerURL is baked in so a fresh install lands on the company
++// server with a plain double-click. OCTOP_DESKTOP_URL still overrides it.
++const zbsworkDefaultServerURL = "https://zbsworkoctoplink.api.zhangbaoshan.cn:8443"
++
+ func (a *App) boot() {
+ 	locale := LocaleEN
+ 	if a.store != nil {
+ 		locale = a.store.get().Locale
+ 	}
+-	if url := os.Getenv("OCTOP_DESKTOP_URL"); url != "" {
+-		a.setStatus(desktopText(locale, copyStatusConnecting))
+-		if err := waitHealth(locale, url, 60*time.Second); err != nil {
+-			a.setStatus(err.Error())
+-			return
+-		}
+-		a.showDashboard(url)
++	url := os.Getenv("OCTOP_DESKTOP_URL")
++	if url == "" {
++		url = zbsworkDefaultServerURL
++	}
++	if url != "" {
++		// Server mode: the window is created directly at the remote URL
++		// (see main()); SetURL-based switching crashes wails3 beta.13.
+ 		return
+ 	}
+ 	s := a.store.get()
+@@ -282,6 +286,16 @@ func (a *App) requestQuit() {
+ 	a.quitting = true
+ 	a.mu.Unlock()
+ 	if a.app != nil {
++		// Fallback: wails3 beta.13 Quit() can silently no-op (a panic inside
++		// cleanup is swallowed before PostQuitMessage runs), leaving the app
++		// unkillable from the UI. If the process is still alive shortly after,
++		// force it down. The runtime is stateless in server mode, so exiting
++		// without the graceful path loses nothing.
++		go func() {
++			time.Sleep(3 * time.Second)
++			log.Printf("graceful quit timed out, forcing exit")
++			os.Exit(0)
++		}()
+ 		a.app.Quit()
+ 	}
+ }
+@@ -318,11 +332,19 @@ func main() {
+ 		applyAppIcon(app)
+ 	})
+ 
++	// Server mode (default): create the window directly at the remote URL.
++	// Navigating later via window.SetURL() crashes wails3 beta.13, so the
++	// initial URL must be decided here, before the webview is created.
++	initialURL := os.Getenv("OCTOP_DESKTOP_URL")
++	if initialURL == "" {
++		initialURL = zbsworkDefaultServerURL
++	}
++
+ 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
+ 		Title:                "Octop",
+ 		Width:                1200,
+ 		Height:               800,
+-		URL:                  "/",
++		URL:                  initialURL,
+ 		Frameless:            true,
+ 		AllowSimpleEventEmit: true,
+ 		BackgroundColour:     application.NewRGB(247, 248, 250),
+@@ -377,6 +399,14 @@ func main() {
+ 		}
+ 	})
+ 	settingsWin.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
++		// Respect an in-flight quit; an unconditional Cancel() here would
++		// keep the settings window (and possibly the process) alive forever.
++		api.mu.Lock()
++		quit := api.quitting
++		api.mu.Unlock()
++		if quit {
++			return
++		}
+ 		e.Cancel()
+ 		settingsWin.Hide()
+ 	})
+@@ -394,7 +424,20 @@ func main() {
+ 	} else {
+ 		tray.OnClick(func() { api.onTrayLeftClick() })
+ 	}
+-	tray.OnRightClick(showSettings)
++	// Native right-click menu: with a menu set and no explicit right-click
++	// handler, wails3 shows it on right-click (smart defaults).
++	trayMenu := application.NewMenu()
++	trayMenu.Add("打开 ZBSwork").OnClick(func(*application.Context) {
++		api.showWindow()
++	})
++	trayMenu.Add("设置").OnClick(func(*application.Context) {
++		showSettings()
++	})
++	trayMenu.AddSeparator()
++	trayMenu.Add("退出 ZBSwork").OnClick(func(*application.Context) {
++		api.requestQuit()
++	})
++	tray.SetMenu(trayMenu)
+ 
+ 	if _, err := api.setAutostart(store.get().Autostart); err != nil {
+ 		log.Printf("sync autostart: %v", err)
+@@ -407,6 +450,7 @@ func main() {
+ 	go api.boot()
+ 
+ 	if err := app.Run(); err != nil {
++		log.Printf("app.Run returned error: %v", err)
+ 		log.Fatal(err)
+ 	}
+ }
