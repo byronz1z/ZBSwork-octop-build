@@ -2,10 +2,11 @@
 # - tools/prepare.py      按 order 顺序应用 status=enabled 的补丁
 # - tools/check_ownership.py  模块隔离门禁：同一上游文件只能有一个主人模块
 #
-# 编号段：10–19 修复(fix) · 20–49 功能(feat) · 50–59 桌面端(desk) · 60–69 服务端/镜像(svc)；退役编号不复用
+# 分层、编号、隔离规则只写在一处：私有库 ZBSwork-OCTOP-service → docs/总览.md §2
+# 编号 = 一块改动区域，终身不变；重做不换号；只有需求取消或官方已实现才作废（作废号不再使用）
+# 编号段：10–19 修复(fix) · 20–49 功能(feat，一个功能领域一个号) · 50 桌面端(desk，仅此一个) · 60 镜像打包(svc，仅此一个)
+# 层级：L0 配置 · L1 插件 · L2 外部服务 · L3 核心补丁（本表 patches 全部是 L3）
 # 状态：enabled 启用 / candidate 候选（不参与构建）
-# 退役模块不保留目录：登记到文末 retired，代码留在归档 tag 里，不作为参考
-# 功能分层与隔离规则：docs/总体方案与架构.md §4、§5
 
 upstream_lock: UPSTREAM.lock
 
@@ -21,18 +22,18 @@ brand:
 patches:
   - id: 10-fix-pg-bootstrap-marker
     name_zh: PostgreSQL 模式重启死循环修复
-    layer: L2
+    layer: L3
     scope: [docker]
     status: enabled
     order: 10
-    upstream_pr: yes          # 上游 b6/main 仍未修，应提 PR；上游合并后本模块退役
+    upstream_pr: yes          # 上游 b6/main 仍未修，应提 PR；上游合并等价修复后删除本模块（编号作废）
     verified: {v1.0.2b4: strict, v1.0.2b6: strict}
     in_production: yes        # 生产镜像 octop:pg-1.0.2b4-r2 含此逻辑（2026-10-08 实测）
     legacy_ids: [SRV-1]
 
   - id: 60-svc-runtime-extras
     name_zh: 镜像加装本地向量与知识库 OCR 依赖（uv extras）
-    layer: L2
+    layer: L3
     scope: [docker]
     status: enabled
     order: 60
@@ -43,28 +44,8 @@ patches:
 
 # 同一上游文件被多个模块修改时，必须在此登记主人（owner）与允许共改的模块（also），否则 CI 失败。
 # 例：
-#   desktop/src/main.go: {owner: 52-desk-server-url, also: [brand], reason: "品牌只改窗口标题文字"}
+#   desktop/src/main.go: {owner: 50-desk, also: [brand], reason: "品牌只改窗口标题文字"}
 shared_files: {}
 
-# 已退役（不参与构建、不作参考；需要追溯时看归档 tag）
-retired:
-  - id: 20-feat-model-per-user
-    name_zh: 模型按用户/角色分配
-    reason: "AI 线产物，生产镜像中不存在（服务端 allowed_models 0 处）。需求保留到后期，届时从判层重新开始"
-    archive: tag archive/2026-10/build-init
-    date: 2026-10-08
-  - id: 50-desk-cloud-shell
-    name_zh: 桌面端云壳（旧，含托盘菜单/强制退出）
-    reason: "AI 桌面线产物。第一期改为基于官方原版的最小改动：写死服务器地址（新模块另立）"
-    archive: tag archive/2026-10/build-init
-    date: 2026-10-08
-  - id: 51-desk-window-resize
-    name_zh: 桌面端窗口拉伸
-    reason: "AI 安装器线产物，不在生产。窗口拉伸后期基于官方原版重做"
-    archive: tag archive/2026-10/build-init
-    date: 2026-10-08
-  - id: brand/legacy
-    name_zh: 旧品牌脚本与旧品牌补丁
-    reason: "写死本机路径 / 补丁二进制段无数据无法应用；已由 brand/apply.py + check.py 取代"
-    archive: tag archive/2026-10/build-init
-    date: 2026-10-08
+# 旧 AI 线产物（20-feat-model-per-user、50-desk-cloud-shell、51-desk-window-resize、brand/legacy）未经用户确认，不占编号；
+# 代码只留在归档 tag archive/2026-10/build-init 供追溯，不作参考。

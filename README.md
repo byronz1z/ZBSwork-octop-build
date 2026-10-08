@@ -19,10 +19,10 @@ uv run --no-project --with pyyaml tools/check_ownership.py         # 模块隔�
 
 | 文档 | 内容 |
 |---|---|
-| [docs/总体方案与架构.md](docs/总体方案与架构.md) | 目标、功能分层、仓库与目录布局、品牌槽位、交付形态 |
-| [docs/协作规范.md](docs/协作规范.md) | 角色、Issue 流转、分支命名、升级/新功能/品牌三条标准流程 |
+| **总览**（私有库 [ZBSwork-OCTOP-service](https://github.com/byronz1z/ZBSwork-OCTOP-service) → `docs/总览.md`） | 唯一总览：模块化规则（分层、编号、隔离）、全部目录树、当前状态 |
+| [docs/协作规范.md](docs/协作规范.md) | AI 施工细则：Issue 流转、分支、升级/新功能/品牌流程、证据规则 |
 | [docs/迁移说明.md](docs/迁移说明.md) | 旧体系资产去向 |
-| [modules.yaml](modules.yaml) | 补丁清单（中文名、层级、状态、实测结果、共改文件登记、退役登记） |
+| [modules.yaml](modules.yaml) | 补丁清单（中文名、层级、状态、实测结果、共改文件登记） |
 | [tools/check_ownership.py](tools/check_ownership.py) | 模块隔离门禁：同一上游文件只能有一个主人模块 |
 
 ## 当前模块
@@ -33,6 +33,7 @@ uv run --no-project --with pyyaml tools/check_ownership.py         # 模块隔�
 | 10 | PostgreSQL 模式重启死循环修复 | 启用（生产在用） |
 | 60 | 镜像加装本地向量/OCR 依赖 | 启用（生产在用） |
 
-第一期计划新增：`52-desk-server-url`（桌面端写死服务器地址）。已退役模块（20、50、51、brand/legacy）只登记在 `modules.yaml` 的 `retired:`，代码留在归档 tag `archive/2026-10/build-init`，不作参考。
+第一期计划新增：`50-desk`（桌面端：写死服务器地址；以后的桌面需求也并入此模块）。
+旧 AI 线产物未经用户确认，不占编号；代码只留在归档 tag `archive/2026-10/build-init` 供追溯，不作参考。
 
 上游许可证：MIT（保留于上游源码 `LICENSE`）。

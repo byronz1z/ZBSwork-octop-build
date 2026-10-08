@@ -13,8 +13,8 @@ body:
     id: layer
     attributes:
       label: 实现层级（越靠前越好）
-      description: L0 后台配置 → L1 插件 → L3 外部服务 → L2 核心补丁（最后手段）
-      options: [L0 后台配置, L1 插件, L3 外部服务, L2 核心补丁, 不涉及代码]
+      description: L0 配置 → L1 插件 → L2 外部服务 → L3 核心补丁（最后手段；规则见总览 §2.1）
+      options: [L0 配置, L1 插件, L2 外部服务, L3 核心补丁, 不涉及代码]
     validations: { required: true }
   - type: textarea
     id: goal

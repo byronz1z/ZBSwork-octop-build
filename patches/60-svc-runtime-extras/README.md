@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 层级 | L2 核心补丁（仅 `docker/Dockerfile` 两行） |
+| 层级 | L3 核心补丁（仅 `docker/Dockerfile` 两行） |
 | 状态 | enabled |
 | 实测 | v1.0.2b4 / v1.0.2b6 严格 apply 通过 |
 | 上游 PR | 否（镜像体积取舍属部署偏好） |
