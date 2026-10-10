@@ -39,7 +39,7 @@
 | vtracer==0.6.15 | 2026-10-01 01:10 | pip-requested.txt | 进（系统 Python） |
 | python_docx==1.2.0 | 2026-10-07 02:05 | pip-requested.txt | 进（系统 Python） |
 | 其余系统环境后装包（numpy、lxml、opencv_python、onnxruntime、pillow 等，见 `_input/依赖-容器减镜像.txt`） | — | 依赖-容器减镜像.txt | 不进：均为上面 12 个包的传递依赖（dist-info 无 REQUESTED），pip 按钉版自动解析 |
-| bubblewrap（apt） | 2026-09-28 10:07 | apt-history.log | 进镜像；原因：用户装的工具依赖它，与生产容器保持一致 |
+| bubblewrap（apt） | 2026-09-28 10:07 | apt-history.log | 进镜像。原因：为与生产容器的安装清单保持一致而纳入（生产容器 apt 历史 2026-09-28 10:07:15 有这条安装记录）；没有证据表明用户工具依赖它 |
 | 32 个浏览器图形库/字体（libasound2t64 … fonts-freefont-ttf，apt） | 2026-09-28 14:02 | apt-history.log | 进镜像。其中 `libxcb1`、`libcairo2` 是实测到用户工具（cairosvg、rapidocr_onnxruntime 等）导入时缺的；其余为与生产容器保持一致而一并装入，不构成工具的必要依赖 |
 
 ## 说明
