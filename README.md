@@ -55,7 +55,7 @@ python shared/tools/verify_image.py octop:1.0.2b4-zbs1 --reference <本机官方
   - Windows 未开开发者模式时工作区符号链接建不出来——不影响构建（上下文走 git archive），
     但人工直接查看 .work/src 时链接是文本文件。
   - 云端流程 `.github/workflows/build-image.yml` 2026-10-10 新增，尚未在云端运行过。
-  - 本机一次完整构建约 5–7 分钟（镜像源加速 + 层缓存命中下），镜像约 5.2 GB（磁盘占用口径）。
+  - 本机一次完整构建约 5–7 分钟（镜像源加速 + 层缓存命中下），镜像 5.68 GB（磁盘占用口径；2026-10-10 本机 `docker images` 显示值）。
 
 ## 文档
 
