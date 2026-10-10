@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 SERVER = ROOT / "server"
 sys.path.insert(0, str(ROOT / "shared" / "tools"))
 import prepare  # noqa: E402
+import recipe_rev  # noqa: E402
 import yaml  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -128,7 +129,9 @@ def main() -> int:
     ver = f"{tag.lstrip('v')}-{version}"
     gt = GitTree(args.reference, tag)
     upstream_commit = out(["git", "-C", args.reference, "rev-parse", tag])
-    recipe_rev = out(["git", "rev-parse", "HEAD"], cwd=ROOT)
+    # 检查 7 期望的 revision 与 build_image.py 打标签用同一个函数算（recipe_rev.py），
+    # 两处不各写各的。
+    recipe_rev_sha = recipe_rev.recipe_revision()
     brand = yaml.safe_load((SERVER / "brand" / "brand.yaml").read_text(encoding="utf-8"))
     brand_name = brand["name"]
 
@@ -256,14 +259,8 @@ def main() -> int:
         except Exception as ex:
             return {"<parse>": str(ex)}, r.stdout
 
-    # 这两个包（cairosvg、rapidocr_onnxruntime 经其依赖 opencv）运行时需要
-    # libcairo2 / libxcb1 / libgl1 / libglib2.0-0t64 —— 全部属于明令不进镜像的
-    # 33 个浏览器图形库（apt-history.log 2026-09-28 14:02 那批，程序首启自装）。
-    # 因此 import 探针在临时容器里补齐这四个库再测，等价生产容器首启后的状态；
-    # 裸镜像里 import 这两个包必然失败，这是预期行为，不算镜像缺陷。
-    EXTRA_LIBS = "libcairo2 libxcb1 libgl1 libglib2.0-0t64"
-
     def import_probe(py: str, names: list[str]) -> str:
+        """在原样镜像里直接跑 import 探针（不打 apt、不装任何库）。"""
         mods = [MODS.get(k, k) for k in names]
         code = ("import importlib,sys\n"
                 "bad=[]\n"
@@ -271,14 +268,8 @@ def main() -> int:
                 "    try: importlib.import_module(m)\n"
                 "    except Exception as e: bad.append(m+': '+type(e).__name__)\n"
                 "print('IMPORT-OK' if not bad else 'IMPORT-BAD '+','.join(bad))")
-        cmd = [engine, "run", "--rm", "--user", "0", "-e", "DEBIAN_FRONTEND=noninteractive",
-               "--entrypoint", "sh", args.image, "-c",
-               f"apt-get update -qq >/dev/null 2>&1 && "
-               f"apt-get install -y -qq --no-install-recommends {EXTRA_LIBS} >/dev/null 2>&1 "
-               f"|| {{ echo LIBS-UNAVAILABLE; exit 9; }}; "
-               f"{py} -c \"{code}\" " + " ".join(mods)]
-        r = run(cmd)
-        lines = (r.stdout or b"").decode("utf-8", "replace").strip().splitlines()
+        r = run([engine, "run", "--rm", "--entrypoint", py, args.image, "-c", code, *mods])
+        lines = [ln for ln in (r.stdout or b"").decode("utf-8", "replace").strip().splitlines() if ln.strip()]
         return (lines[-1] if lines else "<no-output>")
 
     # 版本：裸镜像即可查（importlib.metadata 不需要加载原生依赖）
@@ -293,11 +284,11 @@ def main() -> int:
     verdict(not bad_sys and imp_sys.startswith("IMPORT-OK"),
             "5b. 系统 python3 12 个包版本正确且可导入",
             f"版本{'齐' if not bad_sys else json.dumps(bad_sys, ensure_ascii=False)}；"
-            f"导入(临时容器补 {EXTRA_LIBS}): {imp_sys[:160]}")
+            f"导入(原样镜像): {imp_sys[:160]}")
     verdict(not bad_venv and imp_venv.startswith("IMPORT-OK"),
             "5c. /app/.venv 2 个包版本正确且可导入",
             f"版本{'齐' if not bad_venv else json.dumps(bad_venv, ensure_ascii=False)}；"
-            f"导入(临时容器补 {EXTRA_LIBS}): {imp_venv[:160]}")
+            f"导入(原样镜像): {imp_venv[:160]}")
 
     # ---- 检查 6: manager.py 原件 / wrapper 不存在 ----------------------------
     e = gt.entry(MANAGER_PATH)
@@ -317,7 +308,7 @@ def main() -> int:
     labels = json.loads(r.stdout.decode()) if r.returncode == 0 else {}
     expect = {
         "org.opencontainers.image.version": ver,
-        "org.opencontainers.image.revision": recipe_rev,
+        "org.opencontainers.image.revision": recipe_rev_sha,
         "cn.zbswork.upstream.tag": tag,
         "cn.zbswork.upstream.commit": upstream_commit,
     }
@@ -325,7 +316,8 @@ def main() -> int:
     if not re.fullmatch(r"[0-9a-f]{64}", labels.get("cn.zbswork.context.sha256", "")):
         bad["cn.zbswork.context.sha256"] = f"非法: {labels.get('cn.zbswork.context.sha256')!r}"
     verdict(not bad, "7. 镜像标签齐全且值正确",
-            json.dumps(bad, ensure_ascii=False) if bad else f"version={ver}, revision={recipe_rev[:12]}")
+            json.dumps(bad, ensure_ascii=False) if bad else
+            f"version={ver}, revision={recipe_rev_sha[:12]} (配方提交号: {recipe_rev.recipe_revision_line()})")
 
     # ---- 检查 8: 冒烟 import octop -------------------------------------------
     r = run([engine, "run", "--rm", "--entrypoint", "/app/.venv/bin/python",

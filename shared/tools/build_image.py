@@ -11,7 +11,8 @@
      然后 git archive --format=tar HEAD 得到源码包 .work/context.tar 并打印 sha256。
      同样输入两次得到的 tar 逐字节相同。
   c. docker build：以 tar 流为构建上下文（subprocess 把 tar 文件作为 stdin 传入），
-     打 OCI 标签。--no-build 时只产出 context.tar。
+     打 OCI 标签。revision 标签记的是"配方提交号"（最后一次改动配方输入的提交，
+     见 recipe_rev.py），不是构建时的 HEAD。--no-build 时只产出 context.tar。
   d. 打印镜像名、镜像编号、大小、源码包 sha256。
 """
 from __future__ import annotations
@@ -29,6 +30,7 @@ SERVER = ROOT / "server"
 WORK = ROOT / ".work"
 sys.path.insert(0, str(ROOT / "shared" / "tools"))
 import prepare  # noqa: E402
+import recipe_rev  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -73,7 +75,20 @@ def main() -> int:
     version = (SERVER / "VERSION").read_text(encoding="utf-8").strip()
     image = f"octop:{tag.lstrip('v')}-{version}"
     upstream_commit = out(["git", "-C", args.reference, "rev-parse", tag]) if args.reference else lock["commit"]
-    recipe_rev = out(["git", "rev-parse", "HEAD"], cwd=ROOT)
+    # 镜像标签记"配方提交号"（最后一次改动配方输入的提交），不记构建时的 HEAD：
+    # 代码总是构建之后才提交，记 HEAD 会让检查 7 永远对不上。定义见 recipe_rev.py。
+    recipe_rev_sha = recipe_rev.recipe_revision()
+    print(f"配方提交号: {recipe_rev_sha}  ({recipe_rev.recipe_revision_line()})")
+    dirty = recipe_rev.recipe_dirty()
+    if dirty:
+        print("!" * 78)
+        print(f"!! 警告：配方输入在工作树里有未提交的改动（{len(dirty)} 项），"
+              f"镜像记的提交号 {recipe_rev_sha[:12]} 并不包含这些改动！")
+        for ln in dirty[:20]:
+            print(f"!!   {ln}")
+        if len(dirty) > 20:
+            print(f"!!   ... 共 {len(dirty)} 项，仅列前 20")
+        print("!" * 78)
 
     src = WORK / "src"
     tar = WORK / "context.tar"
@@ -120,7 +135,7 @@ def main() -> int:
         cmd += ["--build-arg", kv]
     for k, v in {
         "org.opencontainers.image.version": f"{tag.lstrip('v')}-{version}",
-        "org.opencontainers.image.revision": recipe_rev,
+        "org.opencontainers.image.revision": recipe_rev_sha,
         "cn.zbswork.upstream.tag": tag,
         "cn.zbswork.upstream.commit": upstream_commit,
         "cn.zbswork.context.sha256": digest,
