@@ -22,6 +22,9 @@ python shared/tools/build_image.py --reference <本机官方克隆>   # 一条�
 python shared/tools/verify_image.py octop:1.0.2b4-zbs1 --reference <本机官方克隆>
 ```
 
+两个脚本都可不传 `--reference`：施工树 `.work/src` 本身就是官方仓库的克隆（带官方 tag），
+不传时 verify 直接用它做比对来源，不写死任何本机路径（云端流程即如此运行）。
+
 - **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2b4-zbs1`。
 - **施工树**：`shared/tools/prepare_lf.py`（prepare.py 的 LF/符号链接版；不改 prepare.py 现有参数行为，
   recipe-check.yml 不受影响）准备 `.work/src`，克隆/检出固定 `-c core.autocrlf=false -c core.eol=lf`，
@@ -40,21 +43,18 @@ python shared/tools/verify_image.py octop:1.0.2b4-zbs1 --reference <本机官方
 
   加 `--no-mirror` 可不带这些；`--platform linux/amd64` 可指定平台。
 - **标签**：`org.opencontainers.image.version / .revision`、`cn.zbswork.upstream.tag / .commit`、
-  `cn.zbswork.context.sha256`。
+  `cn.zbswork.context.sha256`。`.revision` 记**配方提交号**（最后一次改动配方输入的提交，定义见
+  `shared/tools/recipe_rev.py`），不是构建时的 HEAD；`cn.zbswork.upstream.commit` 是经版本锁核对的
+  施工树实际检出提交（等于 `server/UPSTREAM.lock` 的 commit，不等即报错不构建）；
+  `cn.zbswork.context.sha256` 是源码包的 sha256，verify 时现场用同一个 `context_tar()` 函数重做
+  源码包核对相等——这就是"可复现"的检查。
 - **已知限制**：
   - 官方构建方式以 `v1.0.2b4:docker/Dockerfile`（头注释第 6–31 行：构建上下文为仓库根目录、
     dashboard 在 Dockerfile 阶段 1 内构建、四个国内加速 build-arg）与 `docker/docker_build.sh` 为准；
     本脚本只是把上下文从"目录"换成"等价的 git archive tar"。
   - Windows 未开开发者模式时工作区符号链接建不出来——不影响构建（上下文走 git archive），
     但人工直接查看 .work/src 时链接是文本文件。
-  - `cairosvg`、`rapidocr_onnxruntime`（经其依赖 opencv）运行时需要
-    `libcairo2 / libxcb1 / libgl1 / libglib2.0-0t64`，这些属明令**不进镜像**的浏览器图形库
-    （程序首次启动自装，见补丁 60 README）。裸镜像里 `import` 这两个包会因缺 `.so` 失败，
-    是预期行为；`verify_image.py` 的导入检查在临时容器里补齐这四个库再测，等价生产首启后的状态。
   - 云端流程 `.github/workflows/build-image.yml` 2026-10-10 新增，尚未在云端运行过。
-  - 镜像标签 `org.opencontainers.image.revision` 记录**构建时**配方库 HEAD；改了配方库需重新
-    build 才会更新，`verify_image.py` 检查 7 按"当前 HEAD == 镜像 revision"判定（故 CI 里
-    checkout→build→verify 在同一提交，天然一致；本地若先 build 后又提交，需重 build）。
   - 本机一次完整构建约 5–7 分钟（镜像源加速 + 层缓存命中下），镜像约 5.2 GB（磁盘占用口径）。
 
 ## 文档
@@ -66,6 +66,7 @@ python shared/tools/verify_image.py octop:1.0.2b4-zbs1 --reference <本机官方
 | [docs/迁移说明.md](docs/迁移说明.md) | 旧体系资产去向 |
 | [server/modules.yaml](server/modules.yaml) | 补丁清单（中文名、层级、状态、实测结果、共改文件登记） |
 | [shared/tools/check_ownership.py](shared/tools/check_ownership.py) | 模块隔离门禁：同一上游文件只能有一个主人模块 |
+| [shared/tools/recipe_rev.py](shared/tools/recipe_rev.py) | 配方提交号定义：最后一次改动配方输入（上游选取 + 补丁 + 品牌）的提交；build 打 revision 标签、verify 核对，共用这一个函数 |
 
 ## 当前模块
 
