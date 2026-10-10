@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""一条命令出镜像：上游 tag + 启用补丁 + 品牌包 → git archive 源码包 → docker build。
+
+用法:
+    python shared/tools/build_image.py [--reference <本机官方克隆>] [--no-build] [--platform linux/amd64]
+
+步骤:
+  a. 用 prepare_lf.py（prepare.py 的 LF/符号链接版）准备施工树 .work/src
+     （上游 tag + 补丁 + 品牌 + 品牌检查）。
+  b. 在施工树做一次确定性提交（作者/提交人/日期固定为上游 tag 提交的作者与日期），
+     然后 git archive --format=tar HEAD 得到源码包 .work/context.tar 并打印 sha256。
+     同样输入两次得到的 tar 逐字节相同。
+  c. docker build：以 tar 流为构建上下文（subprocess 把 tar 文件作为 stdin 传入），
+     打 OCI 标签。--no-build 时只产出 context.tar。
+  d. 打印镜像名、镜像编号、大小、源码包 sha256。
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+SERVER = ROOT / "server"
+WORK = ROOT / ".work"
+sys.path.insert(0, str(ROOT / "shared" / "tools"))
+import prepare  # noqa: E402
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+BUILD_ARGS = [
+    "PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple",
+    "PIP_TRUSTED_HOST=mirrors.cloud.tencent.com",
+    "NPM_REGISTRY=https://mirrors.cloud.tencent.com/npm/",
+    "APT_MIRROR=mirrors.cloud.tencent.com",
+]
+
+
+def run(cmd, cwd=None, check=True, capture=False, **kw):
+    print("$ " + " ".join(str(c) for c in cmd))
+    return subprocess.run(cmd, cwd=cwd, check=check, capture_output=capture, text=True, **kw)
+
+
+def out(cmd, cwd=None) -> str:
+    return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def sha256(p: Path) -> str:
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--reference", help="本机官方克隆（加速克隆；上游地址仍取自 UPSTREAM.lock）")
+    ap.add_argument("--no-build", action="store_true", help="只生成 context.tar，不构建镜像")
+    ap.add_argument("--platform", default=None, help="如 linux/amd64")
+    ap.add_argument("--build-arg", action="append", default=[], help="额外 docker build --build-arg KEY=VAL")
+    ap.add_argument("--no-mirror", action="store_true", help="不带国内镜像源构建参数（默认带腾讯云镜像源）")
+    ap.add_argument("--builder", default="docker", choices=["docker", "podman"],
+                    help="构建引擎（podman 时经由其 Windows 命名管道 npipe）")
+    args = ap.parse_args()
+
+    lock, modules = prepare.load("UPSTREAM.lock"), prepare.load("modules.yaml")
+    tag = lock["tag"]
+    version = (SERVER / "VERSION").read_text(encoding="utf-8").strip()
+    image = f"octop:{tag.lstrip('v')}-{version}"
+    upstream_commit = out(["git", "-C", args.reference, "rev-parse", tag]) if args.reference else lock["commit"]
+    recipe_rev = out(["git", "rev-parse", "HEAD"], cwd=ROOT)
+
+    src = WORK / "src"
+    tar = WORK / "context.tar"
+    log = WORK / "build.log"
+
+    # a. 施工树（LF + 符号链接 + 品牌检查）
+    r = run([sys.executable, str(ROOT / "shared" / "tools" / "prepare_lf.py"),
+             "--work", str(src)] + (["--reference", args.reference] if args.reference else []),
+            cwd=ROOT, check=False)
+    if r.returncode:
+        return r.returncode
+
+    # b. 确定性提交 + git archive
+    author = out(["git", "show", "-s", "--format=%an%x00%ae%x00%aI", tag], cwd=src).split("\x00")
+    env = dict(os.environ,
+               GIT_AUTHOR_NAME=author[0], GIT_AUTHOR_EMAIL=author[1], GIT_AUTHOR_DATE=author[2],
+               GIT_COMMITTER_NAME=author[0], GIT_COMMITTER_EMAIL=author[1], GIT_COMMITTER_DATE=author[2])
+    run(["git", "add", "-A"], cwd=src)
+    n_patches = len([p for p in modules["patches"] if p.get("status") == "enabled"])
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m",
+                    f"build: {tag} + {n_patches} patches + brand ({version})"],
+                   cwd=src, check=True, env=env)
+    with tar.open("wb") as f:
+        subprocess.run(["git", "archive", "--format=tar", "HEAD"], cwd=src, check=True, stdout=f)
+    digest = sha256(tar)
+    print(f"context.tar sha256: {digest}  ({tar.stat().st_size} bytes)")
+
+    if args.no_build:
+        print(f"[no-build] 镜像名将是 {image}")
+        return 0
+
+    # c. docker build（tar 流经 stdin 作为构建上下文）
+    cmd = ["docker", "build", "-f", "docker/Dockerfile", "-t", image]
+    if args.builder == "podman":
+        # 本机 podman CLI + npipe 连接走 Podman Desktop 的 Linux 引擎
+        #（Docker Desktop 的 docker engine 在本机构建大镜像时引擎会卡死重启，见 README 已知限制）
+        engine = "podman"
+    else:
+        engine = "docker"
+    cmd[0] = engine
+    if args.platform:
+        cmd += ["--platform", args.platform]
+    for kv in ([] if args.no_mirror else BUILD_ARGS) + args.build_arg:
+        cmd += ["--build-arg", kv]
+    for k, v in {
+        "org.opencontainers.image.version": f"{tag.lstrip('v')}-{version}",
+        "org.opencontainers.image.revision": recipe_rev,
+        "cn.zbswork.upstream.tag": tag,
+        "cn.zbswork.upstream.commit": upstream_commit,
+        "cn.zbswork.context.sha256": digest,
+    }.items():
+        cmd += ["--label", f"{k}={v}"]
+    cmd.append("-")
+
+    t0 = time.time()
+    print(f"[build] 日志写入 {log}，开始构建 {image} ...")
+    with tar.open("rb") as fin, log.open("w", encoding="utf-8", errors="replace") as flog:
+        proc = subprocess.Popen(cmd, stdin=fin, stdout=flog, stderr=subprocess.STDOUT)
+        rc = proc.wait()
+    dt = time.time() - t0
+    if rc:
+        print(f"[ERROR] docker build 失败（{dt/60:.1f} 分钟），见 {log}")
+        return 1
+    print(f"[build] 构建完成，耗时 {dt/60:.1f} 分钟")
+
+    # d. 结果
+    iid = out([engine, "image", "inspect", image, "--format", "{{.Id}}"])
+    size = int(out([engine, "image", "inspect", image, "--format", "{{.Size}}"]))
+    print(f"镜像名:   {image}")
+    print(f"镜像编号: {iid}")
+    print(f"大小:     {size/1e9:.2f} GB ({size} bytes)")
+    print(f"源码包:   {tar}  sha256={digest}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -15,6 +15,41 @@ uv run --no-project --with pyyaml shared/tools/brand_check.py --self      # 只�
 uv run --no-project --with pyyaml shared/tools/check_ownership.py         # 模块隔离检查（CI 同款）
 ```
 
+## 出镜像（2026-10-10 新增，ZT-018）
+
+```bash
+python shared/tools/build_image.py --reference <本机官方克隆>   # 一条龙：施工树 → context.tar → docker build
+python shared/tools/verify_image.py octop:1.0.2b4-zbs1 --reference <本机官方克隆>
+```
+
+- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2b4-zbs1`。
+- **施工树**：`shared/tools/prepare_lf.py`（prepare.py 的 LF/符号链接版；不改 prepare.py 现有参数行为，
+  recipe-check.yml 不受影响）准备 `.work/src`，克隆/检出固定 `-c core.autocrlf=false -c core.eol=lf`，
+  并把 git 里 mode 120000 的链接在 Windows 工作区恢复成真链接（失败只告警，不影响构建）。
+- **构建上下文**：不是目录而是 `git archive --format=tar HEAD` 产出的 `.work/context.tar`
+  （提交的作者/提交人/日期固定为上游 tag 提交的作者与日期，同输入两次 tar 逐字节相同；
+  链接按 git 记录的类型打包）。`docker build -f docker/Dockerfile -t <镜像> -`，tar 由 stdin 传入。
+- **本机实际构建参数**（网络走国内镜像源，官方 Dockerfile 自带的构建参数）：
+
+  ```
+  --build-arg PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+  --build-arg PIP_TRUSTED_HOST=mirrors.cloud.tencent.com
+  --build-arg NPM_REGISTRY=https://mirrors.cloud.tencent.com/npm/
+  --build-arg APT_MIRROR=mirrors.cloud.tencent.com
+  ```
+
+  加 `--no-mirror` 可不带这些；`--platform linux/amd64` 可指定平台。
+- **标签**：`org.opencontainers.image.version / .revision`、`cn.zbswork.upstream.tag / .commit`、
+  `cn.zbswork.context.sha256`。
+- **已知限制**：
+  - 官方构建方式以 `v1.0.2b4:docker/Dockerfile`（头注释第 6–31 行：构建上下文为仓库根目录、
+    dashboard 在 Dockerfile 阶段 1 内构建、四个国内加速 build-arg）与 `docker/docker_build.sh` 为准；
+    本脚本只是把上下文从"目录"换成"等价的 git archive tar"。
+  - Windows 未开开发者模式时工作区符号链接建不出来——不影响构建（上下文走 git archive），
+    但人工直接查看 .work/src 时链接是文本文件。
+  - 云端流程 `.github/workflows/build-image.yml` 2026-10-10 新增，尚未在云端运行过。
+  - 本机一次完整构建约 5–7 分钟（镜像源加速下），镜像约 5.2 GB（磁盘占用口径）。
+
 ## 文档
 
 | 文档 | 内容 |

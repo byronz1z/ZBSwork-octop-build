@@ -1,0 +1,46 @@
+# 本流程 2026-10-10 新增（ZT-018），尚未在云端运行过。
+# 手动触发：构建 octop:<上游版本>-<server/VERSION> 镜像并推到 ghcr.io。
+name: build-image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: 构建镜像（上游 + 补丁 + 品牌 → context.tar → docker build）
+        run: uv run --no-project --with pyyaml shared/tools/build_image.py --platform linux/amd64
+
+      - name: 验证镜像
+        run: |
+          VERSION=$(uv run --no-project --with pyyaml python -c "
+          import yaml, pathlib
+          tag = yaml.safe_load(open('server/UPSTREAM.lock'))['tag'].lstrip('v')
+          print(f'octop:{tag}-' + pathlib.Path('server/VERSION').read_text().strip())")
+          uv run --no-project --with pyyaml shared/tools/verify_image.py "$VERSION"
+
+      - name: 登录 ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 推送镜像
+        run: |
+          VERSION=$(uv run --no-project --with pyyaml python -c "
+          import yaml, pathlib
+          tag = yaml.safe_load(open('server/UPSTREAM.lock'))['tag'].lstrip('v')
+          print(f'{tag}-' + pathlib.Path('server/VERSION').read_text().strip())")
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          docker tag "octop:$VERSION" "ghcr.io/$OWNER/octop:$VERSION"
+          docker push "ghcr.io/$OWNER/octop:$VERSION"
