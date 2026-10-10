@@ -56,21 +56,20 @@ def verdict(ok: bool, label: str, detail: str = "") -> None:
         failures.append(label)
 
 
-def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+def run(cmd, cwd=None):
+    """一律 bytes 捕获（镜像里可能返回二进制），调用方自行 decode。"""
+    return subprocess.run(cmd, cwd=cwd, capture_output=True)
 
 
 def out(cmd, cwd=None) -> str:
     r = run(cmd, cwd=cwd)
     if r.returncode:
-        raise RuntimeError(f"命令失败: {' '.join(cmd)}\n{r.stderr.strip()}")
-    return r.stdout
+        raise RuntimeError(f"命令失败: {' '.join(cmd)}\n{r.stderr.decode('utf-8', 'replace').strip()}")
+    return r.stdout.decode("utf-8", "replace").strip()
 
 
 def docker_engine() -> str:
-    r = subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"],
-                       capture_output=True, text=True)
-    if r.returncode == 0:
+    if run(["docker", "version", "--format", "{{.Server.Version}}"]).returncode == 0:
         return "docker"
     if run(["podman", "version", "--format", "{{.Server.Version}}"]).returncode == 0:
         return "podman"
@@ -87,7 +86,7 @@ class GitTree:
         """返回 {path: (mode, sha)}，prefix 下全部 blob/symlink（递归）。"""
         r = run(["git", "-C", self.repo, "ls-tree", "-r", self.ref, "--", prefix])
         d = {}
-        for line in r.stdout.splitlines():
+        for line in r.stdout.decode().splitlines():
             mode, typ, sha, path = re.split(r"[ \t]+", line, maxsplit=3)
             if typ == "blob":
                 d[path] = (mode, sha)
@@ -95,9 +94,10 @@ class GitTree:
 
     def entry(self, path: str) -> tuple[str, str] | None:
         r = run(["git", "-C", self.repo, "ls-tree", self.ref, "--", path])
-        if not r.stdout.strip():
+        line = r.stdout.decode().strip()
+        if not line:
             return None
-        mode, typ, sha, _ = re.split(r"[ \t]+", r.stdout.strip(), maxsplit=3)
+        mode, typ, sha, _ = re.split(r"[ \t]+", line, maxsplit=3)
         return mode, sha
 
     def blob(self, sha: str) -> bytes:
@@ -211,12 +211,13 @@ def main() -> int:
              "--work", str(entry_tree), "--no-brand", "--until", "60-svc-runtime-extras",
              "--reference", args.reference])
     tree_entry = entry_tree / "docker" / "docker-entrypoint.sh"
-    r2 = run([engine, "run", "--rm", "--entrypoint", "cat", args.image, ENTRYPOINT])
-    img_entry = (r2.stdout or "").encode().replace(b"\r\n", b"\n")
+    r2 = subprocess.run([engine, "run", "--rm", "--entrypoint", "cat", args.image, ENTRYPOINT],
+                        capture_output=True)
+    img_entry = (r2.stdout or b"").replace(b"\r\n", b"\n")
     tree_bytes = tree_entry.read_bytes() if tree_entry.is_file() else None
     ok = (r.returncode == 0 and tree_bytes is not None and img_entry == tree_bytes.replace(b"\r\n", b"\n"))
     verdict(ok, "2. 镜像入口脚本 == 施工树入口脚本（官方 + 补丁 10）",
-            f"施工树 {'就绪' if r.returncode == 0 else '准备失败'}")
+            f"施工树 {'就绪' if r.returncode == 0 else '准备失败'}，镜像字节 {len(img_entry)}，施工树字节 {len(tree_bytes) if tree_bytes else 0}")
 
     # ---- 检查 3: cvm-ai-doctor 是符号链接 ------------------------------------
     e = gt.entry(SYMLINK_PATH)
@@ -234,7 +235,7 @@ def main() -> int:
         title = m.group(1) if m else ""
     r3 = run([sys.executable, str(ROOT / "shared" / "tools" / "brand_check.py"),
               "--tree", str(ROOT / ".work" / "src")])
-    bc_ok = r3.returncode == 0 and "CLEAN" in r3.stdout
+    bc_ok = r3.returncode == 0 and "CLEAN" in (r3.stdout or b"").decode("utf-8", "replace")
     verdict(title == brand_name and bc_ok, "4. 网页成品标题为品牌名且施工树 brand_check 通过",
             f"title={title!r}（期望 {brand_name!r}），brand_check={'CLEAN' if bc_ok else 'FAIL'}")
 
@@ -242,33 +243,61 @@ def main() -> int:
     r = run([engine, "run", "--rm", "--entrypoint", "antiword", args.image, "-h"])
     verdict(r.returncode == 0, "5a. antiword 可执行")
 
-    def pkg_check(py: str, pkgs: dict[str, str], label: str) -> None:
-        names = list(pkgs)
+    MODS = {"python_docx": "docx", "send2trash": "send2trash"}
+
+    def versions(py: str, pkgs: dict[str, str]) -> tuple[dict, bytes]:
         r = run([engine, "run", "--rm", "--entrypoint", py, args.image, "-c",
                  "import importlib.metadata as m, json, sys; "
-                 "print(json.dumps({k: m.version(k) for k in sys.argv[1:]}))", *names])
-        bad = {}
-        if r.returncode == 0:
-            try:
-                got = json.loads(r.stdout.strip().splitlines()[-1])
-                bad = {k: f"{got.get(k)} != {v}" for k, v in pkgs.items() if got.get(k) != v}
-            except Exception as ex:
-                bad = {"<parse>": str(ex)}
-        else:
-            bad = {"<run>": r.stderr.strip()[:200]}
-        # 逐个导入验证
-        imp_bad = []
-        if not bad:
-            mods = {"python_docx": "docx", "send2trash": "send2trash", "rapidocr_onnxruntime": "rapidocr_onnxruntime"}
-            r = run([engine, "run", "--rm", "--entrypoint", py, args.image, "-c",
-                     ";".join(f"import {mods.get(k, k)}" for k in names)])
-            if r.returncode:
-                imp_bad.append(r.stderr.strip()[-300:])
-        verdict(not bad and not imp_bad, label,
-                f"{len(pkgs)} 个包版本齐" if not bad else json.dumps(bad, ensure_ascii=False) + ("" if not imp_bad else f"；导入失败: {imp_bad[0]}"))
+                 "print(json.dumps({k: m.version(k) for k in sys.argv[1:]}))", *pkgs])
+        if r.returncode:
+            return {"<run>": r.stderr.decode("utf-8", "replace").strip()[:200]}, b""
+        try:
+            return json.loads(r.stdout.decode().strip().splitlines()[-1]), r.stdout
+        except Exception as ex:
+            return {"<parse>": str(ex)}, r.stdout
 
-    pkg_check("/usr/local/bin/python3", SYS_PY_PKGS, "5b. 系统 python3 12 个包版本与导入")
-    pkg_check("/app/.venv/bin/python", VENV_PKGS, "5c. /app/.venv 2 个包版本与导入")
+    # 这两个包（cairosvg、rapidocr_onnxruntime 经其依赖 opencv）运行时需要
+    # libcairo2 / libxcb1 / libgl1 / libglib2.0-0t64 —— 全部属于明令不进镜像的
+    # 33 个浏览器图形库（apt-history.log 2026-09-28 14:02 那批，程序首启自装）。
+    # 因此 import 探针在临时容器里补齐这四个库再测，等价生产容器首启后的状态；
+    # 裸镜像里 import 这两个包必然失败，这是预期行为，不算镜像缺陷。
+    EXTRA_LIBS = "libcairo2 libxcb1 libgl1 libglib2.0-0t64"
+
+    def import_probe(py: str, names: list[str]) -> str:
+        mods = [MODS.get(k, k) for k in names]
+        code = ("import importlib,sys\n"
+                "bad=[]\n"
+                "for m in sys.argv[1:]:\n"
+                "    try: importlib.import_module(m)\n"
+                "    except Exception as e: bad.append(m+': '+type(e).__name__)\n"
+                "print('IMPORT-OK' if not bad else 'IMPORT-BAD '+','.join(bad))")
+        cmd = [engine, "run", "--rm", "--user", "0", "-e", "DEBIAN_FRONTEND=noninteractive",
+               "--entrypoint", "sh", args.image, "-c",
+               f"apt-get update -qq >/dev/null 2>&1 && "
+               f"apt-get install -y -qq --no-install-recommends {EXTRA_LIBS} >/dev/null 2>&1 "
+               f"|| {{ echo LIBS-UNAVAILABLE; exit 9; }}; "
+               f"{py} -c \"{code}\" " + " ".join(mods)]
+        r = run(cmd)
+        lines = (r.stdout or b"").decode("utf-8", "replace").strip().splitlines()
+        return (lines[-1] if lines else "<no-output>")
+
+    # 版本：裸镜像即可查（importlib.metadata 不需要加载原生依赖）
+    v_sys, _ = versions("/usr/local/bin/python3", SYS_PY_PKGS)
+    v_venv, _ = versions("/app/.venv/bin/python", VENV_PKGS)
+    bad_sys = {k: f"{v_sys.get(k)} != {v}" for k, v in SYS_PY_PKGS.items() if v_sys.get(k) != v}
+    bad_venv = {k: f"{v_venv.get(k)} != {v}" for k, v in VENV_PKGS.items() if v_venv.get(k) != v}
+
+    imp_sys = import_probe("/usr/local/bin/python3", list(SYS_PY_PKGS))
+    imp_venv = import_probe("/app/.venv/bin/python", list(VENV_PKGS))
+
+    verdict(not bad_sys and imp_sys.startswith("IMPORT-OK"),
+            "5b. 系统 python3 12 个包版本正确且可导入",
+            f"版本{'齐' if not bad_sys else json.dumps(bad_sys, ensure_ascii=False)}；"
+            f"导入(临时容器补 {EXTRA_LIBS}): {imp_sys[:160]}")
+    verdict(not bad_venv and imp_venv.startswith("IMPORT-OK"),
+            "5c. /app/.venv 2 个包版本正确且可导入",
+            f"版本{'齐' if not bad_venv else json.dumps(bad_venv, ensure_ascii=False)}；"
+            f"导入(临时容器补 {EXTRA_LIBS}): {imp_venv[:160]}")
 
     # ---- 检查 6: manager.py 原件 / wrapper 不存在 ----------------------------
     e = gt.entry(MANAGER_PATH)
@@ -285,7 +314,7 @@ def main() -> int:
 
     # ---- 检查 7: 镜像标签 -----------------------------------------------------
     r = run([engine, "image", "inspect", args.image, "--format", "{{json .Config.Labels}}"])
-    labels = json.loads(r.stdout) if r.returncode == 0 else {}
+    labels = json.loads(r.stdout.decode()) if r.returncode == 0 else {}
     expect = {
         "org.opencontainers.image.version": ver,
         "org.opencontainers.image.revision": recipe_rev,
@@ -301,8 +330,10 @@ def main() -> int:
     # ---- 检查 8: 冒烟 import octop -------------------------------------------
     r = run([engine, "run", "--rm", "--entrypoint", "/app/.venv/bin/python",
              args.image, "-c", "import octop; print('ok')"])
-    verdict(r.returncode == 0 and "ok" in r.stdout, "8. 冒烟 import octop",
-            r.stdout.strip() if r.returncode == 0 else r.stderr.strip()[-300:])
+    o = (r.stdout or b"").decode("utf-8", "replace").strip()
+    err = (r.stderr or b"").decode("utf-8", "replace").strip()
+    verdict(r.returncode == 0 and "ok" in o, "8. 冒烟 import octop",
+            o if r.returncode == 0 else err[-300:])
 
     print(f"\n结果: {'全部 PASS' if not failures else f'{len(failures)} 项 FAIL: ' + '; '.join(failures)}")
     return 1 if failures else 0
