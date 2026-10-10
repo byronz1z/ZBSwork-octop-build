@@ -47,8 +47,15 @@ python shared/tools/verify_image.py octop:1.0.2b4-zbs1 --reference <本机官方
     本脚本只是把上下文从"目录"换成"等价的 git archive tar"。
   - Windows 未开开发者模式时工作区符号链接建不出来——不影响构建（上下文走 git archive），
     但人工直接查看 .work/src 时链接是文本文件。
+  - `cairosvg`、`rapidocr_onnxruntime`（经其依赖 opencv）运行时需要
+    `libcairo2 / libxcb1 / libgl1 / libglib2.0-0t64`，这些属明令**不进镜像**的浏览器图形库
+    （程序首次启动自装，见补丁 60 README）。裸镜像里 `import` 这两个包会因缺 `.so` 失败，
+    是预期行为；`verify_image.py` 的导入检查在临时容器里补齐这四个库再测，等价生产首启后的状态。
   - 云端流程 `.github/workflows/build-image.yml` 2026-10-10 新增，尚未在云端运行过。
-  - 本机一次完整构建约 5–7 分钟（镜像源加速下），镜像约 5.2 GB（磁盘占用口径）。
+  - 镜像标签 `org.opencontainers.image.revision` 记录**构建时**配方库 HEAD；改了配方库需重新
+    build 才会更新，`verify_image.py` 检查 7 按"当前 HEAD == 镜像 revision"判定（故 CI 里
+    checkout→build→verify 在同一提交，天然一致；本地若先 build 后又提交，需重 build）。
+  - 本机一次完整构建约 5–7 分钟（镜像源加速 + 层缓存命中下），镜像约 5.2 GB（磁盘占用口径）。
 
 ## 文档
 
