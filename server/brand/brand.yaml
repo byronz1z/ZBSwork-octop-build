@@ -10,25 +10,25 @@ upstream_name: Octop        # 上游显示名（被替换的词）
 
 slots:
   square:                   # 方形 logo：浏览器图标、PWA 安装图标、桌面应用/托盘图标
-    source: brand/assets/source/icon.svg            # 母本（矢量）
-    source_raster: brand/assets/source/icon-1024.png # 母本（1024 位图）
+    source: shared/logo/icon.svg            # 母本（矢量）
+    source_raster: shared/logo/icon-1024.png # 母本（1024 位图）
     targets:
-      - { from: brand/assets/dashboard-public/favico.svg,           to: dashboard/public/favico.svg }
-      - { from: brand/assets/dashboard-public/apple-touch-icon.png, to: dashboard/public/apple-touch-icon.png }
-      - { from: brand/assets/dashboard-public/pwa-192.png,          to: dashboard/public/pwa-192.png }
-      - { from: brand/assets/dashboard-public/pwa-512.png,          to: dashboard/public/pwa-512.png }
-      - { from: brand/assets/desktop/appicon.png,                   to: desktop/src/build/appicon.png }
-      - { from: brand/assets/desktop/tray-icon.png,                 to: desktop/src/assets/tray-icon.png }
+      - { from: server/brand/assets/dashboard-public/favico.svg,           to: dashboard/public/favico.svg }
+      - { from: server/brand/assets/dashboard-public/apple-touch-icon.png, to: dashboard/public/apple-touch-icon.png }
+      - { from: server/brand/assets/dashboard-public/pwa-192.png,          to: dashboard/public/pwa-192.png }
+      - { from: server/brand/assets/dashboard-public/pwa-512.png,          to: dashboard/public/pwa-512.png }
+      - { from: server/brand/assets/desktop/appicon.png,                   to: desktop/src/build/appicon.png }
+      - { from: server/brand/assets/desktop/tray-icon.png,                 to: desktop/src/assets/tray-icon.png }
   horizontal:               # 横版 logo：网页侧栏、页头（移动端）、登录页、初始化页
-    source: brand/assets/source/brand-horizontal.svg
+    source: shared/logo/brand-horizontal.svg
     targets:
-      - { from: brand/assets/dashboard-public/logo_horizontal_dark.png,  to: dashboard/public/logo_horizontal_dark.png,  note: 浅色主题用（深色字） }
-      - { from: brand/assets/dashboard-public/logo_horizontal_white.png, to: dashboard/public/logo_horizontal_white.png, note: 深色主题用（白色字） }
+      - { from: server/brand/assets/dashboard-public/logo_horizontal_dark.png,  to: dashboard/public/logo_horizontal_dark.png,  note: 浅色主题用（深色字） }
+      - { from: server/brand/assets/dashboard-public/logo_horizontal_white.png, to: dashboard/public/logo_horizontal_white.png, note: 深色主题用（白色字） }
   vertical:                 # 竖版 logo：网页启动闪屏、离线页
-    source: brand/assets/source/brand-vertical.svg
+    source: shared/logo/brand-vertical.svg
     targets:
-      - { from: brand/assets/dashboard-public/logo_vertical_dark.svg,  to: dashboard/public/logo_vertical_dark.svg,  note: 浅色主题用（深色字） }
-      - { from: brand/assets/dashboard-public/logo_vertical_white.svg, to: dashboard/public/logo_vertical_white.svg, note: "深色主题用（应为白色字）⚠ 当前与深色版相同，待补素材" }
+      - { from: server/brand/assets/dashboard-public/logo_vertical_dark.svg,  to: dashboard/public/logo_vertical_dark.svg,  note: 浅色主题用（深色字） }
+      - { from: server/brand/assets/dashboard-public/logo_vertical_white.svg, to: dashboard/public/logo_vertical_white.svg, note: "深色主题用（应为白色字）⚠ 当前与深色版相同，待补素材" }
 
 text:
   # ---------- 网页端（dashboard） ----------

@@ -2,10 +2,10 @@
 """把 ZBSwork 品牌包应用到一份上游 Octop 源码树（幂等，可重复执行）。
 
 用法:
-    uv run --with pyyaml brand/apply.py --tree <上游源码根目录>
+    uv run --with pyyaml shared/tools/brand_apply.py --tree <上游源码根目录>
 
-规则全部来自 brand/brand.yaml。任何一条文字规则在目标文件中找不到原文且也没有
-已替换的结果时，返回非 0 —— 说明上游改了原文，需要人工更新 brand.yaml。
+规则全部来自 server/brand/brand.yaml。任何一条文字规则在目标文件中找不到原文且也没有
+已替换的结果时，返回非 0 —— 说明上游改了原文，需要人工更新 server/brand/brand.yaml。
 """
 from __future__ import annotations
 
@@ -17,12 +17,13 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
+SERVER = ROOT / "server"
 sys.stdout.reconfigure(encoding="utf-8")
 
 
 def load_spec() -> dict:
-    return yaml.safe_load((ROOT / "brand" / "brand.yaml").read_text(encoding="utf-8"))
+    return yaml.safe_load((SERVER / "brand" / "brand.yaml").read_text(encoding="utf-8"))
 
 
 def copy_slots(spec: dict, tree: Path) -> list[str]:
@@ -109,7 +110,7 @@ def main() -> int:
     errors = copy_slots(spec, tree) + apply_text(spec, tree) + apply_locales(spec, tree)
     for e in errors:
         print(f"[ERROR] {e}")
-    print("品牌应用失败，见上方错误。" if errors else "品牌应用完成。下一步: brand/check.py")
+    print("品牌应用失败，见上方错误。" if errors else "品牌应用完成。下一步: shared/tools/brand_check.py")
     return 1 if errors else 0
 
 
