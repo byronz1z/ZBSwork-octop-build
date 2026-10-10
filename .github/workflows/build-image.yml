@@ -13,14 +13,20 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0——recipe_rev.py 找"最后一次改配方输入的提交"需要完整历史
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v5
 
       - name: 构建镜像（上游 + 补丁 + 品牌 → context.tar → docker build）
+        # 不传 --reference：云端直接克隆官方仓库（prepare_lf.py 从 UPSTREAM.lock 取地址）
         run: uv run --no-project --with pyyaml shared/tools/build_image.py --platform linux/amd64
 
       - name: 验证镜像
+        # 同上，不传 --reference：施工树 .work/src 本身就是官方仓库的克隆（带官方 tag），
+        # verify_image.py 不传 --reference 时自动用它做比对来源，不写死任何本机路径
         run: |
           VERSION=$(uv run --no-project --with pyyaml python -c "
           import yaml, pathlib
