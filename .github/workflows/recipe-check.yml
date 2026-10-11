@@ -1,4 +1,4 @@
-# 配方门禁：每个 PR / main 推送都要过。不构建镜像、不发布（构建发布见 docs/协作规范.md 第 6 节，待建）。
+# 配方门禁：每个 PR / main 推送都要过。不构建镜像、不发布（出镜像并推到镜像仓库的流程是同目录的 build-image.yml）。
 name: recipe-check
 
 on:
