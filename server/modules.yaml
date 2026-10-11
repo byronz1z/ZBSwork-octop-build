@@ -2,9 +2,10 @@
 # - shared/tools/prepare.py      按 order 顺序应用 status=enabled 的补丁
 # - shared/tools/check_ownership.py  模块隔离门禁：同一上游文件只能有一个主人模块
 #
-# 分层、编号、隔离规则只写在一处：私有库 ZBSwork-OCTOP-service → docs/总览.md §2
+# 分层、编号、隔离规则记录在项目的本机指挥部目录：全景.md、规范.md
 # 编号 = 一块改动区域，终身不变；重做不换号；只有需求取消或官方已实现才作废（作废号不再使用）
 # 编号段：10–19 修复(fix) · 20–49 功能(feat，一个功能领域一个号) · 50 桌面端(desk，仅此一个) · 60 镜像打包(svc，仅此一个)
+# （编号段说明里"50 桌面端"的写法以全景为准：桌面端是单独一条线 desk/，不再叫 50 号）
 # 层级：L0 配置 · L1 插件 · L2 外部服务 · L3 核心补丁（本表 patches 全部是 L3）
 # 状态：enabled 启用 / candidate 候选（不参与构建）
 
