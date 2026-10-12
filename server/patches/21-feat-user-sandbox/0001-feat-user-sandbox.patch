@@ -1,0 +1,634 @@
+diff --git a/src/octop/api/common/validators.py b/src/octop/api/common/validators.py
+index e41ea4d38474acb22ed451d8a832c3a794eb9206..bd5b1a0652339e1856dea2b2b987094fc0c09c01 100644
+--- a/src/octop/api/common/validators.py
++++ b/src/octop/api/common/validators.py
+@@ -2,10 +2,14 @@
+ 
+ from __future__ import annotations
+ 
++import json
+ from typing import Any
+ 
+ from octop.infra.errors import ErrorCode, OctopError
+-from octop.infra.users.resource_policy import raise_if_backend_outside_user_root
++from octop.infra.users.resource_policy import (
++    enforced_sandbox_backend_name,
++    raise_if_backend_outside_user_root,
++)
+ from octop.infra.utils.host_dirs import assert_backend_root_dirs_allowed
+ 
+ 
+@@ -33,6 +37,44 @@ def assert_user_backend_root_dirs(
+         raise OctopError(ErrorCode.WORKSPACE_OP_UNSUPPORTED, str(exc)) from exc
+ 
+ 
++def assert_user_may_change_backend(
++    user: Any,
++    *,
++    current_config_json: str | None,
++    new_config: Any,
++    settings_repo: Any,
++) -> None:
++    """ZBS F5: block backend changes on agents when the sandbox switch is on.
++
++    Applies to non-admin *user* requests carrying a ``config`` dict whose
++    ``backend`` differs from the agent's stored one — including a *missing*
++    key, since PATCH replaces the whole config (a dropped key would silently
++    revert the agent to the official default backend). Admins pass through.
++    The switch itself is the settings key ``agent_enforced_backend``; when it
++    is unset everything behaves exactly like official Octop.
++    """
++    if user is None or getattr(user, "is_admin", False):
++        return
++    if not isinstance(new_config, dict):
++        return
++    if enforced_sandbox_backend_name(settings_repo) is None:
++        return
++    try:
++        stored = json.loads(current_config_json or "{}")
++    except (json.JSONDecodeError, TypeError):
++        stored = {}
++    if not isinstance(stored, dict):
++        stored = {}
++    stored_backend = stored.get("backend")
++    if "backend" in new_config and new_config["backend"] == stored_backend:
++        return
++    raise OctopError(
++        ErrorCode.FORBIDDEN,
++        "agent backend is enforced by the administrator and cannot be changed"
++        " (settings key 'agent_enforced_backend')",
++    )
++
++
+ async def validate_chat_mcp_servers(
+     server: Any,
+     *,
+diff --git a/src/octop/api/routers/agents.py b/src/octop/api/routers/agents.py
+index 2ea02c901bb80e0f1b93926dd5548259163853a9..49956ec1442e0f3a07aa974fa17fdfcc01b38bc1 100644
+--- a/src/octop/api/routers/agents.py
++++ b/src/octop/api/routers/agents.py
+@@ -11,7 +11,10 @@ from fastapi.responses import Response
+ 
+ from octop.api.common.agent import assert_agent_access_row, assert_agent_owner
+ from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
+-from octop.api.common.validators import assert_user_backend_root_dirs
++from octop.api.common.validators import (
++    assert_user_backend_root_dirs,
++    assert_user_may_change_backend,
++)
+ from octop.api.common.workspace import require_agent_workspace
+ from octop.api.deps import current_user, get_server
+ from octop.infra.agents.experts.avatar import (
+@@ -389,6 +392,12 @@ async def patch_agent(
+         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
+     _assert_agent_owner(row, user)
+     if body.config is not None and isinstance(body.config, dict):
++        assert_user_may_change_backend(
++            user,
++            current_config_json=row.config_json,
++            new_config=body.config,
++            settings_repo=server.services.settings_repo,
++        )
+         assert_user_backend_root_dirs(
+             user,
+             body.config.get("backend"),
+diff --git a/src/octop/api/routers/settings.py b/src/octop/api/routers/settings.py
+index c8b368d1b70adb895cfb36a77c98dc86404ded3f..b092ec2e302a53e7adc15bf08afd4b04640dc007 100644
+--- a/src/octop/api/routers/settings.py
++++ b/src/octop/api/routers/settings.py
+@@ -11,6 +11,7 @@ from octop.api.deps import current_user, get_server, require_permission
+ from octop.config import OctopConfig
+ from octop.infra.agents.security import tool_execution_may_pause
+ from octop.infra.auth.captcha import current_env, load_view, save_settings
++from octop.infra.errors import ErrorCode, OctopError
+ from octop.infra.users.identity import User
+ 
+ router = APIRouter()
+@@ -183,3 +184,81 @@ async def put_captcha_settings(
+         payload=f"source={view['source']}",
+     )
+     return CaptchaSettingsResponse.model_validate(view)
++
++
++class AgentSandboxSettingsResponse(BaseModel):
++    name: str | None = Field(
++        description="Enforced per-user sandbox storage backend name, or null when off.",
++    )
++
++
++class AgentSandboxSettingsPut(BaseModel):
++    name: str | None = Field(
++        description="A kind=docker, sandbox_scope=user storage backend name; null/empty disables.",
++    )
++
++
++@router.get(
++    "/settings/agent-sandbox",
++    summary="Enforced per-user sandbox backend (ZBS)",
++    response_model=AgentSandboxSettingsResponse,
++)
++async def get_agent_sandbox_settings(
++    _admin: User = Depends(require_permission("storage_backends")),
++    server: Any = Depends(get_server),
++) -> AgentSandboxSettingsResponse:
++    """Return the enforced per-user sandbox backend name (null = switch off)."""
++    from octop.infra.users.resource_policy import enforced_sandbox_backend_name
++
++    return AgentSandboxSettingsResponse(
++        name=enforced_sandbox_backend_name(server.services.settings_repo),
++    )
++
++
++@router.put(
++    "/settings/agent-sandbox",
++    summary="Set the enforced per-user sandbox backend (ZBS)",
++    response_model=AgentSandboxSettingsResponse,
++)
++async def put_agent_sandbox_settings(
++    body: AgentSandboxSettingsPut,
++    admin: User = Depends(require_permission("storage_backends")),
++    server: Any = Depends(get_server),
++) -> AgentSandboxSettingsResponse:
++    """Point the enforced-sandbox switch at a configured docker storage backend.
++
++    Non-admin users' new agents are then created on that backend, and those
++    users may no longer change their agents' backend. Pass ``null`` (or an
++    empty name) to turn the switch off.
++    """
++    from octop.infra.users.resource_policy import (
++        ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY,
++        enforced_sandbox_backend_name,
++    )
++
++    repo = server.services.storage_backend_repo
++    name = (body.name or "").strip() or None
++    if name is not None:
++        row = repo.get_by_name(name)
++        if row is None:
++            raise OctopError(
++                ErrorCode.STORAGE_BACKEND_REFERENCED,
++                f"storage backend {name!r} not found",
++            )
++        if str(row.kind or "").lower() != "docker" or not row.enabled:
++            raise OctopError(
++                ErrorCode.STORAGE_BACKEND_REFERENCED,
++                f"storage backend {name!r} must be an enabled docker backend",
++            )
++    if name is None:
++        server.services.settings_repo.delete(ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY)
++    else:
++        server.services.settings_repo.set(ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY, name)
++    server.services.audit_repo.write(
++        actor=admin.username,
++        action="settings.agent_sandbox.update",
++        target=name or "",
++    )
++    return AgentSandboxSettingsResponse(
++        name=enforced_sandbox_backend_name(server.services.settings_repo),
++    )
+diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
+index 46384d85676044d9c6886fad29b6e43dce44b20a..977333233567f8f63b6af32b34c39e52a19f5982 100644
+--- a/src/octop/infra/agents/manager.py
++++ b/src/octop/infra/agents/manager.py
+@@ -641,6 +641,12 @@ class AgentManager:
+                         self._repos.agent_repo,
+                         spec.user_id,
+                     )
++                # ZBS: enforced per-user sandbox — when the site-wide switch is
++                # set, non-admin owners' agents always land on the named
++                # storage backend recorded in settings (F4).
++                enforced_backend = self._enforced_user_sandbox_backend(spec.user_id)
++                if enforced_backend is not None:
++                    config["backend"] = enforced_backend
+                 raise_if_backend_outside_user_root(
+                     self._repos.user_policy_repo,
+                     spec.user_id,
+@@ -2521,6 +2527,35 @@ class AgentManager:
+     # Internal — validation
+     # ------------------------------------------------------------------
+ 
++    def _enforced_user_sandbox_backend(self, user_id: int) -> dict[str, Any] | None:
++        """Named-backend spec to force onto non-admin owners' new agents (ZBS F4).
++
++        Returns ``{"type": "named", "name": ...}`` when the site-wide switch
++        (settings key ``agent_enforced_backend``) is set and *user_id* is a
++        non-admin user; ``None`` otherwise (switch off, admin owner, or
++        unknown user — official Octop behavior everywhere).
++        """
++        from octop.infra.users.resource_policy import (
++            enforced_sandbox_backend_name,
++            user_row_is_admin,
++        )
++
++        # getattr: minimal test harnesses may stub ``repos`` without every
++        # attribute — a missing repo reads as "switch off" (official behavior).
++        settings_repo = getattr(self._repos, "settings_repo", None)
++        if settings_repo is None:
++            return None
++        name = enforced_sandbox_backend_name(settings_repo)
++        if not name:
++            return None
++        if self._repos.storage_backend_repo.get_by_name(name) is None:
++            logger.warning("agent_enforced_backend %r not found in storage_backends", name)
++            return None
++        owner = self._repos.user_repo.get(user_id)
++        if owner is None or user_row_is_admin(owner):
++            return None
++        return {"type": "named", "name": name}
++
+     def _assert_agent_name_available(
+         self,
+         user_id: int | None,
+diff --git a/src/octop/infra/backend/docker_spec.py b/src/octop/infra/backend/docker_spec.py
+index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..3e55051a951b29b89b2b411541289510eb46f21c 100644
+--- a/src/octop/infra/backend/docker_spec.py
++++ b/src/octop/infra/backend/docker_spec.py
+@@ -64,6 +64,9 @@ def enrich_docker_backend_spec(
+     - ``sandbox_scope`` defaults to ``agent``
+     - ``agent`` scope: set ``agent_id`` when missing
+     - ``user`` scope: set ``username`` from the agent owner when missing
++    - ``volumes`` keys may contain a ``{username}`` placeholder resolved to the
++      agent owner's username (user-scoped per-user mounts, e.g.
++      ``{"octop_sbx_{username}": {"bind": "/data/.octop/agents", "mode": "rw"}}``)
+     """
+     if str(spec.get("type") or "").lower() != "docker":
+         return spec
+@@ -75,9 +78,38 @@ def enrich_docker_backend_spec(
+         out.setdefault("agent_id", agent_id)
+     elif scope == "user" and username and not out.get("username"):
+         out["username"] = username
++    resolved = _resolve_volumes_username_placeholder(out.get("volumes"), username)
++    if resolved is not None:
++        out["volumes"] = resolved
+     return out
+ 
+ 
++def _resolve_volumes_username_placeholder(
++    volumes: Any,
++    username: str | None,
++) -> Any:
++    """Expand ``{username}`` in *volumes* mount keys to the owner's username.
++
++    Only mapping-style specs (docker-py ``{host: {"bind": ..., "mode": ...}}``)
++    carry user-configurable volume names; list specs keep short-form mount
++    strings unchanged. Without a resolvable *username* the placeholder is
++    left as-is so an explicit Docker error surfaces the misconfiguration
++    instead of silently mounting a shared volume.
++    """
++    if not isinstance(volumes, dict) or not username:
++        return None
++    resolved: dict[str, Any] = {}
++    changed = False
++    for host, bind in volumes.items():
++        key = str(host)
++        if "{username}" in key:
++            resolved[key.replace("{username}", str(username))] = bind
++            changed = True
++        else:
++            resolved[key] = bind
++    return resolved if changed else None
++
++
+ def inject_docker_global_environment(
+     spec: dict[str, Any],
+     env_file: str | Path | None,
+diff --git a/src/octop/infra/users/resource_policy.py b/src/octop/infra/users/resource_policy.py
+index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..a1cdc2ffd060e858cea094872db698e180a15694 100644
+--- a/src/octop/infra/users/resource_policy.py
++++ b/src/octop/infra/users/resource_policy.py
+@@ -6,6 +6,7 @@ import os
+ from collections.abc import Mapping, Sequence
+ from typing import Any
+ 
++from octop.infra.db.repos.user_roles import ADMIN_USER_ROLE_ID
+ from octop.infra.errors import ErrorCode, OctopError
+ from octop.infra.utils.host_dirs import (
+     assert_backend_root_dirs_allowed,
+@@ -19,6 +20,25 @@ POLICY_WORKSPACE_ROOT_DIR = "workspace_root_dir"
+ POLICY_TOKEN_QUOTA = "token_quota"
+ POLICY_MAX_AGENTS = "max_agents"
+ 
++# ZBS: settings key holding the site-wide enforced per-user sandbox backend
++# (a ``storage_backends.name`` of a kind=docker / sandbox_scope=user row).
++# Empty/absent = switch off = official Octop behavior everywhere.
++ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY = "agent_enforced_backend"
++
++
++def enforced_sandbox_backend_name(settings_repo: Any) -> str | None:
++    """Name of the enforced per-user sandbox backend, or ``None`` when off."""
++    raw = settings_repo.get(ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY)
++    if raw is None:
++        return None
++    name = str(raw).strip()
++    return name or None
++
++
++def user_row_is_admin(user_row: Any) -> bool:
++    """True when a ``users`` row (``UserRow``) carries the admin role."""
++    return getattr(user_row, "role", None) == ADMIN_USER_ROLE_ID
++
+ 
+ def active_policy_value(row: Any) -> str | None:
+     """Return ``value`` when the policy row exists and is enabled."""
+diff --git a/tests/unit/agents/test_user_sandbox_policy.py b/tests/unit/agents/test_user_sandbox_policy.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..89f40b8b9a98a7cf79e2c38c050aace9209e87db
+--- /dev/null
++++ b/tests/unit/agents/test_user_sandbox_policy.py
+@@ -0,0 +1,234 @@
++"""Unit tests for the ZBS enforced per-user sandbox policy (settings switch).
++
++Covers:
++- ``AgentManager.create`` backend override for non-admin owners (F4)
++- ``assert_user_may_change_backend`` guard for agent PATCH (F5)
++- ``enforced_sandbox_backend_name`` settings-key reading (switch on/off)
++"""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++import pytest
++
++from octop.api.common.validators import assert_user_may_change_backend
++from octop.config import OctopConfig
++from octop.infra.agents.manager import AgentCreateSpec, AgentManager
++from octop.infra.db.migrate import run_migrations
++from octop.infra.db.pool import SqlitePool
++from octop.infra.db.services import build_shared_services
++from octop.infra.errors import ErrorCode, OctopError
++from octop.infra.users.identity import Role, User
++from octop.infra.users.resource_policy import (
++    ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY,
++    enforced_sandbox_backend_name,
++)
++from octop.infra.utils.paths import PathLayout
++
++
++@pytest.fixture
++def manager(tmp_path: Path) -> AgentManager:
++    paths = PathLayout(tmp_path / ".octop")
++    paths.ensure_root()
++    db = SqlitePool(paths.db)
++    run_migrations(db)
++    services = build_shared_services(db=db, paths=paths, config=OctopConfig())
++    return AgentManager(repos=services.repos, paths=services.paths)
++
++
++def _seed_user(manager: AgentManager, *, role: str, name: str = "alice") -> int:
++    return manager._repos.user_repo.create(username=name, role=role, password_hash=None)
++
++
++def _switch_on(manager: AgentManager, name: str = "user-sandbox") -> None:
++    manager._repos.storage_backend_repo.create(
++        name=name,
++        kind="docker",
++        endpoint=None,
++        access_key=None,
++        secret_key=None,
++        bucket="python:3.12-slim",
++        region=None,
++        config_json=json.dumps({"sandbox_scope": "user", "sandbox_prefix": "octop_sandbox"}),
++        note=None,
++    )
++    manager._repos.settings_repo.set(ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY, name)
++
++
++# ---------------------------------------------------------------------------
++# switch reading
++# ---------------------------------------------------------------------------
++
++
++def test_switch_off_by_default(manager: AgentManager) -> None:
++    assert enforced_sandbox_backend_name(manager._repos.settings_repo) is None
++
++
++def test_switch_reads_settings_key(manager: AgentManager) -> None:
++    manager._repos.settings_repo.set(ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY, "sbx")
++    assert enforced_sandbox_backend_name(manager._repos.settings_repo) == "sbx"
++    manager._repos.settings_repo.set(ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY, "  ")
++    assert enforced_sandbox_backend_name(manager._repos.settings_repo) is None
++
++
++# ---------------------------------------------------------------------------
++# F4 — create() backend override
++# ---------------------------------------------------------------------------
++
++
++async def test_create_overrides_backend_for_non_admin(manager: AgentManager) -> None:
++    uid = _seed_user(manager, role="user")
++    _switch_on(manager)
++    row = await manager.create(
++        AgentCreateSpec(
++            name="sbx-agent",
++            user_id=uid,
++            config={
++                "memory": {"memory_enabled": False},
++                "backend": {"type": "local_shell", "root_dir": "/", "virtual_mode": True},
++            },
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"] == {"type": "named", "name": "user-sandbox"}
++
++
++async def test_create_official_backend_when_switch_off(manager: AgentManager) -> None:
++    uid = _seed_user(manager, role="user")
++    requested = {"type": "local_shell", "root_dir": "/", "virtual_mode": True}
++    row = await manager.create(
++        AgentCreateSpec(
++            name="plain-agent",
++            user_id=uid,
++            config={"memory": {"memory_enabled": False}, "backend": requested},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"] == requested
++
++
++async def test_create_admin_owner_not_overridden(manager: AgentManager) -> None:
++    uid = _seed_user(manager, role="admin")
++    _switch_on(manager)
++    requested = {"type": "local_shell", "root_dir": "/", "virtual_mode": True}
++    row = await manager.create(
++        AgentCreateSpec(
++            name="admin-agent",
++            user_id=uid,
++            config={"memory": {"memory_enabled": False}, "backend": requested},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"] == requested
++
++
++async def test_create_team_agent_also_overridden(manager: AgentManager) -> None:
++    uid = _seed_user(manager, role="user")
++    _switch_on(manager)
++    row = await manager.create(
++        AgentCreateSpec(
++            name="team",
++            user_id=uid,
++            kind="team",
++            config={},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"] == {"type": "named", "name": "user-sandbox"}
++
++
++# ---------------------------------------------------------------------------
++# F5 — PATCH backend change guard
++# ---------------------------------------------------------------------------
++
++
++def _user(is_admin: bool) -> User:
++    return User(
++        id=1,
++        username="u",
++        role=Role.ADMIN if is_admin else Role.USER,
++        display_name=None,
++    )
++
++
++def _settings_repo(switch: str | None) -> object:
++    class _Repo:
++        def __init__(self, value: str | None) -> None:
++            self.value = value
++
++        def get(self, key: str) -> str | None:
++            return self.value if key == ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY else None
++
++    return _Repo(switch)
++
++
++_STORED = json.dumps({"backend": {"type": "named", "name": "user-sandbox"}, "persona": "INTJ"})
++
++
++def test_patch_blocks_backend_change_when_switch_on() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={"backend": {"type": "local_shell", "root_dir": "/"}},
++            settings_repo=_settings_repo("user-sandbox"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_missing_backend_key_when_switch_on() -> None:
++    # PATCH replaces the whole config blob — dropping the key would revert
++    # the agent to the official default backend, so it must be rejected too.
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={"persona": "INTJ"},
++            settings_repo=_settings_repo("user-sandbox"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_allows_same_backend_when_switch_on() -> None:
++    assert_user_may_change_backend(
++        _user(False),
++        current_config_json=_STORED,
++        new_config={
++            "backend": {"type": "named", "name": "user-sandbox"},
++            "persona": "ENFP",
++        },
++        settings_repo=_settings_repo("user-sandbox"),
++    )
++
++
++def test_patch_allows_anything_when_switch_off() -> None:
++    assert_user_may_change_backend(
++        _user(False),
++        current_config_json=_STORED,
++        new_config={"persona": "ENFP"},
++        settings_repo=_settings_repo(None),
++    )
++
++
++def test_patch_admin_bypasses_guard() -> None:
++    assert_user_may_change_backend(
++        _user(True),
++        current_config_json=_STORED,
++        new_config={"backend": {"type": "local_shell", "root_dir": "/"}},
++        settings_repo=_settings_repo("user-sandbox"),
++    )
++
++
++def test_patch_non_dict_config_ignored() -> None:
++    assert_user_may_change_backend(
++        _user(False),
++        current_config_json=_STORED,
++        new_config=None,
++        settings_repo=_settings_repo("user-sandbox"),
++    )
+diff --git a/tests/unit/test_storage_spec.py b/tests/unit/test_storage_spec.py
+index 4d800e19e3bbe2c4bcc16401669bcd625341012f..41e1402cf0c4e395061c13e8432f20e42de4444f 100644
+--- a/tests/unit/test_storage_spec.py
++++ b/tests/unit/test_storage_spec.py
+@@ -253,6 +253,57 @@ def test_enrich_docker_backend_spec_defaults() -> None:
+     assert "agent_id" not in fixed or fixed.get("agent_id") == "ZE6GR2"
+ 
+ 
++def test_enrich_docker_backend_spec_resolves_volumes_username_placeholder() -> None:
++    from octop.infra.backend.docker_spec import enrich_docker_backend_spec
++
++    spec = enrich_docker_backend_spec(
++        {
++            "type": "docker",
++            "image": "python:3.12-slim",
++            "sandbox_scope": "user",
++            "volumes": {
++                "octop_sbx_{username}": {"bind": "/data/.octop/agents", "mode": "rw"},
++                "plain_volume": {"bind": "/mnt/extra", "mode": "ro"},
++            },
++        },
++        agent_id="ZE6GR2",
++        username="alice",
++    )
++    assert spec["volumes"] == {
++        "octop_sbx_alice": {"bind": "/data/.octop/agents", "mode": "rw"},
++        "plain_volume": {"bind": "/mnt/extra", "mode": "ro"},
++    }
++
++
++def test_enrich_docker_backend_spec_keeps_placeholder_without_username() -> None:
++    from octop.infra.backend.docker_spec import enrich_docker_backend_spec
++
++    volumes = {"octop_sbx_{username}": {"bind": "/data/.octop/agents", "mode": "rw"}}
++    spec = enrich_docker_backend_spec(
++        {
++            "type": "docker",
++            "image": "python:3.12-slim",
++            "sandbox_scope": "agent",
++            "volumes": dict(volumes),
++        },
++        agent_id="ZE6GR2",
++        username=None,
++    )
++    assert spec["volumes"] == volumes
++
++
++def test_enrich_docker_backend_spec_no_placeholder_leaves_volumes() -> None:
++    from octop.infra.backend.docker_spec import enrich_docker_backend_spec
++
++    volumes = {"data_vol": {"bind": "/data", "mode": "rw"}}
++    spec = enrich_docker_backend_spec(
++        {"type": "docker", "image": "x", "volumes": dict(volumes)},
++        agent_id="ZE6GR2",
++        username="alice",
++    )
++    assert spec["volumes"] == volumes
++
++
+ def test_inject_docker_global_environment_sets_file() -> None:
+     from octop.infra.backend.docker_spec import inject_docker_global_environment
+ 

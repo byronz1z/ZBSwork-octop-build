@@ -35,6 +35,16 @@ patches:
     in_production: yes        # 生产镜像 octop:pg-1.0.2b4-r2 含此逻辑（2026-10-08 实测）
     legacy_ids: [SRV-1]
 
+  - id: 21-feat-user-sandbox
+    name_zh: 按用户沙箱——默认进沙箱、普通用户不能改运行方式（F3/F4/F5）
+    layer: L3
+    scope: [docker]
+    status: enabled
+    order: 21
+    upstream_pr: no           # ZBS 自有权限收紧策略，上游无意向；设计见 patches/21-*/README.md
+    verified: {v1.0.2b6: strict}
+    in_production: no         # 2026-10-12 新增（ZT-026 第 2 步），本机单元测试通过，未部署
+
   - id: 60-svc-runtime-extras
     name_zh: 镜像加装本地向量/OCR 依赖（uv extras）+ 用户实际用到的工具（0002，ZT-018）
     layer: L3
