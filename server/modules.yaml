@@ -8,6 +8,10 @@
 # 层级：L0 配置 · L1 插件 · L2 外部服务 · L3 核心补丁（本表 patches 全部是 L3）
 # 状态：enabled 启用 / candidate 候选（不参与构建）
 
+# 2026-10-12 ZT-025 官方升级（task/ZT-025-official-upgrade）：上游锁定升至 v1.0.2b6（eb28011249c0）。
+# 本机适配实测（build 任务克隆）：check_ownership.py、brand_check.py --self、build_image.py --no-build
+# 均退出码 0；版本锁核对、补丁 10/60 共 3 个 patch 严格 apply、品牌检查全部通过。
+# 生产b4信息来源为ZT-023记录，本任务未实测当前生产；原in_production字段保留，不据本机适配结果改写。
 upstream_lock: UPSTREAM.lock
 
 brand:
