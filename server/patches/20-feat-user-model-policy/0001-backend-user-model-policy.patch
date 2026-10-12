@@ -1,0 +1,1709 @@
+diff --git a/src/octop/api/routers/chat/turn.py b/src/octop/api/routers/chat/turn.py
+index d4de095f4291da5957983ef7ec410a8cb3a177b0..ea89003688f6cc390829ec7b928960376fa7d5d6 100644
+--- a/src/octop/api/routers/chat/turn.py
++++ b/src/octop/api/routers/chat/turn.py
+@@ -272,6 +272,17 @@ async def prepare_dashboard_turn(
+             ErrorCode.SLASH_BAD_ARGS,
+             "default_model must reference an enabled model",
+         )
++    # ZBS: non-admin users may only pick models inside their allowed_models
++    # whitelist (no policy set = unrestricted, official behavior).
++    if model_ref is not None:
++        from octop.infra.users.resource_policy import assert_model_allowed_for_user  # noqa: PLC0415
++
++        assert_model_allowed_for_user(
++            server.services.user_policy_repo,
++            server.services.user_repo,
++            user.id,
++            model_ref,
++        )
+     composer_updates: dict[str, Any] = {}
+     if model_ref is not None:
+         composer_updates["model_ref"] = model_ref
+diff --git a/src/octop/api/routers/cron.py b/src/octop/api/routers/cron.py
+index 6e7bc2c29999760287b7baa5176f2dbc50f32c39..1658a1c431cfd94c8f6bea19150feb7475a72f85 100644
+--- a/src/octop/api/routers/cron.py
++++ b/src/octop/api/routers/cron.py
+@@ -17,6 +17,7 @@ from octop.infra.cron.task_type import (
+ )
+ from octop.infra.cron.trigger import build_trigger
+ from octop.infra.errors import ErrorCode, OctopError
++from octop.infra.users.resource_policy import assert_model_allowed_for_user
+ from octop.infra.utils.ulid import new_cron_id
+ 
+ router = APIRouter()
+@@ -140,6 +141,16 @@ async def create_cron(
+     mcp_servers = (
+         await validate_chat_mcp_servers(server, user_id=user.id, names=body.mcp_servers) or []
+     )
++    # ZBS: an explicitly chosen cron model must be inside the acting user's
++    # allowed_models whitelist (no policy set = unrestricted).
++    cron_model = (body.model or "").strip() or None
++    if cron_model is not None:
++        assert_model_allowed_for_user(
++            server.services.user_policy_repo,
++            server.services.user_repo,
++            user.id,
++            cron_model,
++        )
+     spec = CronCreateSpec(
+         cron_id=cron_id,
+         agent_id=agent_id,
+@@ -150,7 +161,7 @@ async def create_cron(
+         session_key=body.session_key,
+         fresh_thread=body.fresh_thread,
+         enabled=body.enabled,
+-        model=(body.model or "").strip() or None,
++        model=cron_model,
+         task_type=normalize_cron_task_type(body.task_type),
+         mcp_servers=mcp_servers,
+         username=user.username,
+@@ -202,6 +213,17 @@ async def patch_cron(
+         mcp_arg = await validate_chat_mcp_servers(
+             server, user_id=user.id, names=body.mcp_servers or []
+         )
++    # ZBS: an explicitly chosen cron model must be inside the acting user's
++    # allowed_models whitelist (no policy set = unrestricted).
++    if "model" in patch_fields:
++        patched_model = (body.model or "").strip() or None
++        if patched_model is not None:
++            assert_model_allowed_for_user(
++                server.services.user_policy_repo,
++                server.services.user_repo,
++                user.id,
++                patched_model,
++            )
+     row = await mgr.update(
+         cron_id,
+         trigger=body.trigger,
+diff --git a/src/octop/api/routers/preferences.py b/src/octop/api/routers/preferences.py
+index e5e551016dda29f4348c673debb18cce8b3b4963..d1db62f353cd9c52c31c0b07c59b375a04c5a7f7 100644
+--- a/src/octop/api/routers/preferences.py
++++ b/src/octop/api/routers/preferences.py
+@@ -176,6 +176,19 @@ async def patch_preferences(
+                     ErrorCode.SLASH_BAD_ARGS,
+                     "preferred_model must reference an enabled model",
+                 )
++            # ZBS: non-admin users may only prefer a model inside their
++            # allowed_models whitelist (no policy set = unrestricted).
++            if preferred is not None:
++                from octop.infra.users.resource_policy import (  # noqa: PLC0415
++                    assert_model_allowed_for_user,
++                )
++
++                assert_model_allowed_for_user(
++                    server.services.user_policy_repo,
++                    server.services.user_repo,
++                    user.id,
++                    preferred,
++                )
+         reasoning = None
+         if body.model_reasoning is not None:
+             reasoning = {
+diff --git a/src/octop/api/routers/providers.py b/src/octop/api/routers/providers.py
+index c9d01285b4c94174d11b807b99bfef17f2c1f64f..b74d6358c717e6b1587b2169ade65667734e79f9 100644
+--- a/src/octop/api/routers/providers.py
++++ b/src/octop/api/routers/providers.py
+@@ -117,7 +117,7 @@ async def _maybe_refresh_codex_row(server: Any, row: Any) -> Any:
+     return row
+ 
+ 
+-def _row_to_dict(r: Any) -> dict[str, Any]:
++def _row_to_dict(r: Any, *, include_api_key: bool = True) -> dict[str, Any]:
+     models: list[dict[str, Any]] = []
+     for stored in r.get_models():
+         model = dict(stored)
+@@ -131,13 +131,44 @@ def _row_to_dict(r: Any) -> dict[str, Any]:
+         "name": r.name,
+         "kind": r.kind,
+         "base_url": r.base_url,
+-        "api_key": r.api_key,
++        "api_key": r.api_key if include_api_key else None,
+         "models": models,
+         "note": r.note,
+         "enabled": bool(r.enabled),
+     }
+ 
+ 
++def _user_allowed_models(user: Any, server: Any) -> list[str] | None:
++    """ZBS: the acting user's ``allowed_models`` whitelist (None = unrestricted).
++
++    Admins (and users with no policy set) are never restricted.
++    """
++    if user is not None and bool(getattr(user, "is_admin", False)):
++        return None
++    from octop.infra.users.resource_policy import allowed_models_for_user_id  # noqa: PLC0415
++
++    return allowed_models_for_user_id(
++        server.services.user_policy_repo,
++        server.services.user_repo,
++        int(user.id) if user is not None else 0,
++    )
++
++
++def _filter_resolved_by_allowlist(
++    resolved: list[dict[str, Any]], allowed_models: list[str] | None
++) -> list[dict[str, Any]]:
++    if allowed_models is None:
++        return resolved
++    allowed = {
++        f"{str(item).split('/', 1)[0]}/{str(item).split('/', 1)[1]}" for item in allowed_models
++    }
++    return [
++        entry
++        for entry in resolved
++        if f"{entry.get('provider_name')}/{entry.get('model')}" in allowed
++    ]
++
++
+ @router.get("/presets")
+ async def list_provider_presets(
+     _: Any = Depends(current_user),
+@@ -148,14 +179,17 @@ async def list_provider_presets(
+ 
+ @router.get("/resolved")
+ async def list_resolved_models(
+-    _: Any = Depends(current_user),
++    user: Any = Depends(current_user),
+     server: Any = Depends(get_server),
+ ) -> list[dict[str, Any]]:
+     """Return all enabled models across all providers.
+ 
+     Used by the Agent model selector to show available candidates.
++    ZBS: non-admin users only see models inside their ``allowed_models``
++    whitelist (no policy set = unrestricted, official behavior).
+     """
+-    return _list_resolved_models(server.services.provider_repo.list_all())
++    resolved = _list_resolved_models(server.services.provider_repo.list_all())
++    return _filter_resolved_by_allowlist(resolved, _user_allowed_models(user, server))
+ 
+ 
+ class ActiveModelBody(BaseModel):
+@@ -188,11 +222,21 @@ async def set_active_model(
+ 
+ @router.get("")
+ async def list_providers(
+-    _: Any = Depends(current_user),
++    user: Any = Depends(current_user),
+     server: Any = Depends(get_server),
+ ) -> list[dict[str, Any]]:
+-    """Return all providers. Read-only for regular users."""
+-    return [_row_to_dict(r) for r in server.services.provider_repo.list_all()]
++    """Return all providers. Read-only for regular users.
++
++    ZBS: the raw ``api_key`` is only returned to admins; non-admin callers
++    get ``api_key: None``. The dashboard admin page reads providers via
++    ``/api/admin/providers`` (providers permission), so its display and
++    edit flows are unaffected.
++    """
++    include_key = bool(getattr(user, "is_admin", False))
++    return [
++        _row_to_dict(r, include_api_key=include_key)
++        for r in server.services.provider_repo.list_all()
++    ]
+ 
+ 
+ # ── Admin endpoints ─────────────────────────────────────────────────────────
+diff --git a/src/octop/api/routers/user_roles.py b/src/octop/api/routers/user_roles.py
+index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46d728faf4 100644
+--- a/src/octop/api/routers/user_roles.py
++++ b/src/octop/api/routers/user_roles.py
+@@ -23,10 +23,14 @@ from octop.infra.errors import ErrorCode, OctopError
+ from octop.infra.users.identity import User
+ from octop.infra.users.permissions import ALL_PERMISSION_KEYS, validate_permission_keys
+ from octop.infra.users.resource_policy import (
++    POLICY_ALLOWED_MODELS,
+     POLICY_MAX_AGENTS,
+     POLICY_TOKEN_QUOTA,
+     POLICY_WORKSPACE_ROOT_DIR,
++    allowed_models_json,
++    allowed_models_of,
+     max_agents_of,
++    normalize_allowed_models,
+     normalize_max_agents,
+     normalize_token_quota,
+     normalize_workspace_root_dir,
+@@ -40,6 +44,7 @@ _KNOWN_POLICIES = {
+     POLICY_WORKSPACE_ROOT_DIR,
+     POLICY_TOKEN_QUOTA,
+     POLICY_MAX_AGENTS,
++    POLICY_ALLOWED_MODELS,
+ }
+ 
+ 
+@@ -98,6 +103,7 @@ def _policies_from_fields(
+     workspace_root_dir: str | None,
+     token_quota: int | None,
+     max_agents: int | None,
++    allowed_models: list[str] | None = None,
+ ) -> list[tuple[str, str]]:
+     items: list[tuple[str, str]] = []
+     root = normalize_workspace_root_dir(workspace_root_dir)
+@@ -109,6 +115,11 @@ def _policies_from_fields(
+     agents = normalize_max_agents(max_agents)
+     if agents is not None:
+         items.append((POLICY_MAX_AGENTS, str(agents)))
++    # ZBS: whitelist as a JSON array in the role's policy value so the plain
++    # ``[{name, value}]`` role payload can carry it verbatim.
++    models = normalize_allowed_models(allowed_models)
++    if models:
++        items.append((POLICY_ALLOWED_MODELS, allowed_models_json(models) or ""))
+     return items
+ 
+ 
+@@ -125,6 +136,7 @@ def _policies_from_items(items: list[PolicyItem]) -> list[tuple[str, str]]:
+         workspace_root_dir=by_name.get(POLICY_WORKSPACE_ROOT_DIR),
+         token_quota=token_quota_of(by_name.get(POLICY_TOKEN_QUOTA)),
+         max_agents=max_agents_of(by_name.get(POLICY_MAX_AGENTS)),
++        allowed_models=allowed_models_of(by_name.get(POLICY_ALLOWED_MODELS)),
+     )
+ 
+ 
+@@ -148,6 +160,7 @@ def public_role(row: UserRoleRow, *, avatar_url: str | None = None) -> dict[str,
+         workspace_root_dir = None
+         token_quota = None
+         max_agents = None
++        allowed_models = None
+     else:
+         permissions = list(row.permissions)
+         system_role = "user"
+@@ -155,6 +168,7 @@ def public_role(row: UserRoleRow, *, avatar_url: str | None = None) -> dict[str,
+         workspace_root_dir = workspace_root_dir_of(row.policy_value(POLICY_WORKSPACE_ROOT_DIR))
+         token_quota = token_quota_of(row.policy_value(POLICY_TOKEN_QUOTA))
+         max_agents = max_agents_of(row.policy_value(POLICY_MAX_AGENTS))
++        allowed_models = allowed_models_of(row.policy_value(POLICY_ALLOWED_MODELS))
+     return {
+         "user_role_id": row.user_role_id,
+         "user_role_name": row.user_role_name,
+@@ -167,6 +181,7 @@ def public_role(row: UserRoleRow, *, avatar_url: str | None = None) -> dict[str,
+         "workspace_root_dir": workspace_root_dir,
+         "token_quota": token_quota,
+         "max_agents": max_agents,
++        "allowed_models": allowed_models,
+         "created_at": row.created_at,
+         "updated_at": row.updated_at,
+         "avatar_icon": row.avatar_icon,
+diff --git a/src/octop/api/routers/users.py b/src/octop/api/routers/users.py
+index 864597079ff5a9b88bc9d89bd49af236e45d4a2d..0d8d23da7f35b6d52c675c0b9837f0559e42ab5b 100644
+--- a/src/octop/api/routers/users.py
++++ b/src/octop/api/routers/users.py
+@@ -22,7 +22,14 @@ from octop.infra.utils.locale import resolve_request_locale
+ 
+ router = APIRouter()
+ 
+-UserBatchAction = Literal["enable", "disable", "delete", "set_token_quota", "set_max_agents"]
++UserBatchAction = Literal[
++    "enable",
++    "disable",
++    "delete",
++    "set_token_quota",
++    "set_max_agents",
++    "set_allowed_models",
++]
+ 
+ 
+ class UserCreateBody(BaseModel):
+@@ -39,6 +46,10 @@ class UserCreateBody(BaseModel):
+     workspace_root_dir: str | None = None
+     token_quota: int | None = Field(default=None, ge=0)
+     max_agents: int | None = Field(default=None, ge=0)
++    allowed_models: list[str] | None = Field(
++        default=None,
++        description="ZBS: model refs ('provider/model') the user may use; null = no limit.",
++    )
+ 
+ 
+ class UserPatchBody(BaseModel):
+@@ -55,6 +66,10 @@ class UserPatchBody(BaseModel):
+     workspace_root_dir: str | None = None
+     token_quota: int | None = Field(default=None, ge=0)
+     max_agents: int | None = Field(default=None, ge=0)
++    allowed_models: list[str] | None = Field(
++        default=None,
++        description="ZBS: model refs ('provider/model') the user may use; null = no limit.",
++    )
+ 
+ 
+ class ResetPasswordBody(BaseModel):
+@@ -74,6 +89,10 @@ class UserBatchBody(BaseModel):
+         ge=0,
+         description="Used by set_max_agents. null clears the limit (unlimited).",
+     )
++    allowed_models: list[str] | None = Field(
++        default=None,
++        description="Used by set_allowed_models. null clears the whitelist (unlimited).",
++    )
+ 
+ 
+ class UserBatchItemResult(BaseModel):
+@@ -163,9 +182,11 @@ def _policy_kwargs_replace_from_pairs(pairs: list[tuple[str, str]]) -> dict[str,
+     linger after a switch (including to admin, which has no resource limits).
+     """
+     from octop.infra.users.resource_policy import (
++        POLICY_ALLOWED_MODELS,
+         POLICY_MAX_AGENTS,
+         POLICY_TOKEN_QUOTA,
+         POLICY_WORKSPACE_ROOT_DIR,
++        allowed_models_of,
+         max_agents_of,
+         token_quota_of,
+     )
+@@ -175,6 +196,7 @@ def _policy_kwargs_replace_from_pairs(pairs: list[tuple[str, str]]) -> dict[str,
+         "workspace_root_dir": by_name.get(POLICY_WORKSPACE_ROOT_DIR),
+         "token_quota": token_quota_of(by_name.get(POLICY_TOKEN_QUOTA)),
+         "max_agents": max_agents_of(by_name.get(POLICY_MAX_AGENTS)),
++        "allowed_models": allowed_models_of(by_name.get(POLICY_ALLOWED_MODELS)),
+     }
+ 
+ 
+@@ -197,6 +219,8 @@ def _policy_kwargs_from_body(body: UserCreateBody | UserPatchBody) -> dict[str,
+         policy_kwargs["token_quota"] = body.token_quota
+     if "max_agents" in body.model_fields_set:
+         policy_kwargs["max_agents"] = body.max_agents
++    if "allowed_models" in body.model_fields_set:
++        policy_kwargs["allowed_models"] = body.allowed_models
+     return policy_kwargs
+ 
+ 
+@@ -302,6 +326,10 @@ async def create_user(
+         normalize_token_quota(policy_kwargs["token_quota"])
+     if "max_agents" in policy_kwargs:
+         normalize_max_agents(policy_kwargs["max_agents"])
++    if "allowed_models" in policy_kwargs:
++        from octop.infra.users.resource_policy import normalize_allowed_models  # noqa: PLC0415
++
++        normalize_allowed_models(policy_kwargs["allowed_models"])
+     role_name = (
+         _clean_role_name(body.role_name) if "role_name" in body.model_fields_set else template_name
+     )
+@@ -332,6 +360,7 @@ async def _batch_apply_one(
+     action: UserBatchAction,
+     token_quota: int | None,
+     max_agents: int | None,
++    allowed_models: list[str] | None,
+ ) -> UserBatchItemResult:
+     if action in ("disable", "delete") and user_id == actor.id:
+         return _batch_fail(
+@@ -363,6 +392,11 @@ async def _batch_apply_one(
+                 row.username,
+                 max_agents=max_agents,
+             )
++        elif action == "set_allowed_models":
++            await server.user_manager.set_resource_policy(
++                row.username,
++                allowed_models=allowed_models,
++            )
+         else:
+             return _batch_fail(
+                 user_id,
+@@ -383,8 +417,8 @@ async def _batch_apply_one(
+     summary="Batch enable, disable, delete, or set resource policies",
+     description=(
+         "Apply one action to many users. Per-user failures do not abort the batch. "
+-        "Disable and delete skip the current actor. For set_token_quota / set_max_agents, "
+-        "a null value clears the limit."
++        "Disable and delete skip the current actor. For set_token_quota / set_max_agents / "
++        "set_allowed_models, a null value clears the limit."
+     ),
+     response_model=UserBatchResponse,
+ )
+@@ -397,6 +431,10 @@ async def batch_users(
+         normalize_token_quota(body.token_quota)
+     if body.action == "set_max_agents":
+         normalize_max_agents(body.max_agents)
++    if body.action == "set_allowed_models":
++        from octop.infra.users.resource_policy import normalize_allowed_models  # noqa: PLC0415
++
++        normalize_allowed_models(body.allowed_models)
+ 
+     # Preserve order while dropping duplicates.
+     seen: set[int] = set()
+@@ -417,6 +455,7 @@ async def batch_users(
+                 action=body.action,
+                 token_quota=body.token_quota,
+                 max_agents=body.max_agents,
++                allowed_models=body.allowed_models,
+             )
+         )
+     succeeded = sum(1 for item in results if item.ok)
+diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
+index 46384d85676044d9c6886fad29b6e43dce44b20a..34f881975c1c79279e5471533f0f779575fda0e5 100644
+--- a/src/octop/infra/agents/manager.py
++++ b/src/octop/infra/agents/manager.py
+@@ -1360,14 +1360,22 @@ class AgentManager:
+         if self._harness_manager is not None:
+             self._harness_manager.clear_thread_model(agent_id, thread_id)
+ 
+-    def resolve_fallback_model_ref(self) -> str | None:
+-        """Settings active model when usable, else the first enabled catalog model."""
++    def resolve_fallback_model_ref(self, allowed_models: Any | None = None) -> str | None:
++        """Settings active model when usable, else the first enabled catalog model.
++
++        ZBS: when *allowed_models* is set, the fallback must come from the
++        whitelist — active model first (if listed), else the first usable
++        whitelisted model. Returns ``None`` when none of the whitelisted
++        models is usable (never silently falls back to a non-whitelisted one).
++        """
+         name, model_id = self._repos.settings_repo.get_active_model()
+         if name and model_id:
+             ref = f"{name}/{model_id}"
+-            if self._providers.is_model_ref_usable(ref):
++            if self._providers.is_model_ref_usable(ref) and (
++                allowed_models is None or ref in set(allowed_models)
++            ):
+                 return ref
+-        return self._providers.resolve_first_model_ref()
++        return self._providers.resolve_first_model_ref(allowed_models)
+ 
+     # ------------------------------------------------------------------
+     # Hot-reload — rebuild harness agents after config / provider changes
+diff --git a/src/octop/infra/agents/providers/store.py b/src/octop/infra/agents/providers/store.py
+index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..a0cf7830ac3b4e6c21018e508e912952a8edb539 100644
+--- a/src/octop/infra/agents/providers/store.py
++++ b/src/octop/infra/agents/providers/store.py
+@@ -3,7 +3,7 @@
+ from __future__ import annotations
+ 
+ import json
+-from collections.abc import Callable, Iterator
++from collections.abc import Callable, Iterator, Sequence
+ from typing import TYPE_CHECKING, Any
+ 
+ from octop_harness.config import ModelConfig, ProviderConfig
+@@ -99,6 +99,16 @@ def clear_stale_pins_for_provider(
+     return cleared
+ 
+ 
++def model_ref_passes_allowlist(ref: str, allowed_models: Sequence[str] | None) -> bool:
++    """ZBS: True when *ref* passes a user's ``allowed_models`` whitelist.
++
++    ``None`` (no policy set) allows everything — official behavior.
++    """
++    if allowed_models is None:
++        return True
++    return (ref or "").strip() in {str(item).strip() for item in allowed_models}
++
++
+ class ProviderStore:
+     """Maps persisted provider rows to harness runtime provider configs."""
+ 
+@@ -189,16 +199,25 @@ class ProviderStore:
+                 return _model_dict_supports_image(model)
+         return False
+ 
+-    def resolve_multimodal_model_ref(self) -> str | None:
+-        """First enabled image-capable model across usable providers."""
++    def resolve_multimodal_model_ref(
++        self, allowed_models: Sequence[str] | None = None
++    ) -> str | None:
++        """First enabled image-capable model across usable providers.
++
++        ZBS: when *allowed_models* is set, only whitelisted refs are eligible.
++        """
+         for row in self.iter_usable_rows():
+             for model in row.get_models():
+                 if not is_chat_eligible_model(
+                     model, provider_name=row.name, provider_api_key=row.api_key
+                 ):
+                     continue
+-                if _model_dict_supports_image(model):
+-                    return f"{row.name}/{model['id']}"
++                if not _model_dict_supports_image(model):
++                    continue
++                ref = f"{row.name}/{model['id']}"
++                if not model_ref_passes_allowlist(ref, allowed_models):
++                    continue
++                return ref
+         return None
+ 
+     def resolve_model_for_multimodal_turn(
+@@ -206,18 +225,34 @@ class ProviderStore:
+         model_ref: str | None,
+         *,
+         needs_multimodal: bool,
++        allowed_models: Sequence[str] | None = None,
+     ) -> str | None:
+-        """Keep explicit ref when it supports vision; else upgrade to a vision model."""
++        """Keep explicit ref when it supports vision; else upgrade to a vision ref.
++
++        ZBS: when *allowed_models* is set, the explicit ref must be whitelisted
++        and the vision upgrade only picks a whitelisted model. An explicit ref
++        outside the whitelist is dropped (returns ``None``), never silently
++        swapped for a non-whitelisted upgrade.
++        """
+         if not needs_multimodal:
+-            return model_ref
++            if model_ref is None or model_ref_passes_allowlist(model_ref, allowed_models):
++                return model_ref
++            return None
+         ref = (model_ref or "").strip() or None
+-        if ref and self.is_model_ref_multimodal(ref):
++        if (
++            ref
++            and self.is_model_ref_multimodal(ref)
++            and model_ref_passes_allowlist(ref, allowed_models)
++        ):
+             return ref
+-        upgraded = self.resolve_multimodal_model_ref()
+-        return upgraded or ref
++        upgraded = self.resolve_multimodal_model_ref(allowed_models)
++        return upgraded or None
+ 
+-    def resolve_first_model_ref(self) -> str | None:
+-        """First chat-eligible enabled model across usable providers."""
++    def resolve_first_model_ref(self, allowed_models: Sequence[str] | None = None) -> str | None:
++        """First chat-eligible enabled model across usable providers.
++
++        ZBS: when *allowed_models* is set, only whitelisted refs are eligible.
++        """
+         for row in self.iter_usable_rows():
+             for model in row.get_models():
+                 if not is_chat_eligible_model(
+@@ -225,8 +260,12 @@ class ProviderStore:
+                 ):
+                     continue
+                 model_id = str(model.get("id") or "").strip()
+-                if model_id:
+-                    return f"{row.name}/{model_id}"
++                if not model_id:
++                    continue
++                ref = f"{row.name}/{model_id}"
++                if not model_ref_passes_allowlist(ref, allowed_models):
++                    continue
++                return ref
+         return None
+ 
+     def is_model_ref_usable(self, ref: str) -> bool:
+diff --git a/src/octop/infra/cron/delivery.py b/src/octop/infra/cron/delivery.py
+index a0017279889bf47d539afbeb36b2b93eda32df04..c62c00e3c96d28d15904aad69eb119d0099ba69e 100644
+--- a/src/octop/infra/cron/delivery.py
++++ b/src/octop/infra/cron/delivery.py
+@@ -218,11 +218,29 @@ class CronDeliveryService:
+ 
+         row = self._agent_manager.get_row(command.agent_id)
+         default_model = (row.default_model if row is not None else None) or None
++        # ZBS: the cron model must sit inside the job owner's allowed_models
++        # whitelist (no policy set = unrestricted, official behavior). A
++        # non-whitelisted stored model is dropped so the harness falls back
++        # to routing (composer context still carries it for display only).
++        cron_model = command.model
++        if cron_model is not None:
++            from octop.infra.agents.providers.store import (  # noqa: PLC0415
++                model_ref_passes_allowlist,
++            )
++            from octop.infra.users.resource_policy import (  # noqa: PLC0415
++                allowed_models_for_user_id,
++            )
++
++            allowed = allowed_models_for_user_id(
++                self._repos.user_policy_repo, self._repos.user_repo, session.user_id
++            )
++            if not model_ref_passes_allowlist(cron_model, allowed):
++                cron_model = None
+         composer = build_composer_context(
+             mcp_servers=servers or None,
+             skills=None,
+             target_agent_ids=None,
+-            model_ref=command.model,
++            model_ref=cron_model,
+             default_model=default_model,
+         )
+         message_kwargs = {COMPOSER_CTX_KEY: composer} if composer else None
+@@ -233,7 +251,7 @@ class CronDeliveryService:
+             session_key=command.session_key,
+             source=session.channel_type,
+             text=command.prompt,
+-            model=command.model,
++            model=cron_model,
+             message_kwargs=message_kwargs,
+         )
+         if servers:
+diff --git a/src/octop/infra/gateway/process/processor.py b/src/octop/infra/gateway/process/processor.py
+index eb229f88c3511917deaa2caac96dcc156f72e43b..e946039023518c0dbee988b11d0b23a80fb077c3 100644
+--- a/src/octop/infra/gateway/process/processor.py
++++ b/src/octop/infra/gateway/process/processor.py
+@@ -22,6 +22,7 @@ from octop_harness.teams.util import PeerCall, PeerSession
+ 
+ from octop.i18n.domains.stream import format_stream_error
+ from octop.infra.agents.providers.reasoning import reasoning_request_parameters
++from octop.infra.agents.providers.store import model_ref_passes_allowlist
+ from octop.infra.agents.settings.profile import parse_config_json
+ from octop.infra.agents.teams import is_team_agent
+ from octop.infra.agents.teams.team_manager import (
+@@ -528,8 +529,15 @@ class GlobalProcessor:
+         - Stale overrides (deleted / disabled catalog refs) are dropped so routing
+           falls through to a usable expert default or harness AUTO.
+         - When a model is passed and the turn needs vision, upgrade to a vision ref.
++        - ZBS: candidates outside the user's ``allowed_models`` whitelist are
++          dropped at every priority level; the vision upgrade and the global
++          fallback also only pick whitelisted models. When none of the
++          whitelisted models resolves, ``None`` is returned (harness AUTO
++          surfaces a clear routing error) — never a non-whitelisted model.
+         """
+         providers = self._agent_manager.providers
++        allowed_models = self._allowed_models_for_user(user_id)
++        allowlist = model_ref_passes_allowlist
+         thread_model = self._agent_manager.get_thread_model(agent_id, thread_id)
+         thread_row = self._thread_registry.get_thread(thread_id)
+         model_ref = self._model_ref_from_meta(
+@@ -539,6 +547,8 @@ class GlobalProcessor:
+         )
+         if model_ref and not providers.is_model_ref_usable(model_ref):
+             model_ref = None
++        if model_ref and not allowlist(model_ref, allowed_models):
++            model_ref = None
+         if not model_ref:
+             row = self._agent_repo.get(agent_id)
+             if row is not None:
+@@ -546,6 +556,8 @@ class GlobalProcessor:
+                     row,
+                     self._agent_manager.get_config(agent_id),
+                 )
++                if model_ref and not allowlist(model_ref, allowed_models):
++                    model_ref = None
+         if not model_ref:
+             user_row = self._user_repo.get(user_id)
+             preferred = get_preferred_model_from_json(
+@@ -553,16 +565,34 @@ class GlobalProcessor:
+             )
+             if preferred and self._agent_manager.providers.is_model_ref_usable(preferred):
+                 model_ref = preferred
++                if not allowlist(model_ref, allowed_models):
++                    model_ref = None
+         if not model_ref:
+-            fallback = self._agent_manager.resolve_fallback_model_ref()
++            fallback = self._agent_manager.resolve_fallback_model_ref(allowed_models)
+             model_ref = fallback.strip() if isinstance(fallback, str) and fallback.strip() else None
+         if not model_ref:
+             return None
+         return providers.resolve_model_for_multimodal_turn(
+             model_ref,
+             needs_multimodal=needs_multimodal,
++            allowed_models=allowed_models,
+         )
+ 
++    def _allowed_models_for_user(self, user_id: int) -> list[str] | None:
++        """ZBS: the ``allowed_models`` whitelist for *user_id* (None = unrestricted).
++
++        Reads the policy via the agent manager's repo bundle (the same source
++        the API layer uses). Missing bundle or missing user reads as
++        unrestricted — official behavior.
++        """
++        from octop.infra.users.resource_policy import allowed_models_for_user_id  # noqa: PLC0415
++
++        repos = getattr(self._agent_manager, "_repos", None)
++        policy_repo = getattr(repos, "user_policy_repo", None)
++        if policy_repo is None:
++            return None
++        return allowed_models_for_user_id(policy_repo, self._user_repo, user_id)
++
+     def _resolve_reasoning_overrides(
+         self,
+         *,
+diff --git a/src/octop/infra/users/manager.py b/src/octop/infra/users/manager.py
+index 23f7343bec564ff2e7664aabe11cf6485915b87a..13fad549019b2d343f668487309f32d0d95ce276 100644
+--- a/src/octop/infra/users/manager.py
++++ b/src/octop/infra/users/manager.py
+@@ -566,11 +566,15 @@ class UserManager:
+         workspace_root_dir: Any = UNSET,
+         token_quota: Any = UNSET,
+         max_agents: Any = UNSET,
++        allowed_models: Any = UNSET,
+     ) -> None:
+         from octop.infra.users.resource_policy import (
++            POLICY_ALLOWED_MODELS,
+             POLICY_MAX_AGENTS,
+             POLICY_TOKEN_QUOTA,
+             POLICY_WORKSPACE_ROOT_DIR,
++            allowed_models_json,
++            normalize_allowed_models,
+             normalize_max_agents,
+             normalize_token_quota,
+             normalize_workspace_root_dir,
+@@ -583,6 +587,7 @@ class UserManager:
+         root_arg: Any = UNSET
+         quota_arg: Any = UNSET
+         max_agents_arg: Any = UNSET
++        allowed_models_arg: Any = UNSET
+         if workspace_root_dir is not UNSET:
+             root_arg = normalize_workspace_root_dir(workspace_root_dir)
+             updates[POLICY_WORKSPACE_ROOT_DIR] = root_arg
+@@ -592,6 +597,9 @@ class UserManager:
+         if max_agents is not UNSET:
+             max_agents_arg = normalize_max_agents(max_agents)
+             updates[POLICY_MAX_AGENTS] = None if max_agents_arg is None else str(max_agents_arg)
++        if allowed_models is not UNSET:
++            allowed_models_arg = normalize_allowed_models(allowed_models)
++            updates[POLICY_ALLOWED_MODELS] = allowed_models_json(allowed_models_arg)
+         if not updates:
+             return
+         self._services.user_policy_repo.merge(row.id, updates)
+@@ -616,6 +624,13 @@ class UserManager:
+                 target=username,
+                 payload=str(max_agents_arg) if max_agents_arg is not None else "",
+             )
++        if allowed_models is not UNSET:
++            self._services.audit_repo.write(
++                actor=ACTOR_ADMIN,
++                action="user.set_allowed_models",
++                target=username,
++                payload=allowed_models_json(allowed_models_arg) or "",
++            )
+ 
+     async def set_workspace_root_dir(self, username: str, workspace_root_dir: str | None) -> None:
+         await self.set_resource_policy(username, workspace_root_dir=workspace_root_dir)
+@@ -626,6 +641,11 @@ class UserManager:
+     async def set_max_agents(self, username: str, max_agents: int | None) -> None:
+         await self.set_resource_policy(username, max_agents=max_agents)
+ 
++    async def set_allowed_models(
++        self, username: str, allowed_models: builtins.list[str] | None
++    ) -> None:
++        await self.set_resource_policy(username, allowed_models=allowed_models)
++
+     async def set_role(self, username: str, role: Role | str) -> None:
+         row = self._services.user_repo.get_by_username(username)
+         if row is None:
+diff --git a/src/octop/infra/users/resource_policy.py b/src/octop/infra/users/resource_policy.py
+index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..21d89a2e91f80ff791b19eecd0329ef5996b0d37 100644
+--- a/src/octop/infra/users/resource_policy.py
++++ b/src/octop/infra/users/resource_policy.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import json
+ import os
+ from collections.abc import Mapping, Sequence
+ from typing import Any
+@@ -89,6 +90,82 @@ def max_agents_of(raw: Any) -> int | None:
+         return None
+ 
+ 
++# ZBS patch 20: model whitelist policy (deliberately declared here, below the
++# official policy trio, so patches that patch the import block or the policy
++# constants keep their original context lines).
++POLICY_ALLOWED_MODELS = "allowed_models"
++
++
++def allowed_models_of(raw: Any) -> list[str] | None:
++    """Parse an ``allowed_models`` policy value; ``None`` means unrestricted.
++
++    Stored shape is a JSON array of ``provider/model`` refs (ZBS). Malformed
++    rows read as unrestricted, matching how the other ``*_of`` helpers treat
++    unparsable values.
++    """
++    if isinstance(raw, Mapping) and "value" not in raw:
++        raw = raw.get(POLICY_ALLOWED_MODELS)
++    text = active_policy_value(raw)
++    if text is None:
++        return None
++    try:
++        parsed = json.loads(text)
++    except (TypeError, ValueError):
++        return None
++    if not isinstance(parsed, list):
++        return None
++    refs = [str(item).strip() for item in parsed if isinstance(item, str) and str(item).strip()]
++    return refs or None
++
++
++def normalize_allowed_models(raw: list[str] | Sequence[str] | None) -> list[str] | None:
++    """Validate and canonicalize an ``allowed_models`` request value.
++
++    ``None`` / empty clears the policy (unrestricted). Every entry must be a
++    ``provider/model`` ref; duplicates collapse preserving order.
++    """
++    if raw is None:
++        return None
++    refs: list[str] = []
++    seen: set[str] = set()
++    for item in raw:
++        ref = str(item).strip()
++        if not ref:
++            continue
++        provider_name, _, model_id = ref.partition("/")
++        if not provider_name or not model_id or "/" in model_id:
++            raise OctopError(
++                ErrorCode.FORBIDDEN,
++                f"allowed_models entries must be 'provider/model' refs, got: {ref!r}",
++                status=400,
++            )
++        if ref not in seen:
++            seen.add(ref)
++            refs.append(ref)
++    return refs or None
++
++
++def allowed_models_json(refs: list[str] | None) -> str | None:
++    """Serialize normalized refs for the ``user_policies.value`` TEXT column."""
++    return None if refs is None else json.dumps(refs)
++
++
++def allowed_models_for_user(user_row: Any) -> list[str] | None:
++    """Effective model whitelist for a ``users`` row; ``None`` = unrestricted.
++
++    Admins are never restricted (role template API stores no policies for the
++    admin role — same official semantics as the other resource policies).
++    Inline admin check (official pattern, cf. ``cron/delivery.py``) keeps this
++    patch self-contained; patch 21 later adds the ``user_row_is_admin`` helper
++    for the same role string.
++    """
++    if user_row is None:
++        return None
++    if str(getattr(user_row, "role", "") or "") == "admin":
++        return None
++    return allowed_models_of(getattr(user_row, "allowed_models", None))
++
++
+ def public_policy_fields(rows: Sequence[Any] | Mapping[str, str] | None) -> dict[str, Any]:
+     """HTTP-facing subset of known policies (disabled / missing = unlimited)."""
+     by_name: dict[str, str] = {}
+@@ -104,6 +181,7 @@ def public_policy_fields(rows: Sequence[Any] | Mapping[str, str] | None) -> dict
+         "workspace_root_dir": workspace_root_dir_of(by_name),
+         "token_quota": token_quota_of(by_name.get(POLICY_TOKEN_QUOTA)),
+         "max_agents": max_agents_of(by_name.get(POLICY_MAX_AGENTS)),
++        "allowed_models": allowed_models_of(by_name.get(POLICY_ALLOWED_MODELS)),
+     }
+ 
+ 
+@@ -205,3 +283,46 @@ def assert_agent_quota_available(policy_repo: Any, agent_repo: Any, user_id: int
+             "agent quota exceeded",
+             details={"used": owned, "quota": limit},
+         )
++
++
++def allowed_models_for_user_id(
++    policy_repo: Any,
++    user_repo: Any,
++    user_id: int,
++) -> list[str] | None:
++    """Effective model whitelist by user id; ``None`` = unrestricted.
++
++    ZBS: reads the ``allowed_models`` user policy; admins and unknown users
++    are never restricted (official behavior).
++    """
++    user_row = user_repo.get(user_id) if user_repo is not None else None
++    if user_row is None or str(getattr(user_row, "role", "") or "") == "admin":
++        return None
++    return allowed_models_of(policy_repo.get(user_id, POLICY_ALLOWED_MODELS))
++
++
++def model_ref_is_allowed(ref: str, allowed_models: Sequence[str] | None) -> bool:
++    """True when *ref* passes an ``allowed_models`` whitelist.
++
++    ``None`` (no policy) allows everything; otherwise *ref* must be listed.
++    """
++    if allowed_models is None:
++        return True
++    ref = (ref or "").strip()
++    return ref in set(allowed_models)
++
++
++def assert_model_allowed_for_user(
++    policy_repo: Any,
++    user_repo: Any,
++    user_id: int,
++    ref: str,
++) -> None:
++    """Raise ``FORBIDDEN`` when *ref* is outside the user's model whitelist."""
++    allowed = allowed_models_for_user_id(policy_repo, user_repo, user_id)
++    if not model_ref_is_allowed(ref, allowed):
++        raise OctopError(
++            ErrorCode.FORBIDDEN,
++            "model is not in this user's allowed models",
++            details={"model": ref, "allowed_models": list(allowed or [])},
++        )
+diff --git a/tests/integration/test_model_policy_api.py b/tests/integration/test_model_policy_api.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c94edcc26
+--- /dev/null
++++ b/tests/integration/test_model_policy_api.py
+@@ -0,0 +1,377 @@
++"""ZBS patch 20 — allowed_models HTTP surface (F7/F9/F11 + F8 entry checks)."""
++
++from __future__ import annotations
++
++import json
++
++from tests.support.auth import (
++    auth_header,
++    bootstrap_admin,
++    create_user,
++    resolve_user_id,
++    seed_openai_provider,
++)
++
++
++async def _seed_providers(c, auth: dict[str, str]) -> None:
++    """Two usable providers: openai/gpt-4o (text) and openai/gpt-4o-vision."""
++    await seed_openai_provider(c, auth)
++    r = await c.post(
++        "/api/admin/providers",
++        headers=auth,
++        json={
++            "name": "second",
++            "kind": "openai",
++            "base_url": "https://second.example/v1",
++            "api_key": "k2",
++            "models": [
++                {
++                    "id": "m2",
++                    "name": "M2",
++                    "enabled": True,
++                    "input": ["text"],
++                    "thinking": False,
++                }
++            ],
++        },
++    )
++    assert r.status_code == 201, r.text
++
++
++async def test_admin_can_set_allowed_models_on_user(env) -> None:
++    c, _srv, auth = env
++    await _seed_providers(c, auth)
++
++    r = await c.post(
++        "/api/users",
++        headers=auth,
++        json={
++            "username": "alice",
++            "password": "TestPass12",
++            "role": "user",
++            "allowed_models": ["openai/gpt-4o"],
++        },
++    )
++    assert r.status_code == 201, r.text
++    assert r.json()["allowed_models"] == ["openai/gpt-4o"]
++
++    uid = r.json()["id"]
++    # PATCH overrides per-user.
++    r = await c.patch(
++        f"/api/users/{uid}",
++        headers=auth,
++        json={"allowed_models": ["openai/gpt-4o", "second/m2"]},
++    )
++    assert r.status_code == 200, r.text
++    assert r.json()["allowed_models"] == ["openai/gpt-4o", "second/m2"]
++
++    # PATCH null clears the whitelist.
++    r = await c.patch(f"/api/users/{uid}", headers=auth, json={"allowed_models": None})
++    assert r.status_code == 200, r.text
++    assert r.json()["allowed_models"] is None
++
++    # Invalid refs are rejected.
++    r = await c.post(
++        "/api/users",
++        headers=auth,
++        json={
++            "username": "bob",
++            "password": "TestPass12",
++            "role": "user",
++            "allowed_models": ["gpt-4o"],
++        },
++    )
++    assert r.status_code == 400, r.text
++
++
++async def test_batch_set_allowed_models(env) -> None:
++    c, _srv, auth = env
++    await _seed_providers(c, auth)
++    uids = []
++    for name in ("alice", "bob"):
++        r = await c.post(
++            "/api/users",
++            headers=auth,
++            json={"username": name, "password": "TestPass12", "role": "user"},
++        )
++        uids.append(r.json()["id"])
++
++    r = await c.post(
++        "/api/users/batch",
++        headers=auth,
++        json={
++            "user_ids": uids,
++            "action": "set_allowed_models",
++            "allowed_models": ["openai/gpt-4o"],
++        },
++    )
++    assert r.status_code == 200, r.text
++    assert r.json()["succeeded"] == 2
++
++    rows = {u["username"]: u for u in (await c.get("/api/users", headers=auth)).json()}
++    assert rows["alice"]["allowed_models"] == ["openai/gpt-4o"]
++    assert rows["bob"]["allowed_models"] == ["openai/gpt-4o"]
++
++    # Null clears the whitelist for everyone.
++    r = await c.post(
++        "/api/users/batch",
++        headers=auth,
++        json={"user_ids": uids, "action": "set_allowed_models", "allowed_models": None},
++    )
++    assert r.status_code == 200, r.text
++    rows = {u["username"]: u for u in (await c.get("/api/users", headers=auth)).json()}
++    assert rows["alice"]["allowed_models"] is None
++
++
++async def test_role_template_carries_allowed_models(env) -> None:
++    c, _srv, auth = env
++    await _seed_providers(c, auth)
++
++    r = await c.post(
++        "/api/users/roles",
++        headers=auth,
++        json={
++            "user_role_name": "受限",
++            "permissions": [],
++            "policies": [
++                {"name": "token_quota", "value": "1000"},
++                {"name": "allowed_models", "value": json.dumps(["openai/gpt-4o"])},
++            ],
++        },
++    )
++    assert r.status_code == 201, r.text
++    role = r.json()
++    assert role["allowed_models"] == ["openai/gpt-4o"]
++    assert {"name": "allowed_models", "value": '["openai/gpt-4o"]'} in role["policies"]
++    role_id = role["user_role_id"]
++
++    # Assigning the role copies the whitelist onto the user (official
++    # full-replace semantics).
++    r = await c.post(
++        "/api/users",
++        headers=auth,
++        json={
++            "username": "carol",
++            "password": "TestPass12",
++            "role": role_id,
++        },
++    )
++    assert r.status_code == 201, r.text
++    assert r.json()["allowed_models"] == ["openai/gpt-4o"]
++    assert r.json()["token_quota"] == 1000
++
++    # Switching to the plain user role clears the whitelist (full replace).
++    uid = r.json()["id"]
++    r = await c.patch(
++        f"/api/users/{uid}", headers=auth, json={"role": "user"}
++    )
++    assert r.status_code == 200, r.text
++    assert r.json()["allowed_models"] is None
++    assert r.json()["token_quota"] is None
++
++
++async def test_resolved_models_filtered_for_restricted_user(env) -> None:
++    c, _srv, auth = env
++    await _seed_providers(c, auth)
++    alice = await create_user(c, auth, username="alice")
++    alice_id = await resolve_user_id(c, auth, "alice")
++
++    # Unrestricted user sees all resolved models.
++    r = await c.get("/api/providers/resolved", headers=alice)
++    assert r.status_code == 200
++    all_refs = {f"{m['provider_name']}/{m['model']}" for m in r.json()}
++    assert all_refs == {"openai/gpt-4o", "second/m2"}
++
++    # Restricted user only sees whitelisted models.
++    r = await c.patch(
++        f"/api/users/{alice_id}", headers=auth, json={"allowed_models": ["second/m2"]}
++    )
++    assert r.status_code == 200, r.text
++    r = await c.get("/api/providers/resolved", headers=alice)
++    assert r.status_code == 200
++    refs = {f"{m['provider_name']}/{m['model']}" for m in r.json()}
++    assert refs == {"second/m2"}
++
++    # Admin always sees everything.
++    r = await c.get("/api/providers/resolved", headers=auth)
++    assert {f"{m['provider_name']}/{m['model']}" for m in r.json()} == all_refs
++
++
++async def test_provider_api_key_hidden_from_non_admin(env) -> None:
++    c, _srv, auth = env
++    await _seed_providers(c, auth)
++    alice = await create_user(c, auth, username="alice")
++
++    # Non-admin: no api_key in the payload.
++    r = await c.get("/api/providers", headers=alice)
++    assert r.status_code == 200
++    for row in r.json():
++        assert row["api_key"] is None
++        assert row["name"] in {"openai", "second"}
++
++    # Admin: full key (official behavior).
++    r = await c.get("/api/providers", headers=auth)
++    assert r.status_code == 200
++    by_name = {row["name"]: row for row in r.json()}
++    assert by_name["openai"]["api_key"] == "k"
++    assert by_name["second"]["api_key"] == "k2"
++
++    # Admin management endpoint unaffected.
++    r = await c.get("/api/admin/providers", headers=auth)
++    assert r.status_code == 200
++    assert {row["name"]: row for row in r.json()}["openai"]["api_key"] == "k"
++
++
++async def test_preferred_model_rejected_outside_allowlist(env) -> None:
++    c, _srv, auth = env
++    await _seed_providers(c, auth)
++    alice = await create_user(c, auth, username="alice")
++    alice_id = await resolve_user_id(c, auth, "alice")
++
++    r = await c.patch(
++        f"/api/users/{alice_id}", headers=auth, json={"allowed_models": ["openai/gpt-4o"]}
++    )
++    assert r.status_code == 200, r.text
++
++    # Inside the whitelist: accepted.
++    r = await c.patch(
++        "/api/preferences", headers=alice, json={"preferred_model": "openai/gpt-4o"}
++    )
++    assert r.status_code == 200, r.text
++    assert r.json()["preferred_model"] == "openai/gpt-4o"
++
++    # Outside the whitelist: 403 with a clear error code (message is the
++    # localized generic FORBIDDEN text; details carry the model + whitelist).
++    r = await c.patch(
++        "/api/preferences", headers=alice, json={"preferred_model": "second/m2"}
++    )
++    assert r.status_code == 403, r.text
++    assert r.json()["error"]["code"] == "FORBIDDEN"
++    assert r.json()["error"]["details"]["model"] == "second/m2"
++    assert r.json()["error"]["details"]["allowed_models"] == ["openai/gpt-4o"]
++
++    # Unrestricted user: official behavior (any enabled model).
++    bob = await create_user(c, auth, username="bob")
++    r = await c.patch(
++        "/api/preferences", headers=bob, json={"preferred_model": "second/m2"}
++    )
++    assert r.status_code == 200, r.text
++
++
++async def test_cron_model_rejected_outside_allowlist(env) -> None:
++    c, srv, auth = env
++    await _seed_providers(c, auth)
++    alice = await create_user(c, auth, username="alice")
++    alice_id = await resolve_user_id(c, auth, "alice")
++
++    r = await c.post(
++        "/api/agents",
++        headers=alice,
++        json={"name": "alice-bot", "config": {"providers": ["openai"]}},
++    )
++    assert r.status_code == 201, r.text
++    agent_id = r.json()["agent_id"]
++
++    r = await c.patch(
++        f"/api/users/{alice_id}", headers=auth, json={"allowed_models": ["openai/gpt-4o"]}
++    )
++    assert r.status_code == 200, r.text
++
++    # Inside the whitelist: accepted.
++    r = await c.post(
++        f"/api/agents/{agent_id}/cron",
++        headers=alice,
++        json={
++            "name": "ok",
++            "prompt": "hi",
++            "trigger": "interval:60",
++            "model": "openai/gpt-4o",
++        },
++    )
++    assert r.status_code == 201, r.text
++    cron_id = r.json()["id"]
++
++    # PATCH to a non-whitelisted model is rejected.
++    r = await c.patch(
++        f"/api/agents/{agent_id}/cron/{cron_id}",
++        headers=alice,
++        json={"model": "second/m2"},
++    )
++    assert r.status_code == 403, r.text
++
++    # Creating with a non-whitelisted model is rejected.
++    r = await c.post(
++        f"/api/agents/{agent_id}/cron",
++        headers=alice,
++        json={
++            "name": "bad",
++            "prompt": "hi",
++            "trigger": "interval:120",
++            "model": "second/m2",
++        },
++    )
++    assert r.status_code == 403, r.text
++
++
++async def test_turn_default_model_rejected_outside_allowlist(env) -> None:
++    """Chat turns with a non-whitelisted default_model get a clear error frame."""
++    import asyncio
++
++    from tests.support.http import chat_ws_path, ws_connect
++
++    c, srv, auth = env
++    await _seed_providers(c, auth)
++    alice = await create_user(c, auth, username="alice")
++    alice_id = await resolve_user_id(c, auth, "alice")
++
++    r = await c.post(
++        "/api/agents",
++        headers=alice,
++        json={"name": "alice-chat", "config": {"providers": ["openai"]}},
++    )
++    assert r.status_code == 201, r.text
++    agent_id = r.json()["agent_id"]
++
++    r = await c.patch(
++        f"/api/users/{alice_id}", headers=auth, json={"allowed_models": ["openai/gpt-4o"]}
++    )
++    assert r.status_code == 200, r.text
++
++    async with ws_connect(c._octop_app, chat_ws_path(agent_id, alice)) as ws:
++        await ws.send_json(
++            {"type": "user_turn", "text": "hi", "default_model": "second/m2"}
++        )
++        frame = await asyncio.wait_for(ws.receive_json(), timeout=10)
++        assert frame.get("type") == "error"
++        assert "allowed models" in frame.get("message", "")
++
++    async with ws_connect(c._octop_app, chat_ws_path(agent_id, alice)) as ws:
++        await ws.send_json(
++            {"type": "user_turn", "text": "hi", "default_model": "openai/gpt-4o"}
++        )
++        frame = await asyncio.wait_for(ws.receive_json(), timeout=10)
++        assert frame.get("type") != "error"
++
++
++async def test_admin_never_restricted(env) -> None:
++    c, _srv, auth = env
++    await _seed_providers(c, auth)
++    me = (await c.get("/api/auth/me", headers=auth)).json()
++
++    # Even a stray policy row on the admin cannot restrict them.
++    from octop.infra.users.resource_policy import POLICY_ALLOWED_MODELS
++
++    srv_admin = env[1]
++    srv_admin.services.user_policy_repo.set(
++        me["id"], POLICY_ALLOWED_MODELS, '["openai/gpt-4o"]'
++    )
++
++    r = await c.get("/api/providers/resolved", headers=auth)
++    assert {f"{m['provider_name']}/{m['model']}" for m in r.json()} == {
++        "openai/gpt-4o",
++        "second/m2",
++    }
++    r = await c.patch(
++        "/api/preferences", headers=auth, json={"preferred_model": "second/m2"}
++    )
++    assert r.status_code == 200, r.text
+diff --git a/tests/unit/agents/test_model_policy_store.py b/tests/unit/agents/test_model_policy_store.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..568885a690a1180bf195a296dddcd5cf36edfef3
+--- /dev/null
++++ b/tests/unit/agents/test_model_policy_store.py
+@@ -0,0 +1,113 @@
++"""ZBS patch 20 — ProviderStore allowlist filtering (F8: vision upgrade, fallback)."""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++from octop.config import OctopConfig
++from octop.infra.db.migrate import run_migrations
++from octop.infra.db.pool import SqlitePool
++from octop.infra.db.services import build_shared_services
++from octop.infra.agents.providers.store import ProviderStore
++
++
++@pytest.fixture
++def store(tmp_path: Path) -> ProviderStore:
++    pool = SqlitePool(tmp_path / "octop.db")
++    run_migrations(pool)
++    services = build_shared_services(db=pool, paths=tmp_path, config=OctopConfig())
++    return ProviderStore(provider_repo=services.repos.provider_repo)
++
++
++def _add_provider(store: ProviderStore, name: str, models: list[dict]) -> None:
++    import json
++
++    repo = store._provider_repo  # noqa: SLF001 - test helper
++    repo.create(
++        name=name,
++        kind="openai",
++        base_url=f"https://{name}.example/v1",
++        api_key=f"sk-{name}",
++        models_json=json.dumps(models),
++    )
++
++
++def _model(mid: str, image: bool = False) -> dict:
++    return {
++        "id": mid,
++        "name": mid,
++        "enabled": True,
++        "input": ["text", "image"] if image else ["text"],
++        "thinking": False,
++    }
++
++
++def test_resolve_first_model_ref_respects_allowlist(store: ProviderStore) -> None:
++    _add_provider(store, "a", [_model("m1"), _model("m2")])
++    _add_provider(store, "b", [_model("m3")])
++    assert store.resolve_first_model_ref() == "a/m1"
++    assert store.resolve_first_model_ref(["a/m2"]) == "a/m2"
++    assert store.resolve_first_model_ref(["b/m3"]) == "b/m3"
++    assert store.resolve_first_model_ref(["c/none"]) is None
++
++
++def test_resolve_multimodal_model_ref_respects_allowlist(store: ProviderStore) -> None:
++    _add_provider(store, "a", [_model("text-only"), _model("vision", image=True)])
++    _add_provider(store, "b", [_model("other-vision", image=True)])
++    assert store.resolve_multimodal_model_ref() == "a/vision"
++    assert store.resolve_multimodal_model_ref(["b/other-vision"]) == "b/other-vision"
++    # Whitelist without any vision-capable entry → no upgrade available.
++    assert store.resolve_multimodal_model_ref(["a/text-only"]) is None
++
++
++def test_resolve_model_for_multimodal_turn_allowlist(store: ProviderStore) -> None:
++    _add_provider(store, "a", [_model("text-only"), _model("vision", image=True)])
++    _add_provider(store, "b", [_model("other-vision", image=True)])
++
++    # Text turn: whitelisted ref passes through, non-whitelisted dropped.
++    assert store.resolve_model_for_multimodal_turn("a/text-only", needs_multimodal=False) == (
++        "a/text-only"
++    )
++    assert (
++        store.resolve_model_for_multimodal_turn(
++            "a/text-only", needs_multimodal=False, allowed_models=["b/other-vision"]
++        )
++        is None
++    )
++
++    # Vision turn: whitelisted multimodal ref kept.
++    assert (
++        store.resolve_model_for_multimodal_turn(
++            "a/vision", needs_multimodal=True, allowed_models=["a/vision"]
++        )
++        == "a/vision"
++    )
++    # Vision turn: non-whitelisted text ref is NOT silently upgraded to the
++    # first global vision model; upgrade only happens inside the whitelist.
++    assert (
++        store.resolve_model_for_multimodal_turn(
++            "a/text-only", needs_multimodal=True, allowed_models=["a/vision"]
++        )
++        == "a/vision"
++    )
++    assert (
++        store.resolve_model_for_multimodal_turn(
++            "a/text-only", needs_multimodal=True, allowed_models=["b/other-vision"]
++        )
++        == "b/other-vision"
++    )
++    # Nothing whitelisted is vision-capable and the ref itself is not
++    # whitelisted → None (clear failure, no silent non-whitelist swap).
++    assert (
++        store.resolve_model_for_multimodal_turn(
++            "a/text-only", needs_multimodal=True, allowed_models=["a/text-only"]
++        )
++        is None
++    )
++
++    # No allowlist → official behavior (upgrade to first vision model).
++    assert (
++        store.resolve_model_for_multimodal_turn("a/text-only", needs_multimodal=True) == "a/vision"
++    )
+diff --git a/tests/unit/gateway/test_global_processor_team.py b/tests/unit/gateway/test_global_processor_team.py
+index c0428637b77ea13721e0f968d740a29073eec639..b2269af6c2acc685beeea055f38440b1e8a00d6a 100644
+--- a/tests/unit/gateway/test_global_processor_team.py
++++ b/tests/unit/gateway/test_global_processor_team.py
+@@ -1675,6 +1675,7 @@ def test_resolve_harness_model_uses_agent_default_and_upgrades_vision() -> None:
+     processor._agent_manager.providers.resolve_model_for_multimodal_turn.assert_called_once_with(
+         "p/text-only",
+         needs_multimodal=True,
++        allowed_models=None,
+     )
+ 
+ 
+@@ -1705,6 +1706,7 @@ def test_resolve_harness_model_dashboard_override_wins() -> None:
+     processor._agent_manager.providers.resolve_model_for_multimodal_turn.assert_called_once_with(
+         "p/picked",
+         needs_multimodal=False,
++        allowed_models=None,
+     )
+ 
+ 
+diff --git a/tests/unit/gateway/test_model_policy_processor.py b/tests/unit/gateway/test_model_policy_processor.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..32506f312185d25f7bff62e899091571db2c3949
+--- /dev/null
++++ b/tests/unit/gateway/test_model_policy_processor.py
+@@ -0,0 +1,134 @@
++"""ZBS patch 20 — `_resolve_harness_model` allowlist filtering (F8 main chain)."""
++
++from __future__ import annotations
++
++import json
++from typing import Any
++from unittest.mock import MagicMock, patch
++
++import octop.infra.gateway.process.processor as processor_module
++from octop.infra.gateway.process.processor import GlobalProcessor
++from octop.infra.users.resource_policy import POLICY_ALLOWED_MODELS
++
++
++def _processor(
++    *,
++    allowed_models: list[str] | None,
++    preferred_model: str | None = None,
++    agent_default_model: str | None = None,
++    is_admin: bool = False,
++) -> GlobalProcessor:
++    processor = GlobalProcessor(
++        agent_manager=MagicMock(),
++        thread_registry=MagicMock(),
++        audit_repo=MagicMock(),
++        agent_repo=MagicMock(),
++        user_repo=MagicMock(),
++        connector_repo=MagicMock(),
++        dispatcher=MagicMock(),
++        usage_repo=MagicMock(),
++        gateway=MagicMock(),
++    )
++    processor._agent_manager.get_thread_model.return_value = None
++    processor._thread_registry.get_thread.return_value = None
++    processor._agent_repo.get.return_value = MagicMock(default_model=agent_default_model)
++    processor._agent_manager.get_config.return_value = {}
++
++    providers = processor._agent_manager.providers
++    providers.is_model_ref_usable.side_effect = lambda ref: True
++    providers.resolve_explicit_default_model.side_effect = (
++        None
++        if agent_default_model is None
++        else lambda row, cfg: agent_default_model
++    )
++    # Pass-through unless the test overrides it.
++    providers.resolve_model_for_multimodal_turn.side_effect = (
++        lambda ref, *, needs_multimodal, allowed_models=None: (
++            ref if allowed_models is None or ref in allowed_models else None
++        )
++    )
++
++    user_row = MagicMock(preferences_json="{}")
++    if preferred_model is not None:
++        user_row.preferences_json = json.dumps({"preferred_model": preferred_model})
++    user_row.role = "admin" if is_admin else "user"
++    processor._user_repo.get.return_value = user_row
++
++    class _Policies:
++        def __init__(self, refs: list[str] | None) -> None:
++            self._raw = None if refs is None else json.dumps(refs)
++
++        def get(self, user_id: int, name: str) -> Any:
++            if name == POLICY_ALLOWED_MODELS and self._raw is not None:
++                return MagicMock(value=self._raw, enabled=True)
++            return None
++
++    repos = MagicMock()
++    repos.user_policy_repo = _Policies(allowed_models)
++    processor._agent_manager._repos = repos
++
++    processor._agent_manager.resolve_fallback_model_ref.side_effect = (
++        lambda allowed=None: (
++            "fallback/model"
++            if allowed is None or "fallback/model" in allowed
++            else None
++        )
++    )
++    return processor
++
++
++def test_no_policy_official_behavior() -> None:
++    """No allowed_models policy → every priority level works as official."""
++    p = _processor(allowed_models=None)
++    # Dashboard override passes through.
++    assert (
++        p._resolve_harness_model("a1", "t1", {"model": "any/picked"}, needs_multimodal=False)
++        == "any/picked"
++    )
++
++
++def test_override_outside_allowlist_falls_to_agent_default() -> None:
++    """Composer pick outside the whitelist is dropped; agent default inside wins."""
++    p = _processor(allowed_models=["p/ok"], agent_default_model="p/ok")
++    resolved = p._resolve_harness_model("a1", "t1", {"model": "p/bad"}, needs_multimodal=False)
++    assert resolved == "p/ok"
++
++
++def test_agent_default_outside_allowlist_falls_to_preferred() -> None:
++    p = _processor(allowed_models=["p/ok"], agent_default_model="p/bad", preferred_model="p/ok")
++    resolved = p._resolve_harness_model("a1", "t1", None, needs_multimodal=False)
++    assert resolved == "p/ok"
++
++
++def test_fallback_respects_allowlist() -> None:
++    p = _processor(allowed_models=["fallback/model"])
++    # No higher priority resolves; fallback inside the whitelist is used.
++    resolved = p._resolve_harness_model("a1", "t1", None, needs_multimodal=False)
++    assert resolved == "fallback/model"
++
++
++def test_no_whitelisted_model_usable_returns_none() -> None:
++    """Nothing in the whitelist resolves → None (clear failure, no silent swap)."""
++    p = _processor(allowed_models=["p/none"], preferred_model="p/other")
++    assert p._resolve_harness_model("a1", "t1", None, needs_multimodal=False) is None
++
++
++def test_multimodal_upgrade_receives_allowlist() -> None:
++    p = _processor(allowed_models=["p/ok"])
++    providers = p._agent_manager.providers
++    providers.resolve_model_for_multimodal_turn.side_effect = None
++    providers.resolve_model_for_multimodal_turn.return_value = "p/ok"
++    resolved = p._resolve_harness_model("a1", "t1", {"model": "p/ok"}, needs_multimodal=True)
++    assert resolved == "p/ok"
++    providers.resolve_model_for_multimodal_turn.assert_called_once_with(
++        "p/ok",
++        needs_multimodal=True,
++        allowed_models=["p/ok"],
++    )
++
++
++def test_admin_policy_row_is_ignored() -> None:
++    """A stray policy row on an admin user does not restrict (whitelist reads None)."""
++    p = _processor(allowed_models=["p/only"], is_admin=True)
++    # _allowed_models_for_user returns None for admins even with a row.
++    assert p._allowed_models_for_user(1) is None
+diff --git a/tests/unit/users/test_allowed_models_policy.py b/tests/unit/users/test_allowed_models_policy.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc58aa379ad35f841a9faa2784f7d877c87c8df4
+--- /dev/null
++++ b/tests/unit/users/test_allowed_models_policy.py
+@@ -0,0 +1,113 @@
++"""ZBS patch 20 — allowed_models policy primitives (F7)."""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++from octop.infra.db.migrate import run_migrations
++from octop.infra.db.pool import SqlitePool
++from octop.infra.db.repos.user_policies import UserPolicyRepo
++from octop.infra.db.repos.users import UserRepo
++from octop.infra.errors import ErrorCode, OctopError
++from octop.infra.users.resource_policy import (
++    POLICY_ALLOWED_MODELS,
++    allowed_models_for_user,
++    allowed_models_for_user_id,
++    allowed_models_json,
++    allowed_models_of,
++    assert_model_allowed_for_user,
++    model_ref_is_allowed,
++    normalize_allowed_models,
++    public_policy_fields,
++)
++
++
++@pytest.fixture
++def db(tmp_path: Path) -> SqlitePool:
++    pool = SqlitePool(tmp_path / "octop.db")
++    run_migrations(pool)
++    return pool
++
++
++def test_allowed_models_of_various_shapes() -> None:
++    assert allowed_models_of(None) is None
++    assert allowed_models_of("") is None
++    assert allowed_models_of('["openai/gpt-4o"]') == ["openai/gpt-4o"]
++    # disabled row reads as unrestricted
++    from octop.infra.users.resource_policy import active_policy_value  # noqa: F401
++
++    assert allowed_models_of({"value": '["a/b"]', "enabled": False}) is None
++    # malformed rows read as unrestricted
++    assert allowed_models_of("not-json") is None
++    assert allowed_models_of('{"x": 1}') is None
++    # blank entries dropped; an all-blank list reads as unrestricted
++    assert allowed_models_of('["a/b", "", "c/d"]') == ["a/b", "c/d"]
++    assert allowed_models_of('["", ""]') is None
++
++
++def test_normalize_allowed_models() -> None:
++    assert normalize_allowed_models(None) is None
++    assert normalize_allowed_models([]) is None
++    assert normalize_allowed_models(["openai/gpt-4o", "openai/gpt-4o"]) == ["openai/gpt-4o"]
++    with pytest.raises(OctopError) as exc:
++        normalize_allowed_models(["gpt-4o"])
++    assert exc.value.code is ErrorCode.FORBIDDEN
++    with pytest.raises(OctopError):
++        normalize_allowed_models(["a/b/c"])
++
++
++def test_allowed_models_json_roundtrip() -> None:
++    refs = ["openai/gpt-4o", "deepseek/deepseek-chat"]
++    stored = allowed_models_json(refs)
++    assert stored == '["openai/gpt-4o", "deepseek/deepseek-chat"]'
++    assert allowed_models_of(stored) == refs
++    assert allowed_models_json(None) is None
++
++
++def test_public_policy_fields_includes_allowed_models() -> None:
++    fields = public_policy_fields({"allowed_models": '["a/b"]'})
++    assert fields["allowed_models"] == ["a/b"]
++    assert fields["token_quota"] is None
++    fields_empty = public_policy_fields(None)
++    assert fields_empty["allowed_models"] is None
++
++
++def test_allowed_models_for_user_admin_never_restricted(db: SqlitePool) -> None:
++    users = UserRepo(db)
++    uid = users.create(username="root", password_hash="h", role="admin")
++    policies = UserPolicyRepo(db)
++    policies.set(uid, POLICY_ALLOWED_MODELS, '["openai/gpt-4o"]')
++    row = users.get(uid)
++    # Admin rows are never restricted even if a stray policy row exists.
++    assert allowed_models_for_user(row) is None
++    assert allowed_models_for_user_id(policies, users, uid) is None
++
++
++def test_allowed_models_for_user_id_and_assert(db: SqlitePool) -> None:
++    users = UserRepo(db)
++    policies = UserPolicyRepo(db)
++    uid = users.create(username="alice", password_hash="h", role="user")
++
++    # No policy → unrestricted.
++    assert allowed_models_for_user_id(policies, users, uid) is None
++    assert_model_allowed_for_user(policies, users, uid, "any/model")
++
++    policies.set(uid, POLICY_ALLOWED_MODELS, '["openai/gpt-4o","deepseek/deepseek-chat"]')
++    assert allowed_models_for_user_id(policies, users, uid) == [
++        "openai/gpt-4o",
++        "deepseek/deepseek-chat",
++    ]
++    assert_model_allowed_for_user(policies, users, uid, "openai/gpt-4o")
++    with pytest.raises(OctopError) as exc:
++        assert_model_allowed_for_user(policies, users, uid, "anthropic/claude-4")
++    assert exc.value.code is ErrorCode.FORBIDDEN
++    assert exc.value.details["model"] == "anthropic/claude-4"
++
++
++def test_model_ref_is_allowed() -> None:
++    assert model_ref_is_allowed("a/b", None)
++    assert model_ref_is_allowed("a/b", ["a/b"])
++    assert not model_ref_is_allowed("a/c", ["a/b"])
++    assert not model_ref_is_allowed("", ["a/b"])
+diff --git a/tests/unit/users/test_resource_policy.py b/tests/unit/users/test_resource_policy.py
+index 938af1504c254733de9cfdc3eba7767708e37825..0efbb87234157f7325b923deb3291c476905f37d 100644
+--- a/tests/unit/users/test_resource_policy.py
++++ b/tests/unit/users/test_resource_policy.py
+@@ -158,6 +158,7 @@ def test_user_policy_repo_named_rows(db: SqlitePool, tmp_path: Path) -> None:
+         "workspace_root_dir": str(jail),
+         "token_quota": 42,
+         "max_agents": None,
++        "allowed_models": None,
+     }
+     root = policies.get(uid, POLICY_WORKSPACE_ROOT_DIR)
+     assert root is not None

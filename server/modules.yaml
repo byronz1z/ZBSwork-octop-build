@@ -35,6 +35,16 @@ patches:
     in_production: yes        # 生产镜像 octop:pg-1.0.2b4-r2 含此逻辑（2026-10-08 实测）
     legacy_ids: [SRV-1]
 
+  - id: 20-feat-user-model-policy
+    name_zh: 按角色/用户的可用模型名单；接口对非管理员不返回模型密钥（F7–F11）
+    layer: L3
+    scope: [docker]
+    status: enabled
+    order: 20
+    upstream_pr: no           # ZBS 自有权限收紧策略，上游无意向；设计见 patches/20-*/README.md
+    verified: {v1.0.2b6: strict}
+    in_production: no         # 2026-10-13 新增（ZT-026 第 2 步），本机单元/集成测试通过，未部署
+
   - id: 21-feat-user-sandbox
     name_zh: 按用户沙箱——默认进沙箱、普通用户不能改运行方式（F3/F4/F5）
     layer: L3
@@ -57,9 +67,13 @@ patches:
     legacy_ids: [SRV-2]
 
 # 同一上游文件被多个模块修改时，必须在此登记主人（owner）与允许共改的模块（also），否则 CI 失败。
-# 例：
-#   desktop/src/main.go: {owner: 50-desk, also: [brand], reason: "品牌只改窗口标题文字"}
-shared_files: {}
+# 补丁 20（order 20）与补丁 21（order 21）共改两个后端文件：都在不同位置追加代码，
+# 按 order 先后（10→20→21）可严格套上（2026-10-13 prepare.py --check-only 实测）。
+shared_files:
+  src/octop/infra/users/resource_policy.py: {owner: 21-feat-user-sandbox, also: [20-feat-user-model-policy], reason: "21 加沙箱开关读取函数，20 加 allowed_models 策略函数，不同位置"}
+  src/octop/infra/agents/manager.py: {owner: 21-feat-user-sandbox, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加沙箱后端覆写，20 改 resolve_fallback_model_ref，不同位置"}
+  dashboard/src/locales/zh.json: {owner: brand, also: [20-feat-user-model-policy], reason: "品牌只替换值不动 key；20 新增 adminUsers 段的 key（先套 20 再套品牌，均严格 apply）"}
+  dashboard/src/locales/en.json: {owner: brand, also: [20-feat-user-model-policy], reason: "同 zh.json"}
 
 # 旧 AI 线产物（20-feat-model-per-user、50-desk-cloud-shell、51-desk-window-resize、brand/legacy）未经用户确认，不占编号；
 # 代码只留在归档 tag archive/2026-10/build-init 供追溯，不作参考。
