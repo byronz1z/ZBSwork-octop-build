@@ -1,10 +1,8 @@
 # 上游锁定（配方库当前对齐的上游版本）
-# 升级流程：开 upgrade/<版本> 分支 → 改这里 → tools/prepare.py 实测 → 修补丁 → PR
+# 升级流程：开规范分支 task/ZT-025-official-upgrade → 改这里 → tools/prepare.py 实测 → 修补丁 → 本机验证 → 审核 → 用户批准合并；发布另授权
 upstream_repo: https://github.com/TencentCloud/Octop.git
 fork_repo: https://github.com/byronz1z/ZBSwork-octop.git
-tag: v1.0.2b4
-commit: 232030f46c5450801ca87809f8a4da57aefc5a05
+tag: v1.0.2b6
+commit: eb28011249c02cafd389b2d424294c6c1b9cf422
+# next_target：v1.0.2b6 已成为当前版本（task/ZT-025-official-upgrade），暂无下一目标，不虚构
 next_target:
-  tag: v1.0.2b6
-  commit: eb28011249c02cafd389b2d424294c6c1b9cf422
-  precheck: "2026-10-08 实测：2 个启用补丁（10、60）+ 品牌包在 b6 上严格 apply 全通过，brand/check.py CLEAN"

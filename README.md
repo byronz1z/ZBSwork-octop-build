@@ -3,7 +3,9 @@
 ZBSwork 的**配方库**：上游 [TencentCloud/Octop](https://github.com/TencentCloud/Octop) 的某个版本 + 少量补丁 + 品牌包 = ZBSwork。
 
 - 上游镜像：[byronz1z/ZBSwork-octop](https://github.com/byronz1z/ZBSwork-octop)（纯镜像，不含自有改动）
-- 当前锁定上游：`v1.0.2b4`（见 `server/UPSTREAM.lock`）；下一目标 `v1.0.2b6` 已预检通过
+- 当前锁定上游：`v1.0.2b6`（见 `server/UPSTREAM.lock`；ZT-025 官方升级，2026-10-12 本机适配验证：
+  check_ownership、brand_check --self、build_image --no-build 均退出码 0，版本锁核对/补丁/品牌通过）；
+  `next_target` 暂空（无下一目标，不虚构）
 
 ## 快速开始
 
@@ -19,13 +21,14 @@ uv run --no-project --with pyyaml shared/tools/check_ownership.py         # 模�
 
 ```bash
 python shared/tools/build_image.py --reference <本机官方克隆>   # 一条龙：施工树 → context.tar → docker build
-python shared/tools/verify_image.py octop:1.0.2b4-zbs1 --reference <本机官方克隆>
+python shared/tools/verify_image.py octop:1.0.2b6-zbs1 --reference <本机官方克隆>
 ```
 
 两个脚本都可不传 `--reference`：施工树 `.work/src` 本身就是官方仓库的克隆（带官方 tag），
 不传时 verify 直接用它做比对来源，不写死任何本机路径（云端流程即如此运行）。
 
-- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2b4-zbs1`。
+- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2b6-zbs1`
+  （ZT-025 本阶段 `--no-build` 已生成源码包，尚未构建镜像）。
 - **施工树**：`shared/tools/prepare_lf.py`（prepare.py 的 LF/符号链接版；不改 prepare.py 现有参数行为，
   recipe-check.yml 不受影响）准备 `.work/src`，克隆/检出固定 `-c core.autocrlf=false -c core.eol=lf`，
   并把 git 里 mode 120000 的链接在 Windows 工作区恢复成真链接（失败只告警，不影响构建）。
