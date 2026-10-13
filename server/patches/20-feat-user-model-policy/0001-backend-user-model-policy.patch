@@ -1,13 +1,15 @@
 diff --git a/src/octop/api/routers/chat/turn.py b/src/octop/api/routers/chat/turn.py
-index d4de095f4291da5957983ef7ec410a8cb3a177b0..ea89003688f6cc390829ec7b928960376fa7d5d6 100644
+index d4de095f..6e452217 100644
 --- a/src/octop/api/routers/chat/turn.py
 +++ b/src/octop/api/routers/chat/turn.py
-@@ -272,6 +272,17 @@ async def prepare_dashboard_turn(
+@@ -272,6 +272,20 @@ async def prepare_dashboard_turn(
              ErrorCode.SLASH_BAD_ARGS,
              "default_model must reference an enabled model",
          )
 +    # ZBS: non-admin users may only pick models inside their allowed_models
-+    # whitelist (no policy set = unrestricted, official behavior).
++    # whitelist (no policy set = unrestricted, official behavior). locale is
++    # pre-resolved because the chat WebSocket surfaces ``str(exc)`` verbatim
++    # (ws.py send_frame), unlike REST which localizes via to_envelope.
 +    if model_ref is not None:
 +        from octop.infra.users.resource_policy import assert_model_allowed_for_user  # noqa: PLC0415
 +
@@ -16,12 +18,13 @@ index d4de095f4291da5957983ef7ec410a8cb3a177b0..ea89003688f6cc390829ec7b92896037
 +            server.services.user_repo,
 +            user.id,
 +            model_ref,
++            locale=getattr(user, "locale", None) or "zh",
 +        )
      composer_updates: dict[str, Any] = {}
      if model_ref is not None:
          composer_updates["model_ref"] = model_ref
 diff --git a/src/octop/api/routers/cron.py b/src/octop/api/routers/cron.py
-index 6e7bc2c29999760287b7baa5176f2dbc50f32c39..1658a1c431cfd94c8f6bea19150feb7475a72f85 100644
+index 6e7bc2c2..1658a1c4 100644
 --- a/src/octop/api/routers/cron.py
 +++ b/src/octop/api/routers/cron.py
 @@ -17,6 +17,7 @@ from octop.infra.cron.task_type import (
@@ -77,7 +80,7 @@ index 6e7bc2c29999760287b7baa5176f2dbc50f32c39..1658a1c431cfd94c8f6bea19150feb74
          cron_id,
          trigger=body.trigger,
 diff --git a/src/octop/api/routers/preferences.py b/src/octop/api/routers/preferences.py
-index e5e551016dda29f4348c673debb18cce8b3b4963..d1db62f353cd9c52c31c0b07c59b375a04c5a7f7 100644
+index e5e55101..d1db62f3 100644
 --- a/src/octop/api/routers/preferences.py
 +++ b/src/octop/api/routers/preferences.py
 @@ -176,6 +176,19 @@ async def patch_preferences(
@@ -101,7 +104,7 @@ index e5e551016dda29f4348c673debb18cce8b3b4963..d1db62f353cd9c52c31c0b07c59b375a
          if body.model_reasoning is not None:
              reasoning = {
 diff --git a/src/octop/api/routers/providers.py b/src/octop/api/routers/providers.py
-index c9d01285b4c94174d11b807b99bfef17f2c1f64f..b74d6358c717e6b1587b2169ade65667734e79f9 100644
+index c9d01285..b74d6358 100644
 --- a/src/octop/api/routers/providers.py
 +++ b/src/octop/api/routers/providers.py
 @@ -117,7 +117,7 @@ async def _maybe_refresh_codex_row(server: Any, row: Any) -> Any:
@@ -205,7 +208,7 @@ index c9d01285b4c94174d11b807b99bfef17f2c1f64f..b74d6358c717e6b1587b2169ade65667
  
  # ── Admin endpoints ─────────────────────────────────────────────────────────
 diff --git a/src/octop/api/routers/user_roles.py b/src/octop/api/routers/user_roles.py
-index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46d728faf4 100644
+index d48daf29..47c321e7 100644
 --- a/src/octop/api/routers/user_roles.py
 +++ b/src/octop/api/routers/user_roles.py
 @@ -23,10 +23,14 @@ from octop.infra.errors import ErrorCode, OctopError
@@ -284,7 +287,7 @@ index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46
          "updated_at": row.updated_at,
          "avatar_icon": row.avatar_icon,
 diff --git a/src/octop/api/routers/users.py b/src/octop/api/routers/users.py
-index 864597079ff5a9b88bc9d89bd49af236e45d4a2d..0d8d23da7f35b6d52c675c0b9837f0559e42ab5b 100644
+index 86459707..0d8d23da 100644
 --- a/src/octop/api/routers/users.py
 +++ b/src/octop/api/routers/users.py
 @@ -22,7 +22,14 @@ from octop.infra.utils.locale import resolve_request_locale
@@ -426,8 +429,56 @@ index 864597079ff5a9b88bc9d89bd49af236e45d4a2d..0d8d23da7f35b6d52c675c0b9837f055
              )
          )
      succeeded = sum(1 for item in results if item.ok)
+diff --git a/src/octop/i18n/en.json b/src/octop/i18n/en.json
+index 7e77c410..e7a2993d 100644
+--- a/src/octop/i18n/en.json
++++ b/src/octop/i18n/en.json
+@@ -109,7 +109,8 @@
+       "current_default": "Model: {model} (agent default)",
+       "usage": "No model override. Usage: /model <provider:model>",
+       "cleared": "Model override cleared.",
+-      "set": "Model for this thread → {model}."
++      "set": "Model for this thread → {model}.",
++      "not_allowed": "\"{model}\" is not in your allowed models; it was not set. Models you can use: {allowed}. Contact an administrator to adjust the list."
+     },
+     "mode": {
+       "current": "Current mode: {mode}",
+@@ -496,7 +497,8 @@
+     "TEAM_MEMBER_BUSY": "This expert has an in-flight team job. Wait until it finishes.",
+     "TEAM_NOT_SHAREABLE": "Teams cannot be shared in this version.",
+     "SKILL_PACKAGE_COPY_DENIED": "The creator of this skill package has disabled copying its skills.",
+-    "SKILL_PACKAGE_LOCKED": "This skill was copied from a locked skill package and cannot be edited in the workspace."
++    "SKILL_PACKAGE_LOCKED": "This skill was copied from a locked skill package and cannot be edited in the workspace.",
++    "ZBS_MODEL_NOT_ALLOWED": "\"{model}\" is not in your allowed models. Models you can use: {allowed}. Contact an administrator to adjust the list."
+   },
+   "desktop": {
+     "install_log_deps": "Installing Python dependencies…",
+diff --git a/src/octop/i18n/zh.json b/src/octop/i18n/zh.json
+index 4921fd92..80dfe905 100644
+--- a/src/octop/i18n/zh.json
++++ b/src/octop/i18n/zh.json
+@@ -109,7 +109,8 @@
+       "current_default": "模型：{model}（Agent 默认）",
+       "usage": "无模型覆盖。用法：/model <provider:model>",
+       "cleared": "已清除模型覆盖。",
+-      "set": "此话题模型 → {model}。"
++      "set": "此话题模型 → {model}。",
++      "not_allowed": "「{model}」不在你可用的模型名单里，未设置。你可以使用的模型：{allowed}。需要其它模型请联系管理员。"
+     },
+     "mode": {
+       "current": "当前模式：{mode}",
+@@ -496,7 +497,8 @@
+     "TEAM_MEMBER_BUSY": "该专家有进行中的团队任务，请等结束后再调整成员或删除。",
+     "TEAM_NOT_SHAREABLE": "当前版本不支持分享团队。",
+     "SKILL_PACKAGE_COPY_DENIED": "该技能包的创建者已禁止复制其中的技能。",
+-    "SKILL_PACKAGE_LOCKED": "此技能复制自锁定策略的技能包，无法在工作区编辑。"
++    "SKILL_PACKAGE_LOCKED": "此技能复制自锁定策略的技能包，无法在工作区编辑。",
++    "ZBS_MODEL_NOT_ALLOWED": "「{model}」不在你可用的模型名单里。你可以使用的模型：{allowed}。需要其它模型请联系管理员调整名单。"
+   },
+   "desktop": {
+     "install_log_deps": "正在安装 Python 依赖…",
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
-index 46384d85676044d9c6886fad29b6e43dce44b20a..34f881975c1c79279e5471533f0f779575fda0e5 100644
+index 46384d85..34f88197 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
 @@ -1360,14 +1360,22 @@ class AgentManager:
@@ -458,7 +509,7 @@ index 46384d85676044d9c6886fad29b6e43dce44b20a..34f881975c1c79279e5471533f0f7795
      # ------------------------------------------------------------------
      # Hot-reload — rebuild harness agents after config / provider changes
 diff --git a/src/octop/infra/agents/providers/store.py b/src/octop/infra/agents/providers/store.py
-index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e93d46fa1 100644
+index 552f96c1..49481378 100644
 --- a/src/octop/infra/agents/providers/store.py
 +++ b/src/octop/infra/agents/providers/store.py
 @@ -3,7 +3,7 @@
@@ -587,7 +638,7 @@ index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e
  
      def is_model_ref_usable(self, ref: str) -> bool:
 diff --git a/src/octop/infra/cron/delivery.py b/src/octop/infra/cron/delivery.py
-index a0017279889bf47d539afbeb36b2b93eda32df04..c62c00e3c96d28d15904aad69eb119d0099ba69e 100644
+index a0017279..c62c00e3 100644
 --- a/src/octop/infra/cron/delivery.py
 +++ b/src/octop/infra/cron/delivery.py
 @@ -218,11 +218,29 @@ class CronDeliveryService:
@@ -630,8 +681,28 @@ index a0017279889bf47d539afbeb36b2b93eda32df04..c62c00e3c96d28d15904aad69eb119d0
              message_kwargs=message_kwargs,
          )
          if servers:
+diff --git a/src/octop/infra/errors.py b/src/octop/infra/errors.py
+index 3db15702..6d77d7f9 100644
+--- a/src/octop/infra/errors.py
++++ b/src/octop/infra/errors.py
+@@ -138,6 +138,7 @@ class ErrorCode(StrEnum):
+     TEAM_MEMBER_INVALID = "TEAM_MEMBER_INVALID"
+     TEAM_MEMBER_BUSY = "TEAM_MEMBER_BUSY"
+     TEAM_NOT_SHAREABLE = "TEAM_NOT_SHAREABLE"
++    ZBS_MODEL_NOT_ALLOWED = "ZBS_MODEL_NOT_ALLOWED"
+ 
+ 
+ _DEFAULT_STATUS: dict[ErrorCode, int] = {
+@@ -268,6 +269,7 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
+     ErrorCode.TEAM_MEMBER_INVALID: 400,
+     ErrorCode.TEAM_MEMBER_BUSY: 409,
+     ErrorCode.TEAM_NOT_SHAREABLE: 400,
++    ErrorCode.ZBS_MODEL_NOT_ALLOWED: 403,
+ }
+ 
+ 
 diff --git a/src/octop/infra/gateway/process/processor.py b/src/octop/infra/gateway/process/processor.py
-index eb229f88c3511917deaa2caac96dcc156f72e43b..e946039023518c0dbee988b11d0b23a80fb077c3 100644
+index eb229f88..e9460390 100644
 --- a/src/octop/infra/gateway/process/processor.py
 +++ b/src/octop/infra/gateway/process/processor.py
 @@ -22,6 +22,7 @@ from octop_harness.teams.util import PeerCall, PeerSession
@@ -712,8 +783,44 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..e946039023518c0dbee988b11d0b23a8
      def _resolve_reasoning_overrides(
          self,
          *,
+diff --git a/src/octop/infra/gateway/slash/handlers/composite.py b/src/octop/infra/gateway/slash/handlers/composite.py
+index 211862ff..efd8d7cc 100644
+--- a/src/octop/infra/gateway/slash/handlers/composite.py
++++ b/src/octop/infra/gateway/slash/handlers/composite.py
+@@ -324,6 +324,31 @@ async def cmd_model(d: SlashDispatcher, cmd: SlashCommand, ctx: SlashCtx, sink:
+             await sink.action("clear_model")
+         await sink.text(tr("model.cleared", lang))
+         return
++    # ZBS: a non-admin user's /model override must sit inside their
++    # allowed_models whitelist — reply with the reason and the list instead
++    # of accepting it and silently routing elsewhere next turn.
++    if ctx.agent_manager is not None:
++        from octop.infra.users.resource_policy import (  # noqa: PLC0415
++            allowed_models_for_user_id,
++            model_ref_is_allowed,
++        )
++
++        repos = getattr(ctx.agent_manager, "_repos", None)
++        policy_repo = getattr(repos, "user_policy_repo", None)
++        if policy_repo is not None:
++            allowed = allowed_models_for_user_id(
++                policy_repo, ctx.user_repo, ctx.user_id
++            )
++            if not model_ref_is_allowed(name, allowed):
++                await sink.text(
++                    tr(
++                        "model.not_allowed",
++                        lang,
++                        model=name,
++                        allowed="、".join(allowed) if allowed else "—",
++                    )
++                )
++                return
+     d.set_thread_model_override(ctx, tid, name)
+     if hasattr(sink, "action"):
+         await sink.action("set_model", model=name)
 diff --git a/src/octop/infra/users/manager.py b/src/octop/infra/users/manager.py
-index 23f7343bec564ff2e7664aabe11cf6485915b87a..13fad549019b2d343f668487309f32d0d95ce276 100644
+index 23f7343b..13fad549 100644
 --- a/src/octop/infra/users/manager.py
 +++ b/src/octop/infra/users/manager.py
 @@ -566,11 +566,15 @@ class UserManager:
@@ -777,7 +884,7 @@ index 23f7343bec564ff2e7664aabe11cf6485915b87a..13fad549019b2d343f668487309f32d0
          row = self._services.user_repo.get_by_username(username)
          if row is None:
 diff --git a/src/octop/infra/users/resource_policy.py b/src/octop/infra/users/resource_policy.py
-index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..21d89a2e91f80ff791b19eecd0329ef5996b0d37 100644
+index 2d97b93b..46d00f6a 100644
 --- a/src/octop/infra/users/resource_policy.py
 +++ b/src/octop/infra/users/resource_policy.py
 @@ -2,6 +2,7 @@
@@ -879,7 +986,7 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..21d89a2e91f80ff791b19eecd0329ef5
      }
  
  
-@@ -205,3 +283,46 @@ def assert_agent_quota_available(policy_repo: Any, agent_repo: Any, user_id: int
+@@ -205,3 +283,70 @@ def assert_agent_quota_available(policy_repo: Any, agent_repo: Any, user_id: int
              "agent quota exceeded",
              details={"used": owned, "quota": limit},
          )
@@ -917,21 +1024,45 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..21d89a2e91f80ff791b19eecd0329ef5
 +    user_repo: Any,
 +    user_id: int,
 +    ref: str,
++    *,
++    locale: str | None = None,
 +) -> None:
-+    """Raise ``FORBIDDEN`` when *ref* is outside the user's model whitelist."""
++    """Raise ``ZBS_MODEL_NOT_ALLOWED`` when *ref* is outside the whitelist.
++
++    The error message names the requested model, lists the allowed ones, and
++    tells the user whom to ask (i18n key ``errors.ZBS_MODEL_NOT_ALLOWED``).
++    ``locale`` pre-resolves the message for transports that show ``str(exc)``
++    verbatim (the chat WebSocket); REST error responses are localized later
++    by the API exception handler via ``to_envelope(locale)`` and don't need
++    it.
++    """
 +    allowed = allowed_models_for_user_id(policy_repo, user_repo, user_id)
 +    if not model_ref_is_allowed(ref, allowed):
++        # ``allowed`` is the display-ready list for the i18n template (both
++        # the WS pre-localized raise and the REST exception handler's
++        # ``localized_message(**details)`` interpolate from ``details``);
++        # ``allowed_models`` stays structured for API clients.
++        allowed_text = "、".join(allowed or []) or "—"
++        details = {"model": ref, "allowed_models": list(allowed or []), "allowed": allowed_text}
++        if locale:
++            raise OctopError.localized(
++                ErrorCode.ZBS_MODEL_NOT_ALLOWED,
++                locale,
++                details=details,
++                model=ref,
++                allowed=allowed_text,
++            )
 +        raise OctopError(
-+            ErrorCode.FORBIDDEN,
++            ErrorCode.ZBS_MODEL_NOT_ALLOWED,
 +            "model is not in this user's allowed models",
-+            details={"model": ref, "allowed_models": list(allowed or [])},
++            details=details,
 +        )
 diff --git a/tests/integration/test_model_policy_api.py b/tests/integration/test_model_policy_api.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c94edcc26
+index 00000000..68b91205
 --- /dev/null
 +++ b/tests/integration/test_model_policy_api.py
-@@ -0,0 +1,377 @@
+@@ -0,0 +1,382 @@
 +"""ZBS patch 20 — allowed_models HTTP surface (F7/F9/F11 + F8 entry checks)."""
 +
 +from __future__ import annotations
@@ -1174,13 +1305,14 @@ index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c
 +    assert r.status_code == 200, r.text
 +    assert r.json()["preferred_model"] == "openai/gpt-4o"
 +
-+    # Outside the whitelist: 403 with a clear error code (message is the
-+    # localized generic FORBIDDEN text; details carry the model + whitelist).
++    # Outside the whitelist: 403 with a clear error code. The message is
++    # localized (i18n key errors.ZBS_MODEL_NOT_ALLOWED) — it names the model
++    # and lists the whitelist so the user sees why and what to do next.
 +    r = await c.patch(
 +        "/api/preferences", headers=alice, json={"preferred_model": "second/m2"}
 +    )
 +    assert r.status_code == 403, r.text
-+    assert r.json()["error"]["code"] == "FORBIDDEN"
++    assert r.json()["error"]["code"] == "ZBS_MODEL_NOT_ALLOWED"
 +    assert r.json()["error"]["details"]["model"] == "second/m2"
 +    assert r.json()["error"]["details"]["allowed_models"] == ["openai/gpt-4o"]
 +
@@ -1277,7 +1409,11 @@ index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c
 +        )
 +        frame = await asyncio.wait_for(ws.receive_json(), timeout=10)
 +        assert frame.get("type") == "error"
-+        assert "allowed models" in frame.get("message", "")
++        # WS surfaces str(exc) — pre-localized with the user's locale: names
++        # the model, lists the whitelist, tells the user whom to ask.
++        assert "second/m2" in frame.get("message", "")
++        assert "openai/gpt-4o" in frame.get("message", "")
++        assert "名单" in frame.get("message", "")
 +
 +    async with ws_connect(c._octop_app, chat_ws_path(agent_id, alice)) as ws:
 +        await ws.send_json(
@@ -1311,7 +1447,7 @@ index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c
 +    assert r.status_code == 200, r.text
 diff --git a/tests/unit/agents/test_model_policy_store.py b/tests/unit/agents/test_model_policy_store.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8f3000232490b7c3b479ab1cf071400cf1237b33
+index 00000000..8f300023
 --- /dev/null
 +++ b/tests/unit/agents/test_model_policy_store.py
 @@ -0,0 +1,141 @@
@@ -1457,7 +1593,7 @@ index 0000000000000000000000000000000000000000..8f3000232490b7c3b479ab1cf071400c
 +        == "a/text-only"
 +    )
 diff --git a/tests/unit/gateway/test_global_processor_team.py b/tests/unit/gateway/test_global_processor_team.py
-index c0428637b77ea13721e0f968d740a29073eec639..b2269af6c2acc685beeea055f38440b1e8a00d6a 100644
+index c0428637..b2269af6 100644
 --- a/tests/unit/gateway/test_global_processor_team.py
 +++ b/tests/unit/gateway/test_global_processor_team.py
 @@ -1675,6 +1675,7 @@ def test_resolve_harness_model_uses_agent_default_and_upgrades_vision() -> None:
@@ -1478,7 +1614,7 @@ index c0428637b77ea13721e0f968d740a29073eec639..b2269af6c2acc685beeea055f38440b1
  
 diff --git a/tests/unit/gateway/test_model_policy_processor.py b/tests/unit/gateway/test_model_policy_processor.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..32506f312185d25f7bff62e899091571db2c3949
+index 00000000..32506f31
 --- /dev/null
 +++ b/tests/unit/gateway/test_model_policy_processor.py
 @@ -0,0 +1,134 @@
@@ -1618,10 +1754,10 @@ index 0000000000000000000000000000000000000000..32506f312185d25f7bff62e899091571
 +    assert p._allowed_models_for_user(1) is None
 diff --git a/tests/unit/users/test_allowed_models_policy.py b/tests/unit/users/test_allowed_models_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..dc58aa379ad35f841a9faa2784f7d877c87c8df4
+index 00000000..575dd7d9
 --- /dev/null
 +++ b/tests/unit/users/test_allowed_models_policy.py
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,134 @@
 +"""ZBS patch 20 — allowed_models policy primitives (F7)."""
 +
 +from __future__ import annotations
@@ -1726,7 +1862,28 @@ index 0000000000000000000000000000000000000000..dc58aa379ad35f841a9faa2784f7d877
 +    assert_model_allowed_for_user(policies, users, uid, "openai/gpt-4o")
 +    with pytest.raises(OctopError) as exc:
 +        assert_model_allowed_for_user(policies, users, uid, "anthropic/claude-4")
-+    assert exc.value.code is ErrorCode.FORBIDDEN
++    assert exc.value.code is ErrorCode.ZBS_MODEL_NOT_ALLOWED
++    assert exc.value.details["model"] == "anthropic/claude-4"
++    assert exc.value.details["allowed_models"] == [
++        "openai/gpt-4o",
++        "deepseek/deepseek-chat",
++    ]
++
++
++def test_assert_model_allowed_for_user_localized_message(db: SqlitePool) -> None:
++    """ZBS round 6: with a locale the message names the model and lists the
++    whitelist (chat WebSocket shows ``str(exc)`` verbatim)."""
++    users = UserRepo(db)
++    policies = UserPolicyRepo(db)
++    uid = users.create(username="alice", password_hash="h", role="user")
++    policies.set(uid, POLICY_ALLOWED_MODELS, '["openai/gpt-4o"]')
++    with pytest.raises(OctopError) as exc:
++        assert_model_allowed_for_user(
++            policies, users, uid, "anthropic/claude-4", locale="zh"
++        )
++    assert "anthropic/claude-4" in str(exc.value)
++    assert "openai/gpt-4o" in str(exc.value)
++    assert "名单" in str(exc.value)
 +    assert exc.value.details["model"] == "anthropic/claude-4"
 +
 +
@@ -1736,7 +1893,7 @@ index 0000000000000000000000000000000000000000..dc58aa379ad35f841a9faa2784f7d877
 +    assert not model_ref_is_allowed("a/c", ["a/b"])
 +    assert not model_ref_is_allowed("", ["a/b"])
 diff --git a/tests/unit/users/test_resource_policy.py b/tests/unit/users/test_resource_policy.py
-index 938af1504c254733de9cfdc3eba7767708e37825..0efbb87234157f7325b923deb3291c476905f37d 100644
+index 938af150..0efbb872 100644
 --- a/tests/unit/users/test_resource_policy.py
 +++ b/tests/unit/users/test_resource_policy.py
 @@ -158,6 +158,7 @@ def test_user_policy_repo_named_rows(db: SqlitePool, tmp_path: Path) -> None:

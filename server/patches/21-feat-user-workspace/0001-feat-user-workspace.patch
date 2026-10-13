@@ -1,5 +1,5 @@
 diff --git a/src/octop/api/common/validators.py b/src/octop/api/common/validators.py
-index e41ea4d38474acb22ed451d8a832c3a794eb9206..2c65cc809cf6ad872ec60e33c9dadb9b65eb45e3 100644
+index e41ea4d3..55433d04 100644
 --- a/src/octop/api/common/validators.py
 +++ b/src/octop/api/common/validators.py
 @@ -2,10 +2,14 @@
@@ -54,7 +54,7 @@ index e41ea4d38474acb22ed451d8a832c3a794eb9206..2c65cc809cf6ad872ec60e33c9dadb9b
 +    if "backend" in new_config and new_config["backend"] == stored_backend:
 +        return
 +    raise OctopError(
-+        ErrorCode.FORBIDDEN,
++        ErrorCode.ZBS_AGENT_BACKEND_ENFORCED,
 +        "agent backend is enforced by the administrator and cannot be changed"
 +        " (settings key 'agent_enforced_backend')",
 +    )
@@ -64,7 +64,7 @@ index e41ea4d38474acb22ed451d8a832c3a794eb9206..2c65cc809cf6ad872ec60e33c9dadb9b
      server: Any,
      *,
 diff --git a/src/octop/api/routers/agents.py b/src/octop/api/routers/agents.py
-index 2ea02c901bb80e0f1b93926dd5548259163853a9..49956ec1442e0f3a07aa974fa17fdfcc01b38bc1 100644
+index 2ea02c90..49956ec1 100644
 --- a/src/octop/api/routers/agents.py
 +++ b/src/octop/api/routers/agents.py
 @@ -11,7 +11,10 @@ from fastapi.responses import Response
@@ -93,7 +93,7 @@ index 2ea02c901bb80e0f1b93926dd5548259163853a9..49956ec1442e0f3a07aa974fa17fdfcc
              user,
              body.config.get("backend"),
 diff --git a/src/octop/api/routers/settings.py b/src/octop/api/routers/settings.py
-index c8b368d1b70adb895cfb36a77c98dc86404ded3f..86b169748c6b7c9043e66e52efb82485603e45a1 100644
+index c8b368d1..86b16974 100644
 --- a/src/octop/api/routers/settings.py
 +++ b/src/octop/api/routers/settings.py
 @@ -11,6 +11,7 @@ from octop.api.deps import current_user, get_server, require_permission
@@ -187,11 +187,35 @@ index c8b368d1b70adb895cfb36a77c98dc86404ded3f..86b169748c6b7c9043e66e52efb82485
 +    return AgentWorkspaceSettingsResponse(
 +        name=enforced_workspace_backend_name(server.services.settings_repo),
 +    )
+diff --git a/src/octop/i18n/en.json b/src/octop/i18n/en.json
+index e7a2993d..65b0c9f8 100644
+--- a/src/octop/i18n/en.json
++++ b/src/octop/i18n/en.json
+@@ -491,6 +491,7 @@
+     "CAPTCHA_REQUIRED": "This server requires a captcha token to sign in.",
+     "CAPTCHA_FAILED": "Captcha verification failed. Try again.",
+     "CONFIG_FILE_CORRUPT": "Cannot update {path}: the file is not valid JSON ({detail}). Fix the syntax and retry — no settings were changed.",
++    "ZBS_AGENT_BACKEND_ENFORCED": "Non-admin users cannot change how this agent runs: its workspace (working folder) is managed by an administrator. You can still edit the name, description, prompt, and other settings; contact an administrator to adjust the workspace.",
+     "TEAM_NOT_FOUND": "Team not found.",
+     "TEAM_MEMBERS_TOO_FEW": "A team needs at least two members.",
+     "TEAM_MEMBER_INVALID": "Those experts cannot join a team on this instance. Peer experts, other teams, and deleted experts are not allowed.",
+diff --git a/src/octop/i18n/zh.json b/src/octop/i18n/zh.json
+index 80dfe905..5807e1f7 100644
+--- a/src/octop/i18n/zh.json
++++ b/src/octop/i18n/zh.json
+@@ -491,6 +491,7 @@
+     "CAPTCHA_REQUIRED": "此服务器登录需要验证码令牌。",
+     "CAPTCHA_FAILED": "验证码校验失败，请重试。",
+     "CONFIG_FILE_CORRUPT": "无法更新 {path}：该文件不是合法 JSON（{detail}）。请修正语法后重试；现有配置未被改动。",
++    "ZBS_AGENT_BACKEND_ENFORCED": "普通用户不能修改智能体的运行方式：运行方式（工作文件夹）由管理员统一设置。名称、说明、提示词等其它设置都可以照常修改；需要调整运行方式请联系管理员。",
+     "TEAM_NOT_FOUND": "未找到该团队。",
+     "TEAM_MEMBERS_TOO_FEW": "团队至少需要两名成员。",
+     "TEAM_MEMBER_INVALID": "所选专家无法加入本机团队。对端专家、其他团队或已删除的专家不能作为成员。",
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
-index 34f881975c1c79279e5471533f0f779575fda0e5..16aa7dee943cef634d505abfbf13cecfc6491ebd 100644
+index 34f88197..5bb7774d 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
-@@ -123,6 +123,55 @@ def _memory_namespace(agent_id: str) -> str:
+@@ -123,6 +123,59 @@ def _memory_namespace(agent_id: str) -> str:
      return f"{_MEMORY_NS_PREFIX}{agent_id}"
  
  
@@ -201,13 +225,17 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..16aa7dee943cef634d505abfbf13cecf
 +# they were created before or after the switch was turned on.
 +AGENT_WORKSPACE_BOUNDARY_PROMPT = (
 +    "\n\n## 你的活动范围\n\n"
-+    "你能读写的是这位用户自己的文件夹（根目录 `/` 就是它）。"
++    "你工作的地方是这位用户专属的空间："
++    "能读写的是这位用户自己的文件夹（根目录 `/` 就是它）。"
 +    "同一位用户名下其他智能体的工作目录在 `/.octop/workspaces/<智能体编号>/`，"
 +    "可以读写；用户让你去用就直接去。"
 +    "别的用户的文件、服务器的系统目录和配置不在你的范围内，"
-+    "在你这里表现为「不存在」——用户要这些时，不要说「路径不对」「系统坏了」，"
-+    "要说明这是活动范围的边界，并给替代办法"
-+    "（请对方把文件发给你、上传到这里，或找管理员）。"
++    "在你这里表现为「不存在」——看不到不代表服务器上没有，"
++    "只是不在这位用户的范围内，不要猜测那个文件存不存在。"
++    "向用户解释时，用一两句大白话说清"
++    "「这是你的专属空间，别人的和系统的东西在这里看不到」，"
++    "再给替代办法（请对方把文件发给你、上传到这里，或找管理员）；"
++    "不要展开容器、挂载等技术细节，也不要说「路径不对」「系统坏了」。"
 +    "浏览器只能打开自己文件夹里的文件和网址。\n"
 +)
 +
@@ -247,7 +275,7 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..16aa7dee943cef634d505abfbf13cecf
  def skills_disabled_set(cfg: dict[str, Any]) -> set[str]:
      """Return the set of disabled skill slugs from agent config."""
      raw = cfg.get("skills_disabled")
-@@ -641,6 +690,12 @@ class AgentManager:
+@@ -641,6 +694,12 @@ class AgentManager:
                          self._repos.agent_repo,
                          spec.user_id,
                      )
@@ -260,7 +288,7 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..16aa7dee943cef634d505abfbf13cecf
                  raise_if_backend_outside_user_root(
                      self._repos.user_policy_repo,
                      spec.user_id,
-@@ -2529,6 +2584,89 @@ class AgentManager:
+@@ -2529,6 +2588,89 @@ class AgentManager:
      # Internal — validation
      # ------------------------------------------------------------------
  
@@ -350,7 +378,7 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..16aa7dee943cef634d505abfbf13cecf
      def _assert_agent_name_available(
          self,
          user_id: int | None,
-@@ -2764,17 +2902,36 @@ class AgentManager:
+@@ -2764,17 +2906,36 @@ class AgentManager:
          return isinstance(spec, dict) and str(spec.get("type") or "").lower() == "opensandbox"
  
      def _prepare_docker_backend(self, backend: Any, row: AgentRow) -> Any:
@@ -396,7 +424,7 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..16aa7dee943cef634d505abfbf13cecf
  
      def _backend_workspace_for_row(
          self,
-@@ -3056,6 +3213,78 @@ class AgentManager:
+@@ -3056,6 +3217,78 @@ class AgentManager:
              return connector_user_id
          return row.user_id
  
@@ -475,7 +503,7 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..16aa7dee943cef634d505abfbf13cecf
      def _prepare_stream_request(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
          from octop_harness.plugins import collect_plugin_tool_configs  # noqa: PLC0415
  
-@@ -3071,7 +3300,20 @@ class AgentManager:
+@@ -3071,7 +3304,20 @@ class AgentManager:
              configurable = dict(req.get("configurable") or {})
              configurable["plugin_tool_configs"] = tool_configs
              req["configurable"] = configurable
@@ -497,7 +525,7 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..16aa7dee943cef634d505abfbf13cecf
  
      def _build_harness_config(self, row: AgentRow) -> HarnessAgentConfig:
          """Convert an AgentRow into a HarnessAgentConfig."""
-@@ -3279,6 +3521,16 @@ class AgentManager:
+@@ -3279,6 +3525,16 @@ class AgentManager:
          if not team_host and not bootstrap_marker_exists(ws):
              system_prompt = None
              memory = ()
@@ -515,10 +543,10 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..16aa7dee943cef634d505abfbf13cecf
          mcp_server_configs: dict[str, Any] = {}
          if not team_host:
 diff --git a/src/octop/infra/agents/middleware/browser_profile.py b/src/octop/infra/agents/middleware/browser_profile.py
-index ecf3b35bc81fcb0a44e8bbd0361aff649af87742..245354e258883050e4358c51d9212f76845301c6 100644
+index ecf3b35b..82e0c649 100644
 --- a/src/octop/infra/agents/middleware/browser_profile.py
 +++ b/src/octop/infra/agents/middleware/browser_profile.py
-@@ -22,6 +22,128 @@ _MISSING_USER = (
+@@ -22,6 +22,146 @@ _MISSING_USER = (
      "so a browser profile cannot be isolated."
  )
  
@@ -548,14 +576,26 @@ index ecf3b35bc81fcb0a44e8bbd0361aff649af87742..245354e258883050e4358c51d9212f76
 +    """Return the host path a ``file:`` URL points at, or ``None``.
 +
 +    Non-file schemes (http/https/about/data/…) return ``None`` so they are
-+    untouched. ``file:///a/b`` → ``/a/b``; ``file://host/…`` names a host
++    untouched. Leading whitespace and ``view-source:`` prefixes are stripped
++    first — Chromium treats ``view-source:file:///…`` as a plain file view of
++    that path (verified in zt026-octop2: the marker text of a file outside the
++    user's folder is fully readable), so it must be judged by the same rules.
++    ``file:///a/b`` → ``/a/b``; ``file://host/…`` names a host
 +    (not meaningful for this deployment) and yields ``""`` so callers refuse
 +    it rather than guessing which file was meant.
 +    """
 +    text = str(url).strip()
 +    if not text:
 +        return None
-+    if not text.lower().startswith("file:"):
++    # view-source: is its own scheme stacked on the real one; Chromium allows
++    # it to be repeated (view-source:view-source:file:…), so strip a run.
++    lowered = text.lower()
++    while lowered.startswith("view-source:"):
++        text = text[len("view-source:") :].lstrip()
++        lowered = text.lower()
++    if not text:
++        return None
++    if not lowered.startswith("file:"):
 +        return None
 +    body = text[len("file:") :].lstrip()
 +    if body.startswith("//"):
@@ -619,7 +659,13 @@ index ecf3b35bc81fcb0a44e8bbd0361aff649af87742..245354e258883050e4358c51d9212f76
 +        host_path, allowed = resolved
 +        if not allowed:
 +            return _refuse(request, tool_call, _BLOCKED_FILE_URL)
-+        new_args[key] = "file://" + host_path
++        # Percent-encode the path so filenames with spaces, non-ASCII
++        # characters, ``#`` or ``?`` survive the round-trip (agent-spoken
++        # plain paths would otherwise break on ``#`` — Chromium treats it as
++        # the fragment delimiter, verified in zt026-octop2).
++        from urllib.parse import quote
++
++        new_args[key] = "file://" + quote(host_path, safe="/:")
 +
 +    for key in raw_path_keys:
 +        value = str(args[key])
@@ -647,7 +693,7 @@ index ecf3b35bc81fcb0a44e8bbd0361aff649af87742..245354e258883050e4358c51d9212f76
  
  def _bind_browser_profile(request: ToolCallRequest) -> ToolCallRequest | ToolMessage:
      tool_call = request.tool_call
-@@ -41,7 +163,16 @@ def _bind_browser_profile(request: ToolCallRequest) -> ToolCallRequest | ToolMes
+@@ -41,7 +181,16 @@ def _bind_browser_profile(request: ToolCallRequest) -> ToolCallRequest | ToolMes
      raw_args = tool_call.get("args")
      args = dict(raw_args) if isinstance(raw_args, dict) else {}
      args["profile"] = user_browser_profile(user_id)
@@ -666,7 +712,7 @@ index ecf3b35bc81fcb0a44e8bbd0361aff649af87742..245354e258883050e4358c51d9212f76
  
  class BrowserProfileMiddleware(AgentMiddleware[Any, Any]):
 diff --git a/src/octop/infra/backend/adapter.py b/src/octop/infra/backend/adapter.py
-index fc81c3c49cf84a5a3f58a880e3d0492b7231ef37..e9e7eb5238cc93c43772fbe2f8501befd3e0168f 100644
+index fc81c3c4..e9e7eb52 100644
 --- a/src/octop/infra/backend/adapter.py
 +++ b/src/octop/infra/backend/adapter.py
 @@ -119,7 +119,22 @@ def row_to_backend_spec(row: BackendRow) -> dict[str, Any] | None:
@@ -694,7 +740,7 @@ index fc81c3c49cf84a5a3f58a880e3d0492b7231ef37..e9e7eb5238cc93c43772fbe2f8501bef
      if kind == "postgres":
          from octop.infra.backend.postgres_spec import row_to_postgres_spec
 diff --git a/src/octop/infra/backend/docker_spec.py b/src/octop/infra/backend/docker_spec.py
-index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..ebc502a7fde07342c07fe330775a61159aa19256 100644
+index 577ddba1..ebc502a7 100644
 --- a/src/octop/infra/backend/docker_spec.py
 +++ b/src/octop/infra/backend/docker_spec.py
 @@ -64,6 +64,8 @@ def enrich_docker_backend_spec(
@@ -766,8 +812,28 @@ index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..ebc502a7fde07342c07fe330775a6115
  def inject_docker_global_environment(
      spec: dict[str, Any],
      env_file: str | Path | None,
+diff --git a/src/octop/infra/errors.py b/src/octop/infra/errors.py
+index 6d77d7f9..4236ae60 100644
+--- a/src/octop/infra/errors.py
++++ b/src/octop/infra/errors.py
+@@ -82,6 +82,7 @@ class ErrorCode(StrEnum):
+     TLS_ISSUE_IN_PROGRESS = "TLS_ISSUE_IN_PROGRESS"
+     TLS_DOMAIN_MISMATCH = "TLS_DOMAIN_MISMATCH"
+     WORKSPACE_OP_UNSUPPORTED = "WORKSPACE_OP_UNSUPPORTED"
++    ZBS_AGENT_BACKEND_ENFORCED = "ZBS_AGENT_BACKEND_ENFORCED"
+     SKILL_IMPORT_UNSUPPORTED_URL = "SKILL_IMPORT_UNSUPPORTED_URL"
+     SKILL_IMPORT_FAILED = "SKILL_IMPORT_FAILED"
+     SKILL_ALREADY_EXISTS = "SKILL_ALREADY_EXISTS"
+@@ -213,6 +214,7 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
+     ErrorCode.TLS_ISSUE_IN_PROGRESS: 409,
+     ErrorCode.TLS_DOMAIN_MISMATCH: 400,
+     ErrorCode.WORKSPACE_OP_UNSUPPORTED: 400,
++    ErrorCode.ZBS_AGENT_BACKEND_ENFORCED: 403,
+     ErrorCode.SKILL_IMPORT_UNSUPPORTED_URL: 400,
+     ErrorCode.SKILL_IMPORT_FAILED: 502,
+     ErrorCode.SKILL_ALREADY_EXISTS: 409,
 diff --git a/src/octop/infra/users/resource_policy.py b/src/octop/infra/users/resource_policy.py
-index 21d89a2e91f80ff791b19eecd0329ef5996b0d37..7f7d1b91114316b224fa702a34e7a3d185dc50a2 100644
+index 46d00f6a..9833b5ae 100644
 --- a/src/octop/infra/users/resource_policy.py
 +++ b/src/octop/infra/users/resource_policy.py
 @@ -7,6 +7,7 @@ import os
@@ -806,10 +872,10 @@ index 21d89a2e91f80ff791b19eecd0329ef5996b0d37..7f7d1b91114316b224fa702a34e7a3d1
      """Return ``value`` when the policy row exists and is enabled."""
 diff --git a/tests/unit/agents/test_browser_file_policy.py b/tests/unit/agents/test_browser_file_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7c2c122afd3ffa9fd1f035c9273dff91e4625360
+index 00000000..f65dcc83
 --- /dev/null
 +++ b/tests/unit/agents/test_browser_file_policy.py
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,292 @@
 +"""Unit tests for the ZBS F11 browser local-file policy.
 +
 +Covers the ``browser_profile`` middleware's file-address rewriting:
@@ -1036,6 +1102,61 @@ index 0000000000000000000000000000000000000000..7c2c122afd3ffa9fd1f035c9273dff91
 +    assert browser_profile._local_path_from_file_url("file://host/a") == ""
 +
 +
++def test_local_path_from_file_url_view_source_prefix() -> None:
++    """ZBS round 6: ``view-source:file:///…`` is judged by the same rules.
++
++    Chromium opens it as a plain view of that file (verified in
++    zt026-octop2: a marker file outside the user's folder was fully
++    readable through ``view-source:file://``), so the prefix must be
++    stripped before the file policy decides.
++    """
++    assert browser_profile._local_path_from_file_url(
++        "view-source:file:///data/.octop/users/bob/secret.txt"
++    ) == "/data/.octop/users/bob/secret.txt"
++    # Leading whitespace around the whole value / between prefixes.
++    assert browser_profile._local_path_from_file_url(
++        "  view-source:  file:///a/b"
++    ) == "/a/b"
++    # Repeated prefixes are Chromium-legal and stripped the same way.
++    assert browser_profile._local_path_from_file_url(
++        "view-source:view-source:file:///a/b"
++    ) == "/a/b"
++    # http(s) under view-source stays untouched (still not a file: URL).
++    assert browser_profile._local_path_from_file_url(
++        "view-source:https://example.com/x"
++    ) is None
++
++
++@pytest.mark.asyncio
++async def test_view_source_file_url_other_user_refused(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {
++            "action": "navigate",
++            "url": "view-source:file:///data/.octop/users/bob/secret.txt",
++        },
++        resolver=_deny(),
++    )
++    handler.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++async def test_own_folder_filename_percent_encoded(monkeypatch) -> None:
++    """ZBS round 6: allowed paths are percent-encoded so spaces, non-ASCII
++    and ``#`` survive the URL round-trip (``#`` starts the fragment and
++    truncated the path in zt026-octop2)."""
++    host = "/srv/users/alice/.octop/workspaces/ABC/中文 测试#1.html"
++    handler = await _run(
++        monkeypatch,
++        {"action": "navigate", "url": "file:///.octop/workspaces/ABC/page.html"},
++        resolver=_own(host),
++    )
++    forwarded = handler.await_args.args[0]
++    assert forwarded.tool_call["args"]["url"] == (
++        "file:///srv/users/alice/.octop/workspaces/ABC/%E4%B8%AD%E6%96%87%20%E6%B5%8B%E8%AF%95%231.html"
++    )
++
++
 +@pytest.mark.asyncio
 +async def test_refusal_message_is_chinese_explanation(monkeypatch) -> None:
 +    _patch_user(monkeypatch)
@@ -1049,7 +1170,7 @@ index 0000000000000000000000000000000000000000..7c2c122afd3ffa9fd1f035c9273dff91
 +    assert "替代" in str(result.content) or "请" in str(result.content)
 diff --git a/tests/unit/agents/test_user_workspace_policy.py b/tests/unit/agents/test_user_workspace_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813ebf6c8c53b
+index 00000000..dea52221
 --- /dev/null
 +++ b/tests/unit/agents/test_user_workspace_policy.py
 @@ -0,0 +1,443 @@
@@ -1390,7 +1511,7 @@ index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813eb
 +            new_config={"backend": {"type": "local_shell", "root_dir": "/"}},
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.FORBIDDEN
++    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
 +
 +
 +def test_patch_blocks_missing_backend_key_when_switch_on() -> None:
@@ -1403,7 +1524,7 @@ index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813eb
 +            new_config={"persona": "INTJ"},
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.FORBIDDEN
++    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
 +
 +
 +def test_patch_allows_same_backend_when_switch_on() -> None:
@@ -1460,7 +1581,7 @@ index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813eb
 +            new_config={"backend": {"type": "local_shell", "root_dir": "/data/.octop/users/tb"}},
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.FORBIDDEN
++    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
 +
 +
 +def test_patch_blocks_root_dir_to_host_root() -> None:
@@ -1471,7 +1592,7 @@ index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813eb
 +            new_config={"backend": {"type": "local_shell", "root_dir": "/"}},
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.FORBIDDEN
++    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
 +
 +
 +def test_patch_blocks_flipping_inherit_env() -> None:
@@ -1484,7 +1605,7 @@ index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813eb
 +            },
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.FORBIDDEN
++    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
 +
 +
 +def test_patch_blocks_switching_backend_type() -> None:
@@ -1495,13 +1616,13 @@ index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813eb
 +            new_config={"backend": {"type": "filesystem", "root_dir": "/data"}},
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.FORBIDDEN
++    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
 diff --git a/tests/unit/agents/test_workspace_boundary_prompt.py b/tests/unit/agents/test_workspace_boundary_prompt.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4c72ff5ecf8982d1d6fc76e17630c00a47732652
+index 00000000..9b0084ed
 --- /dev/null
 +++ b/tests/unit/agents/test_workspace_boundary_prompt.py
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,159 @@
 +"""Unit tests for the ZBS F13 agent workspace boundary prompt.
 +
 +Covers ``AgentManager._build_harness_config``'s runtime-only prompt append:
@@ -1604,6 +1725,14 @@ index 0000000000000000000000000000000000000000..4c72ff5ecf8982d1d6fc76e17630c00a
 +    assert "工作目录在 `/.octop/workspaces/<智能体编号>/`" in prompt
 +    assert "不要说「路径不对」「系统坏了」" in prompt
 +    assert "浏览器只能打开自己文件夹里的文件和网址" in prompt
++    # ZBS round 6: plain-language framing for the user, no tech detail, no
++    # guessing whether the file exists. (The wording itself forbids tech
++    # detail — "不要展开容器、挂载等技术细节" — so the literal words appear
++    # inside that instruction; what matters is the instruction is there.)
++    assert "专属空间" in prompt
++    assert "看不到不代表服务器上没有" in prompt
++    assert "不要猜测那个文件存不存在" in prompt
++    assert "不要展开容器、挂载等技术细节" in prompt
 +
 +
 +async def test_boundary_prompt_not_appended_for_admin(
@@ -1654,7 +1783,7 @@ index 0000000000000000000000000000000000000000..4c72ff5ecf8982d1d6fc76e17630c00a
 +    manager._repos.settings_repo.delete(ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY)
 +    assert _built_prompt(manager, agent_id) == "你是一个助手。"
 diff --git a/tests/unit/test_storage_spec.py b/tests/unit/test_storage_spec.py
-index 4d800e19e3bbe2c4bcc16401669bcd625341012f..d4322c4428737f06cd3ff03fb20b15ecef99e23d 100644
+index 4d800e19..d4322c44 100644
 --- a/tests/unit/test_storage_spec.py
 +++ b/tests/unit/test_storage_spec.py
 @@ -253,6 +253,134 @@ def test_enrich_docker_backend_spec_defaults() -> None:

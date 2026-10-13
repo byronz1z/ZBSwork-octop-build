@@ -2,11 +2,11 @@
 
 | 项 | 内容 |
 |---|---|
-| 层级 | L3 核心补丁（后端 12 个官方文件 + 前端 4 个官方文件） |
+| 层级 | L3 核心补丁（后端 12 个官方文件 + 前端 5 个官方文件；另 6 个测试文件） |
 | 状态 | enabled |
 | 实测 | v1.0.2b6 严格 apply 通过（10 → 20 → 21 顺序）；本机单元/集成测试通过（见 `_work\ZT-026\step2\报告-补丁20.md`） |
 | 上游 PR | 否——ZBS 自有的权限收紧策略，上游官方无意向 |
-| 依据 | 指挥部任务 ZT-026 任务单 F7–F11（日志 10-12 #190 #195 #198） |
+| 依据 | 指挥部任务 ZT-026 任务单（2026-10-13 重写版）第二节功能点 F8–F10（旧稿 F7–F11，见文末对照；日志 10-12 #190 #195 #198） |
 
 ## 问题（源码事实，上游 v1.0.2b6）
 
@@ -116,10 +116,11 @@ IM=会话归属用户 `resolve_user_id_for_message`，`processor.py:621-625`）�
 结果按名单判），入口不另设校验，语义与官方"过期的固定模型静默丢弃、走低优先级"
 一致。F8 的十处见报告逐处对照表。
 
-前端（4 个）：
+前端（5 个）：
 
 | 文件 | 位置 | 改动 |
 |---|---|---|
+| `dashboard/src/api/modules/userRoles.ts` | `UserRole` 接口加 `allowed_models` 字段；`userRoleDrift` 对比含名单 | F10 角色接口类型与漂移检测 |
 | `dashboard/src/pages/Admin/Users/UsersListPanel.tsx` | `PolicyFormValues`、`policyPayload`、`rolePoliciesFromForm`、`ResourcePolicyFields`、批量 | F10 可用模型多选 |
 | `dashboard/src/pages/Admin/Users/RolesPanel.tsx` | 表单初值/提交 | F10 角色页 |
 | `dashboard/src/locales/zh.json`、`en.json` | `adminUsers` 段 | F10 文案 |
@@ -144,6 +145,53 @@ IM=会话归属用户 `resolve_user_id_for_message`，`processor.py:621-625`）�
 
 ZBS 停用"按角色分发模型"策略（决策人明说不再限制普通用户可用模型）时删除本模块；
 编号 20 作废不再使用。
+
+## F 编号新旧对照（2026-10-13 任务单重写后）
+
+旧稿 F7（策略与角色）= 现行 **F8** 的一部分（角色上设名单）；旧 F8（选模型各处按名单判）= 现行 **F9**；
+旧 F9（模型列表只显示名单里的）并入现行 **F9**；旧 F10（管理页）= 现行 **F10** 的界面部分；
+旧 F11（接口对非管理员不返回密钥）= 现行 **F10**。现行 F8 全文：角色上能设"可用模型名单"，
+可对个人单独调、可批量下发；F9 全文：选模型的各处都按名单判、模型列表只显示名单里的、
+没设名单 = 和官方完全一样。
+
+## 第 6 轮增补（2026-10-13，按 Codex 审核第 2 轮和总调度演练验收）
+
+演练环境实测（2026-10-13 验收第 9、10 项）：用户选了名单外的模型时，接口只回
+"没有权限。"，用户看不出为什么、该怎么办；验收记录 08 里命令行/渠道指定名单外
+模型被悄悄换成名单内的、没有任何提示。本轮改动：
+
+- **专用错误码 + 双语文案**：`assert_model_allowed_for_user` 的拒绝从通用
+  `FORBIDDEN` 改为专用错误码 `ZBS_MODEL_NOT_ALLOWED`，文案进官方 i18n
+  （`src/octop/i18n/{zh,en}.json` 的 `errors.ZBS_MODEL_NOT_ALLOWED` 键，
+  details 带 `model` / `allowed_models` / `allowed`）。设常用模型（preferences）、
+  网页发消息指定模型（turn）、定时任务指定模型（cron）三处共用这一个 raise 点，
+  全部生效。中文原文：「「{model}」不在你可用的模型名单里。你可以使用的模型：
+  {allowed}。需要其它模型请联系管理员调整名单。」（`{allowed}` 是名单按 "、"
+  连接后的可读串；REST 路径由官方异常处理器 `to_envelope(locale)` 按
+  `details` 插值本地化——照官方 `resource_policy.py:189` 的
+  `TOKEN_QUOTA_EXCEEDED` + `details={used, quota}` 同款机制。）
+- **网页聊天 WebSocket 路径**：官方 `api/routers/chat/ws.py:161` 对
+  `OctopError` 回 `str(exc)`（不走 `to_envelope` 本地化），因此 turn.py 的
+  调用点传 `locale=getattr(user, "locale", None) or "zh"`，raise 时用官方
+  `OctopError.localized(code, locale, ...)` 预解析（照官方同文件
+  `CONNECTOR_MCP_LOAD_FAILED` 的现成写法，turn.py:252）。前端
+  `chatStore.ts:1238` 把 error 帧的 `message` 原样放进错误气泡——不用改
+  网页端文件。集成测试断言 WS 帧里出现模型名、名单和"名单"字样。
+- **`/model` 命令回执**（命令行/渠道指定名单外模型的提示）：官方
+  `cmd_model`（`infra/gateway/slash/handlers/composite.py:299`）设置
+  thread 覆盖前没有任何校验，设置成功还回执"已设为 XX"，下一轮对话被
+  名单过滤掉、静默换模型——这正是"悄悄换"的路径。本轮在
+  `set_thread_model_override` 之前查名单，名单外**不设置**，用官方
+  `sink.text(tr(...))` 回执通道回一句（i18n 键 `slash.model.not_allowed`，
+  zh/en 两份）：「「{model}」不在你可用的模型名单里，未设置。你可以使用的
+  模型：{allowed}。需要其它模型请联系管理员。」
+- **已知的不提示之处（如实写明）**：定时任务**执行期**（`cron/delivery.py`）
+  遇到名单外的存量模型仍是静默丢弃走兜底、没有给用户回提示——查过官方
+  现成机制：cron 执行期没有用户在线的回执通道（结果投递到会话/渠道，
+  无类似 `/model` 的命令回执），官方没有现成办法在不新造通知机制的前提下
+  回这句话，故不加（避免过度加固）；创建/更新定时任务时的入口校验（400/403
+  带上述说明）已覆盖用户主动指定的场景，存量任务的执行期兜底行为与官方
+  "过期的固定模型静默丢弃"语义一致。
 
 ## 生产注意
 
