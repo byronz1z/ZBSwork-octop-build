@@ -93,7 +93,7 @@ index 2ea02c901bb80e0f1b93926dd5548259163853a9..49956ec1442e0f3a07aa974fa17fdfcc
              user,
              body.config.get("backend"),
 diff --git a/src/octop/api/routers/settings.py b/src/octop/api/routers/settings.py
-index c8b368d1b70adb895cfb36a77c98dc86404ded3f..b092ec2e302a53e7adc15bf08afd4b04640dc007 100644
+index c8b368d1b70adb895cfb36a77c98dc86404ded3f..ba3eafc86735c3419935540ec5de9b506522a54a 100644
 --- a/src/octop/api/routers/settings.py
 +++ b/src/octop/api/routers/settings.py
 @@ -11,6 +11,7 @@ from octop.api.deps import current_user, get_server, require_permission
@@ -104,7 +104,7 @@ index c8b368d1b70adb895cfb36a77c98dc86404ded3f..b092ec2e302a53e7adc15bf08afd4b04
  from octop.infra.users.identity import User
  
  router = APIRouter()
-@@ -183,3 +184,81 @@ async def put_captcha_settings(
+@@ -183,3 +184,82 @@ async def put_captcha_settings(
          payload=f"source={view['source']}",
      )
      return CaptchaSettingsResponse.model_validate(view)
@@ -118,7 +118,7 @@ index c8b368d1b70adb895cfb36a77c98dc86404ded3f..b092ec2e302a53e7adc15bf08afd4b04
 +
 +class AgentSandboxSettingsPut(BaseModel):
 +    name: str | None = Field(
-+        description="A kind=docker, sandbox_scope=user storage backend name; null/empty disables.",
++        description="A kind=shell storage backend name (root_dir may use {username}); null/empty disables.",
 +    )
 +
 +
@@ -149,11 +149,12 @@ index c8b368d1b70adb895cfb36a77c98dc86404ded3f..b092ec2e302a53e7adc15bf08afd4b04
 +    admin: User = Depends(require_permission("storage_backends")),
 +    server: Any = Depends(get_server),
 +) -> AgentSandboxSettingsResponse:
-+    """Point the enforced-sandbox switch at a configured docker storage backend.
++    """Point the enforced-sandbox switch at a configured shell storage backend.
 +
-+    Non-admin users' new agents are then created on that backend, and those
-+    users may no longer change their agents' backend. Pass ``null`` (or an
-+    empty name) to turn the switch off.
++    Non-admin users' new agents are then created on that backend (a local
++    shell backend whose ``root_dir`` may use a per-user ``{username}``
++    placeholder), and those users may no longer change their agents'
++    backend. Pass ``null`` (or an empty name) to turn the switch off.
 +    """
 +    from octop.infra.users.resource_policy import (
 +        ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY,
@@ -169,10 +170,10 @@ index c8b368d1b70adb895cfb36a77c98dc86404ded3f..b092ec2e302a53e7adc15bf08afd4b04
 +                ErrorCode.STORAGE_BACKEND_REFERENCED,
 +                f"storage backend {name!r} not found",
 +            )
-+        if str(row.kind or "").lower() != "docker" or not row.enabled:
++        if str(row.kind or "").lower() != "shell" or not row.enabled:
 +            raise OctopError(
 +                ErrorCode.STORAGE_BACKEND_REFERENCED,
-+                f"storage backend {name!r} must be an enabled docker backend",
++                f"storage backend {name!r} must be an enabled shell backend",
 +            )
 +    if name is None:
 +        server.services.settings_repo.delete(ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY)
@@ -187,7 +188,7 @@ index c8b368d1b70adb895cfb36a77c98dc86404ded3f..b092ec2e302a53e7adc15bf08afd4b04
 +        name=enforced_sandbox_backend_name(server.services.settings_repo),
 +    )
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
-index 46384d85676044d9c6886fad29b6e43dce44b20a..977333233567f8f63b6af32b34c39e52a19f5982 100644
+index 34f881975c1c79279e5471533f0f779575fda0e5..a0ce825375ec8aa382bdf161c923ed44f7f0127a 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
 @@ -641,6 +641,12 @@ class AgentManager:
@@ -203,7 +204,7 @@ index 46384d85676044d9c6886fad29b6e43dce44b20a..977333233567f8f63b6af32b34c39e52
                  raise_if_backend_outside_user_root(
                      self._repos.user_policy_repo,
                      spec.user_id,
-@@ -2521,6 +2527,35 @@ class AgentManager:
+@@ -2529,6 +2535,59 @@ class AgentManager:
      # Internal — validation
      # ------------------------------------------------------------------
  
@@ -228,75 +229,167 @@ index 46384d85676044d9c6886fad29b6e43dce44b20a..977333233567f8f63b6af32b34c39e52
 +        name = enforced_sandbox_backend_name(settings_repo)
 +        if not name:
 +            return None
-+        if self._repos.storage_backend_repo.get_by_name(name) is None:
++        row = self._repos.storage_backend_repo.get_by_name(name)
++        if row is None:
 +            logger.warning("agent_enforced_backend %r not found in storage_backends", name)
 +            return None
 +        owner = self._repos.user_repo.get(user_id)
 +        if owner is None or user_row_is_admin(owner):
 +            return None
-+        return {"type": "named", "name": name}
++        # Expand the named backend into a concrete local_shell spec so that
++        # ``seed_workspace_dir_on_create`` sees the scoped ``root_dir`` and
++        # places the agent workspace under the owner's folder (F4 file
++        # isolation). ``{username}`` resolves to the owner's username here;
++        # ``_prepare_docker_backend`` would also expand it at runtime, but
++        # the on-disk workspace path is decided at create time from the
++        # persisted spec, so the placeholder must be resolved now.
++        from octop.infra.backend.adapter import row_to_backend_spec  # noqa: PLC0415
++        from octop.infra.backend.docker_spec import resolve_username_placeholder  # noqa: PLC0415
++
++        spec = row_to_backend_spec(row)
++        if not isinstance(spec, dict):
++            return {"type": "named", "name": name}
++        username = owner.username or ""
++        root = spec.get("root_dir")
++        if isinstance(root, str) and "{username}" in root:
++            spec = dict(spec)
++            spec["root_dir"] = resolve_username_placeholder(root, username)
++            env = spec.get("env")
++            if isinstance(env, dict):
++                spec["env"] = {
++                    str(k): resolve_username_placeholder(v, username) for k, v in env.items()
++                }
++        return spec
 +
      def _assert_agent_name_available(
          self,
          user_id: int | None,
+@@ -2764,17 +2823,36 @@ class AgentManager:
+         return isinstance(spec, dict) and str(spec.get("type") or "").lower() == "opensandbox"
+ 
+     def _prepare_docker_backend(self, backend: Any, row: AgentRow) -> Any:
+-        """Inject Octop docker defaults (prefix / agent_id / username) without overwrite."""
+-        if not isinstance(backend, dict) or backend.get("type") != "docker":
++        """Inject Octop defaults and ``{username}`` placeholders, without overwrite."""
++        if not isinstance(backend, dict):
+             return backend
+-        from octop.infra.utils.env_file import env_file_path  # noqa: PLC0415
++        if backend.get("type") == "docker":
++            from octop.infra.utils.env_file import env_file_path  # noqa: PLC0415
+ 
+-        enriched = enrich_docker_backend_spec(
+-            backend,
+-            agent_id=row.agent_id,
+-            username=self._owner_username(row),
+-        )
+-        return inject_docker_global_environment(enriched, env_file_path(self._paths.root))
++            enriched = enrich_docker_backend_spec(
++                backend,
++                agent_id=row.agent_id,
++                username=self._owner_username(row),
++            )
++            return inject_docker_global_environment(enriched, env_file_path(self._paths.root))
++        # ZBS: per-user local backends — expand ``{username}`` in ``root_dir`` /
++        # ``env`` values to the agent owner's username (named shell backends
++        # rooted at e.g. ``/data/.octop/users/{username}``).
++        if backend.get("type") in ("local_shell", "filesystem"):
++            from octop.infra.backend.docker_spec import resolve_username_placeholder  # noqa: PLC0415
++
++            username = self._owner_username(row)
++            root = backend.get("root_dir")
++            if username and isinstance(root, str) and "{username}" in root:
++                resolved = dict(backend)
++                resolved["root_dir"] = resolve_username_placeholder(root, username)
++                env = resolved.get("env")
++                if isinstance(env, dict):
++                    resolved["env"] = {
++                        str(k): resolve_username_placeholder(v, username) for k, v in env.items()
++                    }
++                return resolved
++        return backend
+ 
+     def _backend_workspace_for_row(
+         self,
+diff --git a/src/octop/infra/backend/adapter.py b/src/octop/infra/backend/adapter.py
+index fc81c3c49cf84a5a3f58a880e3d0492b7231ef37..e9e7eb5238cc93c43772fbe2f8501befd3e0168f 100644
+--- a/src/octop/infra/backend/adapter.py
++++ b/src/octop/infra/backend/adapter.py
+@@ -119,7 +119,22 @@ def row_to_backend_spec(row: BackendRow) -> dict[str, Any] | None:
+ 
+     if kind == "shell":
+         root = cfg.get("root_dir") or row.bucket or "/"
+-        return {"type": "local_shell", "root_dir": str(root), "virtual_mode": True}
++        spec: dict[str, Any] = {
++            "type": "local_shell",
++            "root_dir": str(root),
++            "virtual_mode": True,
++        }
++        # ZBS: named shell backends may also pin the command environment
++        # (harness ``resolve_backend`` passes these through to the shell
++        # backend, e.g. ``SSL_CERT_FILE`` for jailed https, ``inherit_env``
++        # false so agent commands don't see the Octop process secrets).
++        if "inherit_env" in cfg:
++            spec["inherit_env"] = bool(cfg["inherit_env"])
++        if isinstance(cfg.get("env"), dict):
++            spec["env"] = {
++                str(k): str(v) for k, v in cfg["env"].items() if str(k).strip()
++            }
++        return spec
+ 
+     if kind == "postgres":
+         from octop.infra.backend.postgres_spec import row_to_postgres_spec
 diff --git a/src/octop/infra/backend/docker_spec.py b/src/octop/infra/backend/docker_spec.py
-index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..3e55051a951b29b89b2b411541289510eb46f21c 100644
+index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..ae27954442cb5b30f5ea5332e7cbe3a9d34ea73c 100644
 --- a/src/octop/infra/backend/docker_spec.py
 +++ b/src/octop/infra/backend/docker_spec.py
-@@ -64,6 +64,9 @@ def enrich_docker_backend_spec(
+@@ -64,6 +64,8 @@ def enrich_docker_backend_spec(
      - ``sandbox_scope`` defaults to ``agent``
      - ``agent`` scope: set ``agent_id`` when missing
      - ``user`` scope: set ``username`` from the agent owner when missing
-+    - ``volumes`` keys may contain a ``{username}`` placeholder resolved to the
-+      agent owner's username (user-scoped per-user mounts, e.g.
-+      ``{"octop_sbx_{username}": {"bind": "/data/.octop/agents", "mode": "rw"}}``)
++    - ``root_dir`` (and ``env`` values) may contain a ``{username}`` placeholder
++      resolved to the agent owner's username (per-user local backends, ZBS)
      """
      if str(spec.get("type") or "").lower() != "docker":
          return spec
-@@ -75,9 +78,38 @@ def enrich_docker_backend_spec(
+@@ -75,9 +77,33 @@ def enrich_docker_backend_spec(
          out.setdefault("agent_id", agent_id)
      elif scope == "user" and username and not out.get("username"):
          out["username"] = username
-+    resolved = _resolve_volumes_username_placeholder(out.get("volumes"), username)
-+    if resolved is not None:
-+        out["volumes"] = resolved
++    root = out.get("root_dir")
++    if root is not None:
++        out["root_dir"] = resolve_username_placeholder(root, username)
++    env = out.get("env")
++    if isinstance(env, dict):
++        resolved_env = {
++            str(k): resolve_username_placeholder(v, username) for k, v in env.items()
++        }
++        if resolved_env != env:
++            out["env"] = resolved_env
      return out
  
  
-+def _resolve_volumes_username_placeholder(
-+    volumes: Any,
-+    username: str | None,
-+) -> Any:
-+    """Expand ``{username}`` in *volumes* mount keys to the owner's username.
++def resolve_username_placeholder(value: Any, username: str | None) -> Any:
++    """Expand ``{username}`` in *value* to the agent owner's username (ZBS).
 +
-+    Only mapping-style specs (docker-py ``{host: {"bind": ..., "mode": ...}}``)
-+    carry user-configurable volume names; list specs keep short-form mount
-+    strings unchanged. Without a resolvable *username* the placeholder is
-+    left as-is so an explicit Docker error surfaces the misconfiguration
-+    instead of silently mounting a shared volume.
++    Used for per-user local backends whose ``root_dir`` / ``env`` values carry
++    the placeholder (e.g. ``/data/.octop/users/{username}``). The username is
++    injected by :func:`enrich_docker_backend_spec`'s octop caller and shared
++    here. Without a username the value is left as-is so the misconfiguration
++    surfaces explicitly.
 +    """
-+    if not isinstance(volumes, dict) or not username:
-+        return None
-+    resolved: dict[str, Any] = {}
-+    changed = False
-+    for host, bind in volumes.items():
-+        key = str(host)
-+        if "{username}" in key:
-+            resolved[key.replace("{username}", str(username))] = bind
-+            changed = True
-+        else:
-+            resolved[key] = bind
-+    return resolved if changed else None
++    if not isinstance(value, str) or not username:
++        return value
++    return value.replace("{username}", username)
 +
 +
  def inject_docker_global_environment(
      spec: dict[str, Any],
      env_file: str | Path | None,
 diff --git a/src/octop/infra/users/resource_policy.py b/src/octop/infra/users/resource_policy.py
-index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..a1cdc2ffd060e858cea094872db698e180a15694 100644
+index 21d89a2e91f80ff791b19eecd0329ef5996b0d37..9d2284c3b0f4b839c1eca8486039204b769b2912 100644
 --- a/src/octop/infra/users/resource_policy.py
 +++ b/src/octop/infra/users/resource_policy.py
-@@ -6,6 +6,7 @@ import os
+@@ -7,6 +7,7 @@ import os
  from collections.abc import Mapping, Sequence
  from typing import Any
  
@@ -304,7 +397,7 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..a1cdc2ffd060e858cea094872db698e1
  from octop.infra.errors import ErrorCode, OctopError
  from octop.infra.utils.host_dirs import (
      assert_backend_root_dirs_allowed,
-@@ -19,6 +20,25 @@ POLICY_WORKSPACE_ROOT_DIR = "workspace_root_dir"
+@@ -20,6 +21,25 @@ POLICY_WORKSPACE_ROOT_DIR = "workspace_root_dir"
  POLICY_TOKEN_QUOTA = "token_quota"
  POLICY_MAX_AGENTS = "max_agents"
  
@@ -332,10 +425,10 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..a1cdc2ffd060e858cea094872db698e1
      """Return ``value`` when the policy row exists and is enabled."""
 diff --git a/tests/unit/agents/test_user_sandbox_policy.py b/tests/unit/agents/test_user_sandbox_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..89f40b8b9a98a7cf79e2c38c050aace9209e87db
+index 0000000000000000000000000000000000000000..c9c7656cd800fc1f1bf3190c5d2cd70afdd28927
 --- /dev/null
 +++ b/tests/unit/agents/test_user_sandbox_policy.py
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,320 @@
 +"""Unit tests for the ZBS enforced per-user sandbox policy (settings switch).
 +
 +Covers:
@@ -383,13 +476,19 @@ index 0000000000000000000000000000000000000000..89f40b8b9a98a7cf79e2c38c050aace9
 +def _switch_on(manager: AgentManager, name: str = "user-sandbox") -> None:
 +    manager._repos.storage_backend_repo.create(
 +        name=name,
-+        kind="docker",
++        kind="shell",
 +        endpoint=None,
 +        access_key=None,
 +        secret_key=None,
-+        bucket="python:3.12-slim",
++        bucket=None,
 +        region=None,
-+        config_json=json.dumps({"sandbox_scope": "user", "sandbox_prefix": "octop_sandbox"}),
++        config_json=json.dumps(
++            {
++                "root_dir": "/data/.octop/users/{username}",
++                "inherit_env": False,
++                "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++            }
++        ),
 +        note=None,
 +    )
 +    manager._repos.settings_repo.set(ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY, name)
@@ -431,7 +530,13 @@ index 0000000000000000000000000000000000000000..89f40b8b9a98a7cf79e2c38c050aace9
 +        defer_bootstrap=True,
 +    )
 +    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
-+    assert cfg["backend"] == {"type": "named", "name": "user-sandbox"}
++    assert cfg["backend"] == {
++        "type": "local_shell",
++        "root_dir": "/data/.octop/users/alice",
++        "virtual_mode": True,
++        "inherit_env": False,
++        "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++    }
 +
 +
 +async def test_create_official_backend_when_switch_off(manager: AgentManager) -> None:
@@ -478,7 +583,28 @@ index 0000000000000000000000000000000000000000..89f40b8b9a98a7cf79e2c38c050aace9
 +        defer_bootstrap=True,
 +    )
 +    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
-+    assert cfg["backend"] == {"type": "named", "name": "user-sandbox"}
++    assert cfg["backend"] == {
++        "type": "local_shell",
++        "root_dir": "/data/.octop/users/alice",
++        "virtual_mode": True,
++        "inherit_env": False,
++        "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++    }
++
++
++async def test_prepare_docker_backend_expands_username_in_named_shell(manager: AgentManager) -> None:
++    """ZBS: a named shell backend's ``{username}`` resolves to the agent owner."""
++    uid = _seed_user(manager, role="user", name="alice")
++    _switch_on(manager)
++    row = await manager.create(
++        AgentCreateSpec(name="sbx2", user_id=uid, config={"memory": {"memory_enabled": False}}),
++        defer_bootstrap=True,
++    )
++    prepared = manager._prepare_docker_backend(manager._backend_spec_for_row(row), row)
++    assert prepared["type"] == "local_shell"
++    assert prepared["root_dir"] == "/data/.octop/users/alice"
++    assert prepared["inherit_env"] is False
++    assert prepared["env"] == {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"}
 +
 +
 +# ---------------------------------------------------------------------------
@@ -570,15 +696,68 @@ index 0000000000000000000000000000000000000000..89f40b8b9a98a7cf79e2c38c050aace9
 +        new_config=None,
 +        settings_repo=_settings_repo("user-sandbox"),
 +    )
++
++
++# ---------------------------------------------------------------------------
++# F5 — the four concrete escape attempts the decision-maker named
++# (stored backend is ``{"type": "named", "name": "user-sandbox"}``; all four
++# differ from it, so each must be rejected when the switch is on)
++# ---------------------------------------------------------------------------
++
++
++def test_patch_blocks_root_dir_to_other_user_folder() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={"backend": {"type": "local_shell", "root_dir": "/data/.octop/users/tb"}},
++            settings_repo=_settings_repo("user-sandbox"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_root_dir_to_host_root() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={"backend": {"type": "local_shell", "root_dir": "/"}},
++            settings_repo=_settings_repo("user-sandbox"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_flipping_inherit_env() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={
++                "backend": {"type": "local_shell", "root_dir": "/data/.octop/users/ta", "inherit_env": True}
++            },
++            settings_repo=_settings_repo("user-sandbox"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_switching_backend_type() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={"backend": {"type": "filesystem", "root_dir": "/data"}},
++            settings_repo=_settings_repo("user-sandbox"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
 diff --git a/tests/unit/test_storage_spec.py b/tests/unit/test_storage_spec.py
-index 4d800e19e3bbe2c4bcc16401669bcd625341012f..41e1402cf0c4e395061c13e8432f20e42de4444f 100644
+index 4d800e19e3bbe2c4bcc16401669bcd625341012f..2d08b3a40af42e2bcdd9eaf6fe978033df19f164 100644
 --- a/tests/unit/test_storage_spec.py
 +++ b/tests/unit/test_storage_spec.py
-@@ -253,6 +253,57 @@ def test_enrich_docker_backend_spec_defaults() -> None:
+@@ -253,6 +253,101 @@ def test_enrich_docker_backend_spec_defaults() -> None:
      assert "agent_id" not in fixed or fixed.get("agent_id") == "ZE6GR2"
  
  
-+def test_enrich_docker_backend_spec_resolves_volumes_username_placeholder() -> None:
++def test_enrich_docker_backend_spec_resolves_root_dir_username_placeholder() -> None:
 +    from octop.infra.backend.docker_spec import enrich_docker_backend_spec
 +
 +    spec = enrich_docker_backend_spec(
@@ -586,47 +765,91 @@ index 4d800e19e3bbe2c4bcc16401669bcd625341012f..41e1402cf0c4e395061c13e8432f20e4
 +            "type": "docker",
 +            "image": "python:3.12-slim",
 +            "sandbox_scope": "user",
-+            "volumes": {
-+                "octop_sbx_{username}": {"bind": "/data/.octop/agents", "mode": "rw"},
-+                "plain_volume": {"bind": "/mnt/extra", "mode": "ro"},
-+            },
++            "root_dir": "/data/.octop/users/{username}",
++            "env": {"HOME": "/data/.octop/users/{username}"},
 +        },
 +        agent_id="ZE6GR2",
 +        username="alice",
 +    )
-+    assert spec["volumes"] == {
-+        "octop_sbx_alice": {"bind": "/data/.octop/agents", "mode": "rw"},
-+        "plain_volume": {"bind": "/mnt/extra", "mode": "ro"},
-+    }
++    assert spec["root_dir"] == "/data/.octop/users/alice"
++    assert spec["env"] == {"HOME": "/data/.octop/users/alice"}
 +
 +
 +def test_enrich_docker_backend_spec_keeps_placeholder_without_username() -> None:
 +    from octop.infra.backend.docker_spec import enrich_docker_backend_spec
 +
-+    volumes = {"octop_sbx_{username}": {"bind": "/data/.octop/agents", "mode": "rw"}}
 +    spec = enrich_docker_backend_spec(
 +        {
 +            "type": "docker",
 +            "image": "python:3.12-slim",
 +            "sandbox_scope": "agent",
-+            "volumes": dict(volumes),
++            "root_dir": "/data/.octop/users/{username}",
 +        },
 +        agent_id="ZE6GR2",
 +        username=None,
 +    )
-+    assert spec["volumes"] == volumes
++    assert spec["root_dir"] == "/data/.octop/users/{username}"
 +
 +
-+def test_enrich_docker_backend_spec_no_placeholder_leaves_volumes() -> None:
-+    from octop.infra.backend.docker_spec import enrich_docker_backend_spec
++def test_resolve_username_placeholder_helpers() -> None:
++    from octop.infra.backend.docker_spec import resolve_username_placeholder
 +
-+    volumes = {"data_vol": {"bind": "/data", "mode": "rw"}}
-+    spec = enrich_docker_backend_spec(
-+        {"type": "docker", "image": "x", "volumes": dict(volumes)},
-+        agent_id="ZE6GR2",
-+        username="alice",
++    assert resolve_username_placeholder("/data/users/{username}", "alice") == "/data/users/alice"
++    assert resolve_username_placeholder("/data/users/{username}", None) == "/data/users/{username}"
++    assert resolve_username_placeholder(123, "alice") == 123
++
++
++def test_shell_adapter_passes_inherit_env_and_env() -> None:
++    from octop.infra.backend.adapter import row_to_backend_spec
++    from octop.infra.db.repos.backends import BackendRow
++
++    row = BackendRow(
++        id=1,
++        name="per-user",
++        kind="shell",
++        endpoint=None,
++        access_key=None,
++        secret_key=None,
++        bucket=None,
++        region=None,
++        config_json='{"root_dir": "/data/.octop/users/{username}",'
++                    ' "inherit_env": false, "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"}}',
++        note=None,
++        enabled=1,
++        created_at=0,
++        updated_at=0,
 +    )
-+    assert spec["volumes"] == volumes
++    spec = row_to_backend_spec(row)
++    assert spec == {
++        "type": "local_shell",
++        "root_dir": "/data/.octop/users/{username}",
++        "virtual_mode": True,
++        "inherit_env": False,
++        "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++    }
++
++
++def test_shell_adapter_defaults_without_env_keys() -> None:
++    from octop.infra.backend.adapter import row_to_backend_spec
++    from octop.infra.db.repos.backends import BackendRow
++
++    row = BackendRow(
++        id=1,
++        name="plain-shell",
++        kind="shell",
++        endpoint=None,
++        access_key=None,
++        secret_key=None,
++        bucket="/srv/data",
++        region=None,
++        config_json=None,
++        note=None,
++        enabled=1,
++        created_at=0,
++        updated_at=0,
++    )
++    spec = row_to_backend_spec(row)
++    assert spec == {"type": "local_shell", "root_dir": "/srv/data", "virtual_mode": True}
 +
 +
  def test_inject_docker_global_environment_sets_file() -> None:

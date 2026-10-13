@@ -46,14 +46,14 @@ patches:
     in_production: no         # 2026-10-13 新增（ZT-026 第 2 步），本机单元/集成测试通过，未部署
 
   - id: 21-feat-user-sandbox
-    name_zh: 按用户沙箱——默认进沙箱、普通用户不能改运行方式（F3/F4/F5）
+    name_zh: 按用户文件夹：活动范围支持 {username}（默认进开关指定的后端、普通用户不能改运行方式）（F3/F4/F5）
     layer: L3
     scope: [docker]
     status: enabled
     order: 21
     upstream_pr: no           # ZBS 自有权限收紧策略，上游无意向；设计见 patches/21-*/README.md
     verified: {v1.0.2b6: strict}
-    in_production: no         # 2026-10-12 新增（ZT-026 第 2 步），本机单元测试通过，未部署
+    in_production: no         # 2026-10-12 新增（ZT-026 第 2 步）；2026-10-13 第 3 轮 A 改为本地 Shell + 按用户 root_dir 方案，本机单元/临时环境实测通过，未部署
 
   - id: 60-svc-runtime-extras
     name_zh: 镜像加装本地向量/OCR 依赖（uv extras）+ 用户实际用到的工具（0002，ZT-018）
@@ -71,7 +71,7 @@ patches:
 # 按 order 先后（10→20→21）可严格套上（2026-10-13 prepare.py --check-only 实测）。
 shared_files:
   src/octop/infra/users/resource_policy.py: {owner: 21-feat-user-sandbox, also: [20-feat-user-model-policy], reason: "21 加沙箱开关读取函数，20 加 allowed_models 策略函数，不同位置"}
-  src/octop/infra/agents/manager.py: {owner: 21-feat-user-sandbox, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加沙箱后端覆写，20 改 resolve_fallback_model_ref，不同位置"}
+  src/octop/infra/agents/manager.py: {owner: 21-feat-user-sandbox, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加后端覆写、_prepare_docker_backend 加 {username} 展开，20 改 resolve_fallback_model_ref，不同位置"}
   dashboard/src/locales/zh.json: {owner: brand, also: [20-feat-user-model-policy], reason: "品牌只替换值不动 key；20 新增 adminUsers 段的 key（先套 20 再套品牌，均严格 apply）"}
   dashboard/src/locales/en.json: {owner: brand, also: [20-feat-user-model-policy], reason: "同 zh.json"}
 
