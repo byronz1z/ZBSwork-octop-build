@@ -24,12 +24,20 @@
 #
 # 2026-10-13 ZT-026 第 6 轮（task/ZT-026-user-workspace，执行方 glm-5.3）：按 Codex 审核
 # 第 2 轮和总调度演练验收整改。补丁 21：view-source:file 按同口径拦截（zt026-octop2 实测
-#打得开别人文件）、放行路径 URL 编码（中文/空格/# 实测）、边界说明口径微调、F3 拒绝改用
-# 错误码 ZBS_AGENT_BACKEND_ENFORCED + 双语说明；补丁 20：名单外模型改用错误码
+#打得开别人文件）、放行路径 URL 编码（中文/空格/# 实测）；补丁 20：名单外模型改用错误码
 # ZBS_MODEL_NOT_ALLOWED + 双语说明（含名单）、/model 命令名单外不设置并回执说明、
 # WS 路径预本地化。errors.py 与 src/octop/i18n/{zh,en}.json 成为 20/21 共改文件
 # （shared_files 已登记，锚点分开）。prepare.py --check-only 退出码 0；check_ownership.py
 # 退出码 0（77 文件）；相关单元测试 154 个、集成 9 个全过（zt026-octop2，新补丁全量重建树）。
+#
+# 2026-10-13 ZT-026 第 8 轮（task/ZT-026-user-workspace，执行方 glm-5.3）：按决策人
+# 10-13 #224 决定，只撤三样、不加东西：① 两条自定义被拒提示和两个新错误类型
+# （ZBS_AGENT_BACKEND_ENFORCED、ZBS_MODEL_NOT_ALLOWED）退回官方 ErrorCode.FORBIDDEN，
+# 补丁 20、21 不再改 errors.py 与 src/octop/i18n/{zh,en}.json（shared_files 对应登记
+# 删除）；② /model 命令查名单回执撤掉，补丁 20 不再改 composite.py；③ 给 Agent 的
+# "活动范围说明"（F13）整个删掉（manager.py 常量/判定函数/追加段、
+# test_workspace_boundary_prompt.py）。拒绝行为本身（403、设置不变）原样保留。
+# prepare.py --check-only 退出码 0；check_ownership.py 退出码 0（72 文件）。
 upstream_lock: UPSTREAM.lock
 
 brand:
@@ -64,7 +72,7 @@ patches:
     in_production: no         # 2026-10-13 新增（ZT-026 第 2 步），本机单元/集成测试通过，未部署
 
   - id: 21-feat-user-workspace
-    name_zh: "按用户文件夹：活动范围支持 {username}（默认进开关指定的后端、普通用户不能改运行方式、浏览器 file 地址按用户分、边界说明）（现行 F1–F3/F11/F13/F15；旧稿 F3/F4/F5，对照见 README）"
+    name_zh: "按用户文件夹：活动范围支持 {username}（默认进开关指定的后端、普通用户不能改运行方式、浏览器 file 地址按用户分）（现行 F1–F3/F11/F15；旧稿 F3/F4/F5，对照见 README）"
     layer: L3
     scope: [docker]
     status: enabled
@@ -87,12 +95,11 @@ patches:
 # 同一上游文件被多个模块修改时，必须在此登记主人（owner）与允许共改的模块（also），否则 CI 失败。
 # 补丁 20（order 20）与补丁 21（order 21）共改两个后端文件：都在不同位置追加代码，
 # 按 order 先后（10→20→21）可严格套上（2026-10-13 prepare.py --check-only 实测）。
+# 2026-10-13 第 8 轮：撤掉自定义错误码与提示后，errors.py 与 src/octop/i18n/{zh,en}.json
+# 不再被 20/21 修改，对应 shared_files 登记已删除。
 shared_files:
   src/octop/infra/users/resource_policy.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 加开关读取/管理员判定函数，20 加 allowed_models 策略函数，不同位置"}
-  src/octop/infra/agents/manager.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加后端覆写、_prepare_docker_backend 加 {username} 展开、_build_harness_config 加边界说明与浏览器判定回调，20 改 resolve_fallback_model_ref，不同位置"}
-  src/octop/infra/errors.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 加错误码 ZBS_AGENT_BACKEND_ENFORCED（第 6 轮，改运行方式被拒的说明），20 加 ZBS_MODEL_NOT_ALLOWED（名单外模型）；锚点相距多行，10→20→21 顺序可严格套用"}
-  src/octop/i18n/zh.json: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 加 errors.ZBS_AGENT_BACKEND_ENFORCED 中文说明（第 6 轮），20 加 errors.ZBS_MODEL_NOT_ALLOWED 与 slash.model.not_allowed；errors 段锚点分开（CONFIG_FILE_CORRUPT 区 vs SKILL_PACKAGE 区）"}
-  src/octop/i18n/en.json: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "同 zh.json"}
+  src/octop/infra/agents/manager.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加后端覆写、_prepare_docker_backend 加 {username} 展开、_build_harness_config 加浏览器判定回调，20 改 resolve_fallback_model_ref，不同位置"}
   dashboard/src/locales/zh.json: {owner: brand, also: [20-feat-user-model-policy], reason: "品牌只替换值不动 key；20 新增 adminUsers 段的 key（先套 20 再套品牌，均严格 apply）"}
   dashboard/src/locales/en.json: {owner: brand, also: [20-feat-user-model-policy], reason: "同 zh.json"}
 

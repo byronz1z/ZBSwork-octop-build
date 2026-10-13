@@ -54,7 +54,7 @@ index e41ea4d3..55433d04 100644
 +    if "backend" in new_config and new_config["backend"] == stored_backend:
 +        return
 +    raise OctopError(
-+        ErrorCode.ZBS_AGENT_BACKEND_ENFORCED,
++        ErrorCode.FORBIDDEN,
 +        "agent backend is enforced by the administrator and cannot be changed"
 +        " (settings key 'agent_enforced_backend')",
 +    )
@@ -187,59 +187,14 @@ index c8b368d1..86b16974 100644
 +    return AgentWorkspaceSettingsResponse(
 +        name=enforced_workspace_backend_name(server.services.settings_repo),
 +    )
-diff --git a/src/octop/i18n/en.json b/src/octop/i18n/en.json
-index e7a2993d..65b0c9f8 100644
---- a/src/octop/i18n/en.json
-+++ b/src/octop/i18n/en.json
-@@ -491,6 +491,7 @@
-     "CAPTCHA_REQUIRED": "This server requires a captcha token to sign in.",
-     "CAPTCHA_FAILED": "Captcha verification failed. Try again.",
-     "CONFIG_FILE_CORRUPT": "Cannot update {path}: the file is not valid JSON ({detail}). Fix the syntax and retry — no settings were changed.",
-+    "ZBS_AGENT_BACKEND_ENFORCED": "Non-admin users cannot change how this agent runs: its workspace (working folder) is managed by an administrator. You can still edit the name, description, prompt, and other settings; contact an administrator to adjust the workspace.",
-     "TEAM_NOT_FOUND": "Team not found.",
-     "TEAM_MEMBERS_TOO_FEW": "A team needs at least two members.",
-     "TEAM_MEMBER_INVALID": "Those experts cannot join a team on this instance. Peer experts, other teams, and deleted experts are not allowed.",
-diff --git a/src/octop/i18n/zh.json b/src/octop/i18n/zh.json
-index 80dfe905..5807e1f7 100644
---- a/src/octop/i18n/zh.json
-+++ b/src/octop/i18n/zh.json
-@@ -491,6 +491,7 @@
-     "CAPTCHA_REQUIRED": "此服务器登录需要验证码令牌。",
-     "CAPTCHA_FAILED": "验证码校验失败，请重试。",
-     "CONFIG_FILE_CORRUPT": "无法更新 {path}：该文件不是合法 JSON（{detail}）。请修正语法后重试；现有配置未被改动。",
-+    "ZBS_AGENT_BACKEND_ENFORCED": "普通用户不能修改智能体的运行方式：运行方式（工作文件夹）由管理员统一设置。名称、说明、提示词等其它设置都可以照常修改；需要调整运行方式请联系管理员。",
-     "TEAM_NOT_FOUND": "未找到该团队。",
-     "TEAM_MEMBERS_TOO_FEW": "团队至少需要两名成员。",
-     "TEAM_MEMBER_INVALID": "所选专家无法加入本机团队。对端专家、其他团队或已删除的专家不能作为成员。",
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
 index 34f88197..5bb7774d 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
-@@ -123,6 +123,59 @@ def _memory_namespace(agent_id: str) -> str:
+@@ -123,6 +123,18 @@ def _memory_namespace(agent_id: str) -> str:
      return f"{_MEMORY_NS_PREFIX}{agent_id}"
  
  
-+# ZBS F13: appended (runtime-only, never persisted) to non-admin agents'
-+# system prompt while the per-user workspace switch is on. One constant so
-+# the wording stays editable in one place; agents see the same text whether
-+# they were created before or after the switch was turned on.
-+AGENT_WORKSPACE_BOUNDARY_PROMPT = (
-+    "\n\n## 你的活动范围\n\n"
-+    "你工作的地方是这位用户专属的空间："
-+    "能读写的是这位用户自己的文件夹（根目录 `/` 就是它）。"
-+    "同一位用户名下其他智能体的工作目录在 `/.octop/workspaces/<智能体编号>/`，"
-+    "可以读写；用户让你去用就直接去。"
-+    "别的用户的文件、服务器的系统目录和配置不在你的范围内，"
-+    "在你这里表现为「不存在」——看不到不代表服务器上没有，"
-+    "只是不在这位用户的范围内，不要猜测那个文件存不存在。"
-+    "向用户解释时，用一两句大白话说清"
-+    "「这是你的专属空间，别人的和系统的东西在这里看不到」，"
-+    "再给替代办法（请对方把文件发给你、上传到这里，或找管理员）；"
-+    "不要展开容器、挂载等技术细节，也不要说「路径不对」「系统坏了」。"
-+    "浏览器只能打开自己文件夹里的文件和网址。\n"
-+)
-+
-+
 +def _browser_file_policy_enabled(repos: Any) -> bool:
 +    """ZBS F11: local-file browser policy needs the workspace switch on."""
 +    from octop.infra.users.resource_policy import (  # noqa: PLC0415
@@ -252,30 +207,10 @@ index 34f88197..5bb7774d 100644
 +    return enforced_workspace_backend_name(settings_repo) is not None
 +
 +
-+def _workspace_boundary_prompt_enabled(row: Any, repos: Any) -> bool:
-+    """ZBS F13: boundary note applies to non-admin owners with the switch on."""
-+    from octop.infra.users.resource_policy import (  # noqa: PLC0415
-+        enforced_workspace_backend_name,
-+        user_row_is_admin,
-+    )
-+
-+    if row.user_id is None:
-+        return False
-+    settings_repo = getattr(repos, "settings_repo", None)
-+    if settings_repo is None:
-+        return False
-+    if enforced_workspace_backend_name(settings_repo) is None:
-+        return False
-+    user_row = repos.user_repo.get(row.user_id)
-+    if user_row is None or user_row_is_admin(user_row):
-+        return False
-+    return True
-+
-+
  def skills_disabled_set(cfg: dict[str, Any]) -> set[str]:
      """Return the set of disabled skill slugs from agent config."""
      raw = cfg.get("skills_disabled")
-@@ -641,6 +694,12 @@ class AgentManager:
+@@ -641,6 +690,12 @@ class AgentManager:
                          self._repos.agent_repo,
                          spec.user_id,
                      )
@@ -288,7 +223,7 @@ index 34f88197..5bb7774d 100644
                  raise_if_backend_outside_user_root(
                      self._repos.user_policy_repo,
                      spec.user_id,
-@@ -2529,6 +2588,89 @@ class AgentManager:
+@@ -2529,6 +2584,89 @@ class AgentManager:
      # Internal — validation
      # ------------------------------------------------------------------
  
@@ -378,7 +313,7 @@ index 34f88197..5bb7774d 100644
      def _assert_agent_name_available(
          self,
          user_id: int | None,
-@@ -2764,17 +2906,36 @@ class AgentManager:
+@@ -2764,17 +2902,36 @@ class AgentManager:
          return isinstance(spec, dict) and str(spec.get("type") or "").lower() == "opensandbox"
  
      def _prepare_docker_backend(self, backend: Any, row: AgentRow) -> Any:
@@ -424,7 +359,7 @@ index 34f88197..5bb7774d 100644
  
      def _backend_workspace_for_row(
          self,
-@@ -3056,6 +3217,78 @@ class AgentManager:
+@@ -3056,6 +3213,78 @@ class AgentManager:
              return connector_user_id
          return row.user_id
  
@@ -503,7 +438,7 @@ index 34f88197..5bb7774d 100644
      def _prepare_stream_request(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
          from octop_harness.plugins import collect_plugin_tool_configs  # noqa: PLC0415
  
-@@ -3071,7 +3304,20 @@ class AgentManager:
+@@ -3071,7 +3300,20 @@ class AgentManager:
              configurable = dict(req.get("configurable") or {})
              configurable["plugin_tool_configs"] = tool_configs
              req["configurable"] = configurable
@@ -525,23 +460,6 @@ index 34f88197..5bb7774d 100644
  
      def _build_harness_config(self, row: AgentRow) -> HarnessAgentConfig:
          """Convert an AgentRow into a HarnessAgentConfig."""
-@@ -3279,6 +3525,16 @@ class AgentManager:
-         if not team_host and not bootstrap_marker_exists(ws):
-             system_prompt = None
-             memory = ()
-+        # ZBS F13: runtime-only boundary note appended to non-admin owners'
-+        # prompts while the per-user workspace switch is on — never persisted
-+        # (users cannot edit it away), applies to existing and new agents
-+        # alike, and re-assembles from the row on every load.
-+        if (
-+            not team_host
-+            and system_prompt is not None
-+            and _workspace_boundary_prompt_enabled(row, self._repos)
-+        ):
-+            system_prompt = str(system_prompt).rstrip() + AGENT_WORKSPACE_BOUNDARY_PROMPT
- 
-         mcp_server_configs: dict[str, Any] = {}
-         if not team_host:
 diff --git a/src/octop/infra/agents/middleware/browser_profile.py b/src/octop/infra/agents/middleware/browser_profile.py
 index ecf3b35b..82e0c649 100644
 --- a/src/octop/infra/agents/middleware/browser_profile.py
@@ -812,26 +730,6 @@ index 577ddba1..ebc502a7 100644
  def inject_docker_global_environment(
      spec: dict[str, Any],
      env_file: str | Path | None,
-diff --git a/src/octop/infra/errors.py b/src/octop/infra/errors.py
-index 6d77d7f9..4236ae60 100644
---- a/src/octop/infra/errors.py
-+++ b/src/octop/infra/errors.py
-@@ -82,6 +82,7 @@ class ErrorCode(StrEnum):
-     TLS_ISSUE_IN_PROGRESS = "TLS_ISSUE_IN_PROGRESS"
-     TLS_DOMAIN_MISMATCH = "TLS_DOMAIN_MISMATCH"
-     WORKSPACE_OP_UNSUPPORTED = "WORKSPACE_OP_UNSUPPORTED"
-+    ZBS_AGENT_BACKEND_ENFORCED = "ZBS_AGENT_BACKEND_ENFORCED"
-     SKILL_IMPORT_UNSUPPORTED_URL = "SKILL_IMPORT_UNSUPPORTED_URL"
-     SKILL_IMPORT_FAILED = "SKILL_IMPORT_FAILED"
-     SKILL_ALREADY_EXISTS = "SKILL_ALREADY_EXISTS"
-@@ -213,6 +214,7 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
-     ErrorCode.TLS_ISSUE_IN_PROGRESS: 409,
-     ErrorCode.TLS_DOMAIN_MISMATCH: 400,
-     ErrorCode.WORKSPACE_OP_UNSUPPORTED: 400,
-+    ErrorCode.ZBS_AGENT_BACKEND_ENFORCED: 403,
-     ErrorCode.SKILL_IMPORT_UNSUPPORTED_URL: 400,
-     ErrorCode.SKILL_IMPORT_FAILED: 502,
-     ErrorCode.SKILL_ALREADY_EXISTS: 409,
 diff --git a/src/octop/infra/users/resource_policy.py b/src/octop/infra/users/resource_policy.py
 index 46d00f6a..9833b5ae 100644
 --- a/src/octop/infra/users/resource_policy.py
@@ -1511,7 +1409,7 @@ index 00000000..dea52221
 +            new_config={"backend": {"type": "local_shell", "root_dir": "/"}},
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
++    assert ei.value.code is ErrorCode.FORBIDDEN
 +
 +
 +def test_patch_blocks_missing_backend_key_when_switch_on() -> None:
@@ -1524,7 +1422,7 @@ index 00000000..dea52221
 +            new_config={"persona": "INTJ"},
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
++    assert ei.value.code is ErrorCode.FORBIDDEN
 +
 +
 +def test_patch_allows_same_backend_when_switch_on() -> None:
@@ -1581,7 +1479,7 @@ index 00000000..dea52221
 +            new_config={"backend": {"type": "local_shell", "root_dir": "/data/.octop/users/tb"}},
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
++    assert ei.value.code is ErrorCode.FORBIDDEN
 +
 +
 +def test_patch_blocks_root_dir_to_host_root() -> None:
@@ -1592,7 +1490,7 @@ index 00000000..dea52221
 +            new_config={"backend": {"type": "local_shell", "root_dir": "/"}},
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
++    assert ei.value.code is ErrorCode.FORBIDDEN
 +
 +
 +def test_patch_blocks_flipping_inherit_env() -> None:
@@ -1605,7 +1503,7 @@ index 00000000..dea52221
 +            },
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
++    assert ei.value.code is ErrorCode.FORBIDDEN
 +
 +
 +def test_patch_blocks_switching_backend_type() -> None:
@@ -1616,172 +1514,7 @@ index 00000000..dea52221
 +            new_config={"backend": {"type": "filesystem", "root_dir": "/data"}},
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
-+    assert ei.value.code is ErrorCode.ZBS_AGENT_BACKEND_ENFORCED
-diff --git a/tests/unit/agents/test_workspace_boundary_prompt.py b/tests/unit/agents/test_workspace_boundary_prompt.py
-new file mode 100644
-index 00000000..9b0084ed
---- /dev/null
-+++ b/tests/unit/agents/test_workspace_boundary_prompt.py
-@@ -0,0 +1,159 @@
-+"""Unit tests for the ZBS F13 agent workspace boundary prompt.
-+
-+Covers ``AgentManager._build_harness_config``'s runtime-only prompt append:
-+- switch on + non-admin owner → boundary note appended to the row prompt
-+- admin owner / switch off → row prompt passed through verbatim
-+- the note is never persisted back to the agent row
-+- an agent created before the switch gains the note once it is on
-+
-+The bootstrap marker (``.bootstrapped``) is written the way harness's
-+``BootstrapMiddleware`` does, because ``_build_harness_config`` drops the
-+stored prompt entirely until first-run bootstrap completes.
-+"""
-+
-+from __future__ import annotations
-+
-+import json
-+from pathlib import Path
-+
-+import pytest
-+
-+from octop.config import OctopConfig
-+from octop.infra.agents.manager import (
-+    AGENT_WORKSPACE_BOUNDARY_PROMPT,
-+    AgentCreateSpec,
-+    AgentManager,
-+)
-+from octop.infra.db.migrate import run_migrations
-+from octop.infra.db.pool import SqlitePool
-+from octop.infra.db.services import build_shared_services
-+from octop.infra.users.resource_policy import ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY
-+from octop.infra.utils.paths import PathLayout
-+
-+
-+@pytest.fixture
-+def manager(tmp_path: Path) -> AgentManager:
-+    paths = PathLayout(tmp_path / ".octop")
-+    paths.ensure_root()
-+    db = SqlitePool(paths.db)
-+    run_migrations(db)
-+    services = build_shared_services(db=db, paths=paths, config=OctopConfig())
-+    return AgentManager(repos=services.repos, paths=services.paths)
-+
-+
-+def _seed_user(manager: AgentManager, *, role: str, name: str = "alice") -> int:
-+    return manager._repos.user_repo.create(username=name, role=role, password_hash=None)
-+
-+
-+def _switch_on(manager: AgentManager, root: Path, name: str = "per-user-home") -> None:
-+    manager._repos.storage_backend_repo.create(
-+        name=name,
-+        kind="shell",
-+        endpoint=None,
-+        access_key=None,
-+        secret_key=None,
-+        bucket=None,
-+        region=None,
-+        config_json=json.dumps({"root_dir": str(root / "{username}")}),
-+        note=None,
-+    )
-+    manager._repos.settings_repo.set(ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY, name)
-+
-+
-+async def _booted_agent(manager: AgentManager, uid: int, tmp_path: Path) -> str:
-+    """Create an agent, set its prompt, mark it bootstrapped; return its id."""
-+    row = await manager.create(
-+        AgentCreateSpec(
-+            name="boundary-agent",
-+            user_id=uid,
-+            config={"memory": {"memory_enabled": False}},
-+        ),
-+        defer_bootstrap=True,
-+    )
-+    manager._repos.agent_repo.update_config(row.agent_id, system_prompt="你是一个助手。")
-+    fresh = manager._repos.agent_repo.get(row.agent_id)
-+    assert fresh is not None
-+    ws = manager._backend_workspace_for_row(fresh)
-+    marker = Path(ws.resolve_path(None, default=".bootstrapped"))
-+    marker.parent.mkdir(parents=True, exist_ok=True)
-+    marker.write_text("ok", encoding="utf-8")
-+    return row.agent_id
-+
-+
-+def _built_prompt(manager: AgentManager, agent_id: str) -> str | None:
-+    row = manager._repos.agent_repo.get(agent_id)
-+    assert row is not None
-+    cfg = manager._build_harness_config(row)
-+    return cfg.system_prompt
-+
-+
-+async def test_boundary_prompt_appended_for_non_admin_when_switch_on(
-+    manager: AgentManager, tmp_path: Path
-+) -> None:
-+    uid = _seed_user(manager, role="user")
-+    _switch_on(manager, tmp_path / "users")
-+    agent_id = await _booted_agent(manager, uid, tmp_path)
-+    prompt = _built_prompt(manager, agent_id)
-+    assert prompt is not None
-+    assert prompt.startswith("你是一个助手。")
-+    assert "你的活动范围" in prompt
-+    assert "工作目录在 `/.octop/workspaces/<智能体编号>/`" in prompt
-+    assert "不要说「路径不对」「系统坏了」" in prompt
-+    assert "浏览器只能打开自己文件夹里的文件和网址" in prompt
-+    # ZBS round 6: plain-language framing for the user, no tech detail, no
-+    # guessing whether the file exists. (The wording itself forbids tech
-+    # detail — "不要展开容器、挂载等技术细节" — so the literal words appear
-+    # inside that instruction; what matters is the instruction is there.)
-+    assert "专属空间" in prompt
-+    assert "看不到不代表服务器上没有" in prompt
-+    assert "不要猜测那个文件存不存在" in prompt
-+    assert "不要展开容器、挂载等技术细节" in prompt
-+
-+
-+async def test_boundary_prompt_not_appended_for_admin(
-+    manager: AgentManager, tmp_path: Path
-+) -> None:
-+    uid = _seed_user(manager, role="admin")
-+    _switch_on(manager, tmp_path / "users")
-+    agent_id = await _booted_agent(manager, uid, tmp_path)
-+    assert _built_prompt(manager, agent_id) == "你是一个助手。"
-+
-+
-+async def test_boundary_prompt_not_appended_when_switch_off(
-+    manager: AgentManager, tmp_path: Path
-+) -> None:
-+    uid = _seed_user(manager, role="user")
-+    agent_id = await _booted_agent(manager, uid, tmp_path)
-+    assert _built_prompt(manager, agent_id) == "你是一个助手。"
-+
-+
-+async def test_boundary_prompt_not_persisted(
-+    manager: AgentManager, tmp_path: Path
-+) -> None:
-+    """The note lives only in the built harness config, never in the DB row."""
-+    uid = _seed_user(manager, role="user")
-+    _switch_on(manager, tmp_path / "users")
-+    agent_id = await _booted_agent(manager, uid, tmp_path)
-+    first = _built_prompt(manager, agent_id)
-+    assert first is not None and "你的活动范围" in first
-+    row = manager._repos.agent_repo.get(agent_id)
-+    assert row is not None
-+    assert "你的活动范围" not in (row.system_prompt or "")
-+    # building twice yields the same single append (no duplication)
-+    assert _built_prompt(manager, agent_id) == first
-+
-+
-+async def test_boundary_prompt_existing_agent_after_switch_flips(
-+    manager: AgentManager, tmp_path: Path
-+) -> None:
-+    """An agent created before the switch gains the note once it is on."""
-+    uid = _seed_user(manager, role="user")
-+    agent_id = await _booted_agent(manager, uid, tmp_path)
-+    assert _built_prompt(manager, agent_id) == "你是一个助手。"
-+    _switch_on(manager, tmp_path / "users")
-+    assert _built_prompt(manager, agent_id) == (
-+        "你是一个助手。" + AGENT_WORKSPACE_BOUNDARY_PROMPT
-+    )
-+    # and flipping the switch back off removes it again
-+    manager._repos.settings_repo.delete(ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY)
-+    assert _built_prompt(manager, agent_id) == "你是一个助手。"
++    assert ei.value.code is ErrorCode.FORBIDDEN
 diff --git a/tests/unit/test_storage_spec.py b/tests/unit/test_storage_spec.py
 index 4d800e19..d4322c44 100644
 --- a/tests/unit/test_storage_spec.py

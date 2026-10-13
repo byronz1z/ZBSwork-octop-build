@@ -154,44 +154,11 @@ ZBS 停用"按角色分发模型"策略（决策人明说不再限制普通用�
 可对个人单独调、可批量下发；F9 全文：选模型的各处都按名单判、模型列表只显示名单里的、
 没设名单 = 和官方完全一样。
 
-## 第 6 轮增补（2026-10-13，按 Codex 审核第 2 轮和总调度演练验收）
-
-演练环境实测（2026-10-13 验收第 9、10 项）：用户选了名单外的模型时，接口只回
-"没有权限。"，用户看不出为什么、该怎么办；验收记录 08 里命令行/渠道指定名单外
-模型被悄悄换成名单内的、没有任何提示。本轮改动：
-
-- **专用错误码 + 双语文案**：`assert_model_allowed_for_user` 的拒绝从通用
-  `FORBIDDEN` 改为专用错误码 `ZBS_MODEL_NOT_ALLOWED`，文案进官方 i18n
-  （`src/octop/i18n/{zh,en}.json` 的 `errors.ZBS_MODEL_NOT_ALLOWED` 键，
-  details 带 `model` / `allowed_models` / `allowed`）。设常用模型（preferences）、
-  网页发消息指定模型（turn）、定时任务指定模型（cron）三处共用这一个 raise 点，
-  全部生效。中文原文：「「{model}」不在你可用的模型名单里。你可以使用的模型：
-  {allowed}。需要其它模型请联系管理员调整名单。」（`{allowed}` 是名单按 "、"
-  连接后的可读串；REST 路径由官方异常处理器 `to_envelope(locale)` 按
-  `details` 插值本地化——照官方 `resource_policy.py:189` 的
-  `TOKEN_QUOTA_EXCEEDED` + `details={used, quota}` 同款机制。）
-- **网页聊天 WebSocket 路径**：官方 `api/routers/chat/ws.py:161` 对
-  `OctopError` 回 `str(exc)`（不走 `to_envelope` 本地化），因此 turn.py 的
-  调用点传 `locale=getattr(user, "locale", None) or "zh"`，raise 时用官方
-  `OctopError.localized(code, locale, ...)` 预解析（照官方同文件
-  `CONNECTOR_MCP_LOAD_FAILED` 的现成写法，turn.py:252）。前端
-  `chatStore.ts:1238` 把 error 帧的 `message` 原样放进错误气泡——不用改
-  网页端文件。集成测试断言 WS 帧里出现模型名、名单和"名单"字样。
-- **`/model` 命令回执**（命令行/渠道指定名单外模型的提示）：官方
-  `cmd_model`（`infra/gateway/slash/handlers/composite.py:299`）设置
-  thread 覆盖前没有任何校验，设置成功还回执"已设为 XX"，下一轮对话被
-  名单过滤掉、静默换模型——这正是"悄悄换"的路径。本轮在
-  `set_thread_model_override` 之前查名单，名单外**不设置**，用官方
-  `sink.text(tr(...))` 回执通道回一句（i18n 键 `slash.model.not_allowed`，
-  zh/en 两份）：「「{model}」不在你可用的模型名单里，未设置。你可以使用的
-  模型：{allowed}。需要其它模型请联系管理员。」
-- **已知的不提示之处（如实写明）**：定时任务**执行期**（`cron/delivery.py`）
-  遇到名单外的存量模型仍是静默丢弃走兜底、没有给用户回提示——查过官方
-  现成机制：cron 执行期没有用户在线的回执通道（结果投递到会话/渠道，
-  无类似 `/model` 的命令回执），官方没有现成办法在不新造通知机制的前提下
-  回这句话，故不加（避免过度加固）；创建/更新定时任务时的入口校验（400/403
-  带上述说明）已覆盖用户主动指定的场景，存量任务的执行期兜底行为与官方
-  "过期的固定模型静默丢弃"语义一致。
+> 2026-10-13 按决策人决定（日志 10-13 #224）撤掉第 6 轮加的自定义被拒提示
+> （错误码 `ZBS_MODEL_NOT_ALLOWED` + 双语文案）和 `/model` 命令查名单回执：
+> 被拒时显示官方原样的"没有权限。"，限制本身照常生效。本补丁不再改
+> `src/octop/infra/errors.py`、`src/octop/i18n/{zh,en}.json`、
+> `src/octop/infra/gateway/slash/handlers/composite.py`。
 
 ## 生产注意
 
