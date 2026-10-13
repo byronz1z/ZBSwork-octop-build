@@ -1,12 +1,12 @@
-# 21 · 按用户文件夹：活动范围支持 {username}（默认进开关指定的后端、普通用户不能改运行方式）
+# 21 · 按用户文件夹：活动范围支持 {username}（默认进开关指定的后端、普通用户不能改运行方式、浏览器 file: 地址按用户分、边界说明）
 
 | 项 | 内容 |
 |---|---|
-| 层级 | L3 核心补丁（Octop 服务端 7 个文件） |
+| 层级 | L3 核心补丁（Octop 服务端 9 个文件） |
 | 状态 | enabled |
 | 实测 | v1.0.2b6 严格 apply 通过；本机单元测试通过；临时环境 zt026 真实接口实测通过（见 `_work\ZT-026\step3\报告-A.md`） |
 | 上游 PR | 否——ZBS 自有的权限收紧策略，上游官方无意向 |
-| 依据 | 指挥部任务 ZT-026 任务单 F3–F5（日志 10-13 #206–#208）；决策人 10-13 改定：不做 Docker 沙箱，改用官方本地 Shell + 按用户的活动范围 |
+| 依据 | 指挥部任务 ZT-026 任务单 F3–F5、F11、F13（日志 10-13 #206–#208、#210 #211）；决策人 10-13 改定：不做 Docker 沙箱，改用官方本地 Shell + 按用户的活动范围 |
 
 ## 做法（2026-10-13 决策人改定，取代旧的 Docker 沙箱方案）
 
@@ -43,7 +43,7 @@ Octop 进程身上的口令样环境变量。
 
 - **F4（默认进开关指定的后端）**：`AgentManager.create` 里，开关开启且 Agent 主人
   （`spec.user_id`）是非管理员时，不管请求带什么 `config.backend`，落库一律覆写为
-  开关指定的后端**展开后的 local_shell spec**（在 `_enforced_user_sandbox_backend` 里
+  开关指定的后端**展开后的 local_shell spec**（在 `_enforced_user_workspace_backend` 里
   用 `row_to_backend_spec` 把 named 后端展开成 local_shell，并就地解析 `{username}` 为
   Agent 主人用户名）。展开成具体 spec 而非 named 引用，是因为 `seed_workspace_dir_on_create`
   只对 `local_shell`/`filesystem` 的 scoped `root_dir` 生效——展开后它会把 Agent 工作目录
@@ -73,14 +73,59 @@ Octop 进程身上的口令样环境变量。
   SSO 自动分配用户名时剔除字符，不是创建校验——演练库里就存在中文用户名。因此补丁
   自己把关：`docker_spec.username_safe_for_placeholder` 判定用户名安全（非空、非全空白、
   不等于 `.` 或 `..`、不含 `/` 或 `\`、不含控制字符），`resolve_username_placeholder`
-  对不安全用户名一律不展开；`_enforced_user_sandbox_backend` 在新建 Agent 展开占位符
+  对不安全用户名一律不展开；`_enforced_user_workspace_backend` 在新建 Agent 展开占位符
   时遇到不安全用户名直接报错（`WORKSPACE_OP_UNSUPPORTED`，提示找管理员改名），绝不落
   官方默认后端。其余用户名（含中文、中间带点如 `john.doe`）原样使用，不加别的限制。
 
 **开关的管理接口**：官方没有管理员自由写 settings 键的通用通道，所以本补丁加
-GET/PUT `/api/settings/agent-sandbox`（沿用官方 `require_permission("storage_backends")`
+GET/PUT `/api/settings/agent-enforced-backend`（沿用官方 `require_permission("storage_backends")`
 权限门，与"存储后端"管理页同权），读写上述 settings 键。PUT 校验名字必须是存在的、
 `kind=shell`、`enabled` 的后端，返回当前生效值。这也是管理员"不改代码就能开关"的通道。
+
+## F11 · 浏览器 file: 地址按用户分（第 5 轮，2026-10-13 增补）
+
+浏览器在主服务进程里跑、不在用户文件夹的围栏里，官方 `browser_profile.py` 只把
+浏览器**登录状态**（profile）按用户分开（b6 源码 `middleware/browser_profile.py`），
+`file:` 地址能打开服务器上任何人的文件。本补丁在该中间件里加地址策略：
+
+- 只在**开关开启且当前用户是非管理员**时生效；其余情况与官方完全一致。
+- **自己的文件**：Agent 说的路径是它在围栏里看到的路径（新式 `/.octop/workspaces/<id>/…`
+  或老式 `/data/.octop/agents/<id>/…`），用官方 `workspace/dir.py:resolve_workspace_host_path`
+  的同款规则换算成宿主路径（`/.octop/…` → `{root_dir}/.octop/…`），换算后解析掉
+  符号链接和 `..`，**必须仍在该用户后端的 root_dir 内**才放行（换算成 `file:///…` 交给浏览器）。
+- **别人的/系统的文件**：不执行，回给 Agent 一段中文说明（能开什么、这个地址为什么不行、
+  替代办法——请对方发来/上传到这里/找管理员）。
+- http/https 和其它不带本机地址的动作不受影响。带本机地址的 action 只有两个：
+  `navigate`/`new_tab` 的 `url`（含 `target_url`/`href`/`query`/`link`/`address` 五个别名，
+  harness `browser_use.py` 的 `_coalesce_url` 会先合并成一个 `url`）和 `screenshot` 的
+  `path`（输出位置，不在自己文件夹里的同样拦）。**查过但不处理的**：`eval_js` 的
+  JS 表达式在网页上下文里跑、无文件系统访问；上传文件的动作不存在（interact.py 无
+  upload，CDP `DOM.setFileInputFiles` 未暴露给模型）；下载落盘由浏览器自身决定、
+  不经工具参数，无处拦截——这三处写明理由，不加处理。
+
+## F13 · 边界说明（第 5 轮，2026-10-13 增补）
+
+**事实**：依赖包给 Agent 的说明里只写了"你的工作目录是哪"（octop_harness
+`agent.py:_build_graph` 的 directive，外部包、不能改）；Agent 碰别人的文件时围栏
+返回"文件不存在"，模型对用户说"可能路径不对"，用户看不出这是边界；模型有时把
+"同一用户另一个 Agent 的目录"当别人的而拒读。
+
+**注入点选择**（查到的候选）：
+1. 每个 Agent 的 `system_prompt` DB 字段——用户在界面上可改，改掉就丢了说明 ✗；
+2. 工作区 `AGENTS.md` 模板（octop_harness `builtin/md_files/zh/AGENTS.md`，`init.py`
+   铺进工作区）——外部包的模板，且用户可编辑、存量 Agent 不会重新铺 ✗；
+3. octop_harness `agent.py` 的 working-directory directive——外部依赖包，超出本库补丁范围 ✗；
+4. **`AgentManager._build_harness_config`（manager.py）组装 `system_prompt=system_prompt`
+   处**——运行时组装、不落库（用户改不掉）、存量和新建 Agent 都走它（每次
+   `_load_agent`/重载都重跑）、开关关时原样传官方值（零改动）✓。
+
+做法：开关开启且 Agent 主人是非管理员时，`row.system_prompt` 尾部追加常量
+`AGENT_WORKSPACE_BOUNDARY_PROMPT`（中文"你的活动范围"一段：能读写的是这位用户
+自己的文件夹（根目录 `/` 就是它）；同一位用户名下其他智能体的工作目录在
+`/.octop/workspaces/<智能体编号>/`，可以读写，用户让你用就直接用；别的用户的
+文件、服务器系统目录和配置不在范围内、表现为"不存在"，不要说"路径不对/系统坏了"，
+要说明这是边界并给替代办法；浏览器只能打开自己文件夹里的文件和网址）。文字是
+常量，便于以后改；管理员和开关关闭的 Agent 完全不受影响。
 
 ## 改了哪些官方文件
 
@@ -88,13 +133,16 @@ GET/PUT `/api/settings/agent-sandbox`（沿用官方 `require_permission("storag
 |---|---|---|
 | `src/octop/infra/backend/adapter.py` | `row_to_backend_spec` 的 `kind=shell` 分支 | 透传 `inherit_env`、`env`（cfg 提供）；root_dir 仍允许 `{username}` 占位符（在 manager 展开时解析） |
 | `src/octop/infra/backend/docker_spec.py` | `enrich_docker_backend_spec` + 新增 `resolve_username_placeholder` / `username_safe_for_placeholder` | `{username}` 占位符展开（root_dir / env 值）；不安全用户名（空、`.`/`..`、`/`、`\`、控制字符）不展开 |
-| `src/octop/infra/agents/manager.py` | `_prepare_docker_backend` + `_enforced_user_sandbox_backend` | F4 覆写（展开 named 后端为 local_shell spec + 解析 {username}；用户名不安全或后端不存在/停用时新建报错 fail-closed）；运行时 local_shell 后端 {username} 展开 |
-| `src/octop/infra/users/resource_policy.py` | 新增 `enforced_sandbox_backend_name` / `user_row_is_admin` 与键常量 | 开关读取（F4/F5 共用） |
+| `src/octop/infra/agents/manager.py` | `_prepare_docker_backend` + `_enforced_user_workspace_backend` + `_agent_workspace_boundary_prompt`（第 5 轮新增） | F4 覆写（展开 named 后端为 local_shell spec + 解析 {username}；用户名不安全或后端不存在/停用时新建报错 fail-closed）；运行时 local_shell 后端 {username} 展开；F13 边界说明在 `_build_harness_config` 组装 system_prompt 时追加；F11 给 `BrowserProfileMiddleware` 传"本用户文件夹"判定回调 |
+| `src/octop/infra/agents/middleware/browser_profile.py`（第 5 轮新增） | `_bind_browser_profile` | F11：开关开启且当前用户是普通用户时，`browser_use` 的 `navigate/new_tab` url（含 target_url/href/query/link/address 别名）和 `screenshot` path 里的本机文件地址按用户分——自己的（agent 视角路径换算成宿主路径后仍在该用户 root_dir 内）放行，别人的/系统的用中文说明拦下并给替代办法；http/https 不受影响；开关关或管理员 = 官方行为 |
+| `src/octop/infra/users/resource_policy.py` | 新增 `enforced_workspace_backend_name` / `user_row_is_admin` 与键常量 | 开关读取（F4/F5/F11/F13 共用） |
 | `src/octop/api/common/validators.py` | 新增 `assert_user_may_change_backend` | F5 校验 |
 | `src/octop/api/routers/agents.py` | `patch_agent` | 调用 F5 校验 |
 | `src/octop/api/routers/settings.py` | 文件尾新增两个路由 | 开关 GET/PUT |
 | `tests/unit/test_storage_spec.py` | 追加测试 | adapter 透传 inherit_env/env、占位符解析、username_safe_for_placeholder 规则与不展开行为 |
-| `tests/unit/agents/test_user_sandbox_policy.py` | 新文件（29 个测试） | F4/F5/开关 + 四种改运行方式写法 + 用户名不安全拒绝 + 后端不存在/停用 fail-closed + 管理员不受影响 |
+| `tests/unit/agents/test_user_workspace_policy.py` | 新文件（29+ 个测试） | F4/F5/开关 + 四种改运行方式写法 + 用户名不安全拒绝 + 后端不存在/停用 fail-closed + 管理员不受影响 |
+| `tests/unit/agents/test_browser_file_policy.py` | 新文件（第 5 轮） | F11：file: 放行/拦截/路径换算/别名/action 维度/开关维度 |
+| `tests/unit/agents/test_workspace_boundary_prompt.py` | 新文件（第 5 轮） | F13：开关开=非管理员带边界段、管理员不带；开关关=官方原文 |
 
 ## 团队类 Agent（kind=team）的处理（2026-10-13 第 4 轮源码核实）
 
@@ -131,7 +179,7 @@ GET/PUT `/api/settings/agent-sandbox`（沿用官方 `require_permission("storag
    - `inherit_env: false` 让围栏命令看不到 Octop 进程的口令样环境变量。
    - `env` 里的 `SSL_CERT_FILE` 解决围栏里访问 https 的问题（围栏只带进了 `/usr /bin /lib /lib64`，
      没有证书目录；指到围栏里 `/usr` 下能看到的证书文件即可，实测见报告实测 1）。
-2. 开：`PUT /api/settings/agent-sandbox`，body `{"name": "per-user-home"}`；
+2. 开：`PUT /api/settings/agent-enforced-backend`，body `{"name": "per-user-home"}`；
    关：body `{"name": null}`（或空串）。GET 同路径读当前值。
 3. 也可直接写 settings 表：键 `agent_enforced_backend`，值 = 后端名字；删键/置空 = 关。
 
@@ -142,9 +190,10 @@ GET/PUT `/api/settings/agent-sandbox`（沿用官方 `require_permission("storag
 | 做法 | Docker 沙箱，每用户一个容器 | 官方本地 Shell + 按用户的 root_dir |
 | 开关指向的后端类型 | `kind=docker`，`sandbox_scope=user` | `kind=shell` |
 | `{username}` 占位符 | volumes 卷名（`octop_sbx_{username}`） | root_dir / env 值（`/data/.octop/users/{username}`） |
-| 改的官方文件数 | 5（manager / docker_spec / resource_policy / validators / agents / settings） | 7（多了 adapter.py；docker_spec 改法不同但同文件） |
+| 改的官方文件数 | 5（manager / docker_spec / resource_policy / validators / agents / settings） | 9（多了 adapter.py、browser_profile.py；docker_spec 改法不同但同文件） |
 | inherit_env / env | 不涉及（Docker 沙箱自带最小环境） | 透传到本地 Shell 后端（解决 https 证书、口令隔离） |
 | F4 / F5 | 同 | 同（F5 补了四种写法测试） |
+| F11 / F13 | 无 | 浏览器 file: 按用户分；边界说明常量（第 5 轮） |
 
 ## 删除条件
 
