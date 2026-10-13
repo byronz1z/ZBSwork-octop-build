@@ -160,6 +160,30 @@ ZBS 停用"按角色分发模型"策略（决策人明说不再限制普通用�
 > `src/octop/infra/errors.py`、`src/octop/i18n/{zh,en}.json`、
 > `src/octop/infra/gateway/slash/handlers/composite.py`。
 
+## 被拒时回应里附带的数据（保留，现在没有地方用）
+
+用户选了名单外的模型被拒时（设常用模型、网页发消息、定时任务三处，共用
+`resource_policy.py` 的 `assert_model_allowed_for_user`），回应是官方的
+`FORBIDDEN`，网页显示官方原样的"没有权限。"。回应的 `details` 里另外带两项：
+`model`（用户选的那个）和 `allowed_models`（这个用户自己的可用名单）。
+
+- **谁在用**：2026-10-13 在套好补丁的源码里查过，后端和网页端都没有任何地方读
+  这两项；只有测试在断言它们存在（`tests/integration/test_model_policy_api.py`、
+  `tests/unit/users/test_allowed_models_policy.py`）。
+- **有没有风险**：没有。带的只是当事用户自己的名单，不含别人的数据和密钥；
+  网页不显示。
+- **为什么留着**：它从本补丁第一版就有（审核第 2 轮看过）。删掉对用户没有任何
+  变化，却要改代码和三处测试、重做镜像、重新验收，所以不删。
+- **以后要删**：删 `details=...` 那一个参数，同时删上面两个测试文件里对
+  `details["model"]`、`details["allowed_models"]` 的断言，别的不用动。
+- **更正一处记录**：指挥部 ZT-026 第 8 轮的执行方报告里写"已撤掉 details 里拼
+  名单的代码"，不属实——第 8 轮撤的是第 6 轮加的那一版（新错误码、双语文字、
+  多带一项可读名单 `allowed`），上面这两项是原来就有的，没有动。以本节为准。
+
+另：网页对话那条通道（WebSocket）不套官方的文字表，被拒时对话里显示的是代码里
+那句英文原文 `model is not in this user's allowed models`。正常使用碰不到——
+模型下拉列表里只有名单内的。
+
 ## 生产注意
 
 - 名单只影响**之后**的模型选择；用户已有的偏好模型/Agent 固定模型若在名单外，

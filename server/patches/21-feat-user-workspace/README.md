@@ -169,7 +169,7 @@ GET/PUT `/api/settings/agent-enforced-backend`（沿用官方 `require_permissio
 | 做法 | Docker 沙箱，每用户一个容器 | 官方本地 Shell + 按用户的 root_dir |
 | 开关指向的后端类型 | `kind=docker`，`sandbox_scope=user` | `kind=shell` |
 | `{username}` 占位符 | volumes 卷名（`octop_sbx_{username}`） | root_dir / env 值（`/data/.octop/users/{username}`） |
-| 改的官方文件数 | 5 个 src（manager / docker_spec / resource_policy / validators / agents / settings） | 8 个 src（多了 adapter.py、browser_profile.py；docker_spec 改法不同但同文件；另加 3 个测试文件） |
+| 改的官方文件数 | 6 个 src（manager / docker_spec / resource_policy / validators / agents / settings） | 8 个 src（多了 adapter.py、browser_profile.py；docker_spec 改法不同但同文件；另加 3 个测试文件） |
 | inherit_env / env | 不涉及（Docker 沙箱自带最小环境） | 透传到本地 Shell 后端（解决 https 证书、口令隔离） |
 | F1 / F3 | 同 | 同（F3 补了四种写法测试） |
 | F11 / F13 | 无 | F11：浏览器 file: 按用户分（第 5 轮）。F13 边界说明第 5 轮曾加、2026-10-13 按决策人决定撤掉 |
