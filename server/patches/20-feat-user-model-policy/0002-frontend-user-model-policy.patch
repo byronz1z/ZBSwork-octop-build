@@ -28,7 +28,7 @@ index 463b6335b681302f9520c6d9e3ef9d168db67886..7618b8ad045bb3fbf04393f46cd79f1c
    return null;
  }
 diff --git a/dashboard/src/locales/en.json b/dashboard/src/locales/en.json
-index 3d455d929fbe4717cbf4002ee13db175c23a9aad..867e1a1c0d10c9a70819dcc6495fdd0bd8b2187a 100644
+index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..2960c5269dbbd1e6bf77c697a3911217ab72603d 100644
 --- a/dashboard/src/locales/en.json
 +++ b/dashboard/src/locales/en.json
 @@ -5425,6 +5425,13 @@
@@ -46,7 +46,7 @@ index 3d455d929fbe4717cbf4002ee13db175c23a9aad..867e1a1c0d10c9a70819dcc6495fdd0b
      "batchSelected": "{{count}} selected",
      "batchSelectAll": "Select all",
 diff --git a/dashboard/src/locales/zh.json b/dashboard/src/locales/zh.json
-index a8b6a387f41a185726aa0b2641b222a5aacfa4d3..51f2e537e8552b3f7e81a788c475dddb552d4d58 100644
+index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..ac757860a4a4a1b5cfc20e76dd768ebd4c045fe9 100644
 --- a/dashboard/src/locales/zh.json
 +++ b/dashboard/src/locales/zh.json
 @@ -5425,6 +5425,13 @@

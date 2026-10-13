@@ -57,16 +57,25 @@ Octop 进程身上的口令样环境变量。
   缺键会把运行方式静默改回官方默认，属于"改了运行方式"的一种）。管理员改任何 Agent 照常。
   覆盖决策人点的四种写法：把 `root_dir` 改成别人的文件夹、改成 `/`、改 `inherit_env`、
   换成别的类型——全部拒绝（见单元测试 `test_patch_blocks_*`）。
+- **fail-closed（第 4 轮按审核第 1 轮意见补上）**：开关指向的后端被管理员删掉或停用时，
+  普通用户新建 Agent 不再"记一条 warning 然后悄悄退回官方默认"（那样隔离没了没人知道），
+  而是报清楚错误（`WORKSPACE_OP_UNSUPPORTED`：后端不存在/已停用，请找管理员修开关或关掉
+  开关）。管理员不受影响（自己的 Agent 本来就不走强制后端路径，照常建）。
 - **F3（活动范围按用户）**：`row_to_backend_spec`（`adapter.py`）的 `kind=shell` 分支
   透传 `inherit_env`、`env`（harness `_build_local_shell` 认这两个键并传给
   `HarnessLocalShellBackend` / `BubbledLocalShellBackend`）。`{username}` 占位符在
   `_prepare_docker_backend`（`manager.py`，对 local_shell 后端复用此入口）里按 Agent
   主人用户名展开（`root_dir` 和 `env` 的值都展开）。占位符只对 local_shell/filesystem
   后端生效；无 username（全局 Agent）时不展开（原样保留，harness 会显式报错，不静默错挂）。
-  **用户名安全处理**：占位符替换的是 `user_repo.get(user_id).username`——用户名在创建
-  时由 `UserManager.create` 校验，官方只允许 `[A-Za-z0-9_-]` 之外的字符在注册时就被拒
-  （见 `infra/users/manager.py` 的 `_USERNAME_RE`），所以替换后不会含 `/`、`\`、`..`
-  或空，不会跳出上级目录。补丁不另加转义，复用官方这个既有约束。
+  **用户名安全处理**（第 4 轮按源码事实补上）：官方 `infra/users/manager.py` 建用户
+  **只检查用户名非空**（`UserManager.create` 抛 `USERNAME_TAKEN`/"username must not be
+  empty"），没有任何字符集正则；模块级的 `_USERNAME_ALLOWED`（`[^a-zA-Z0-9_.-]`）只用于
+  SSO 自动分配用户名时剔除字符，不是创建校验——演练库里就存在中文用户名。因此补丁
+  自己把关：`docker_spec.username_safe_for_placeholder` 判定用户名安全（非空、非全空白、
+  不等于 `.` 或 `..`、不含 `/` 或 `\`、不含控制字符），`resolve_username_placeholder`
+  对不安全用户名一律不展开；`_enforced_user_sandbox_backend` 在新建 Agent 展开占位符
+  时遇到不安全用户名直接报错（`WORKSPACE_OP_UNSUPPORTED`，提示找管理员改名），绝不落
+  官方默认后端。其余用户名（含中文、中间带点如 `john.doe`）原样使用，不加别的限制。
 
 **开关的管理接口**：官方没有管理员自由写 settings 键的通用通道，所以本补丁加
 GET/PUT `/api/settings/agent-sandbox`（沿用官方 `require_permission("storage_backends")`
@@ -78,14 +87,38 @@ GET/PUT `/api/settings/agent-sandbox`（沿用官方 `require_permission("storag
 | 文件 | 函数/位置 | 改动 |
 |---|---|---|
 | `src/octop/infra/backend/adapter.py` | `row_to_backend_spec` 的 `kind=shell` 分支 | 透传 `inherit_env`、`env`（cfg 提供）；root_dir 仍允许 `{username}` 占位符（在 manager 展开时解析） |
-| `src/octop/infra/backend/docker_spec.py` | `enrich_docker_backend_spec` + 新增 `resolve_username_placeholder` | `{username}` 占位符展开（root_dir / env 值）；删掉上一版 Docker 方案的 volumes 占位符 |
-| `src/octop/infra/agents/manager.py` | `_prepare_docker_backend` + `_enforced_user_sandbox_backend` | F4 覆写（展开 named 后端为 local_shell spec + 解析 {username}）；运行时 local_shell 后端 {username} 展开 |
+| `src/octop/infra/backend/docker_spec.py` | `enrich_docker_backend_spec` + 新增 `resolve_username_placeholder` / `username_safe_for_placeholder` | `{username}` 占位符展开（root_dir / env 值）；不安全用户名（空、`.`/`..`、`/`、`\`、控制字符）不展开 |
+| `src/octop/infra/agents/manager.py` | `_prepare_docker_backend` + `_enforced_user_sandbox_backend` | F4 覆写（展开 named 后端为 local_shell spec + 解析 {username}；用户名不安全或后端不存在/停用时新建报错 fail-closed）；运行时 local_shell 后端 {username} 展开 |
 | `src/octop/infra/users/resource_policy.py` | 新增 `enforced_sandbox_backend_name` / `user_row_is_admin` 与键常量 | 开关读取（F4/F5 共用） |
 | `src/octop/api/common/validators.py` | 新增 `assert_user_may_change_backend` | F5 校验 |
 | `src/octop/api/routers/agents.py` | `patch_agent` | 调用 F5 校验 |
 | `src/octop/api/routers/settings.py` | 文件尾新增两个路由 | 开关 GET/PUT |
-| `tests/unit/test_storage_spec.py` | 追加测试 | adapter 透传 inherit_env/env、占位符解析 |
-| `tests/unit/agents/test_user_sandbox_policy.py` | 新文件（16 个测试） | F4/F5/开关 + 四种改运行方式写法 |
+| `tests/unit/test_storage_spec.py` | 追加测试 | adapter 透传 inherit_env/env、占位符解析、username_safe_for_placeholder 规则与不展开行为 |
+| `tests/unit/agents/test_user_sandbox_policy.py` | 新文件（29 个测试） | F4/F5/开关 + 四种改运行方式写法 + 用户名不安全拒绝 + 后端不存在/停用 fail-closed + 管理员不受影响 |
+
+## 团队类 Agent（kind=team）的处理（2026-10-13 第 4 轮源码核实）
+
+演练数据里有 4 个 `kind=team` 的团队宿主属于普通用户，它们的 backend 为空。**结论：
+不动它们，它们碰不到文件和命令，围栏对它们没有意义。** 依据（官方 b6 源码，三层禁用）：
+
+1. **工具白名单**：`infra/agents/teams/service.py` 的 `HOST_TOOLS_ALLOWED` 只允许 5 个
+   工具——`agent_list`、`ask_agent`、`memory_search`、`memory_get`、`current_time`；
+   目录里其余全部工具（`write_file`、`edit_file`、`execute`、浏览器、`read_env_file`、
+   MCP……）都在 `HOST_TOOLS_DISABLED` 里。`api/routers/agent_tools.py` 对团队宿主也只
+   展示这 5 个（`disableable` 一律为 false）。
+2. **harness 配置层**：`AgentManager._apply_team_host_config`（`infra/agents/manager.py`）
+   对团队宿主把 `tools_disabled` 设为 `host_tools_disabled(...)`（含官方视为 critical 的
+   `ls`/`read_file` 等——官方对团队宿主的白名单优先于 critical 保留），并置空
+   `tools`、`skills_dir`、`mcp_server_configs`。
+3. **运行时层**：`strip_team_host_runtime_tools` 把已加载宿主身上的 MCP/连接器工具剥掉；
+   `TeamManager.stamp_host_runtime` 强制宿主走异步 `ask_agent` 派工。
+
+宿主的工作目录只被官方代码用来放 `.octop/manifest.json`（`seed_team_template`，
+成员名单），宿主自己没有任何读写它的工具。**团队成员 Agent 是普通 expert，各自走
+各自的 backend**（`TeamManager.stream_peer_to_room` → `agent_manager.stream(成员)`）——
+开关开启时普通用户建的团队成员经 F4 落主人文件夹（见测试
+`test_create_team_agent_also_overridden`，F4 覆盖 `kind=team` 的落库）；存量团队成员由
+部署运维库的迁移脚本按主人迁移。团队宿主的 backend 为空（官方默认），保持不动。
 
 ## 怎么开关（管理员一步步配）
 

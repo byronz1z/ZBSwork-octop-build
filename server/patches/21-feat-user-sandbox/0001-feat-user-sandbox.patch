@@ -188,7 +188,7 @@ index c8b368d1b70adb895cfb36a77c98dc86404ded3f..ba3eafc86735c3419935540ec5de9b50
 +        name=enforced_sandbox_backend_name(server.services.settings_repo),
 +    )
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
-index 34f881975c1c79279e5471533f0f779575fda0e5..a0ce825375ec8aa382bdf161c923ed44f7f0127a 100644
+index 34f881975c1c79279e5471533f0f779575fda0e5..ae38795d42c72e604960c7c0f41652046055291f 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
 @@ -641,6 +641,12 @@ class AgentManager:
@@ -204,7 +204,7 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..a0ce825375ec8aa382bdf161c923ed44
                  raise_if_backend_outside_user_root(
                      self._repos.user_policy_repo,
                      spec.user_id,
-@@ -2529,6 +2535,59 @@ class AgentManager:
+@@ -2529,6 +2535,89 @@ class AgentManager:
      # Internal — validation
      # ------------------------------------------------------------------
  
@@ -215,6 +215,15 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..a0ce825375ec8aa382bdf161c923ed44
 +        (settings key ``agent_enforced_backend``) is set and *user_id* is a
 +        non-admin user; ``None`` otherwise (switch off, admin owner, or
 +        unknown user — official Octop behavior everywhere).
++
++        Fails closed for non-admin owners: when the switch points at a
++        backend that no longer exists or has been disabled, or when the
++        owner's username is unsafe to substitute into ``{username}``
++        (empty, ``.`` / ``..``, path separator, control character), this
++        raises ``OctopError`` instead of silently falling back to the
++        official default backend (which would drop the isolation without
++        anyone noticing). Admins are unaffected — their agents never go
++        through this path.
 +        """
 +        from octop.infra.users.resource_policy import (
 +            enforced_sandbox_backend_name,
@@ -229,13 +238,24 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..a0ce825375ec8aa382bdf161c923ed44
 +        name = enforced_sandbox_backend_name(settings_repo)
 +        if not name:
 +            return None
-+        row = self._repos.storage_backend_repo.get_by_name(name)
-+        if row is None:
-+            logger.warning("agent_enforced_backend %r not found in storage_backends", name)
-+            return None
 +        owner = self._repos.user_repo.get(user_id)
 +        if owner is None or user_row_is_admin(owner):
 +            return None
++        row = self._repos.storage_backend_repo.get_by_name(name)
++        if row is None:
++            raise OctopError(
++                ErrorCode.WORKSPACE_OP_UNSUPPORTED,
++                "the enforced agent backend "
++                f"{name!r} (settings key 'agent_enforced_backend') no longer exists; "
++                "ask an administrator to fix or disable the agent sandbox switch",
++            )
++        if not int(getattr(row, "enabled", 1) or 0):
++            raise OctopError(
++                ErrorCode.WORKSPACE_OP_UNSUPPORTED,
++                "the enforced agent backend "
++                f"{name!r} (settings key 'agent_enforced_backend') is disabled; "
++                "ask an administrator to re-enable it or disable the agent sandbox switch",
++            )
 +        # Expand the named backend into a concrete local_shell spec so that
 +        # ``seed_workspace_dir_on_create`` sees the scoped ``root_dir`` and
 +        # places the agent workspace under the owner's folder (F4 file
@@ -244,7 +264,10 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..a0ce825375ec8aa382bdf161c923ed44
 +        # the on-disk workspace path is decided at create time from the
 +        # persisted spec, so the placeholder must be resolved now.
 +        from octop.infra.backend.adapter import row_to_backend_spec  # noqa: PLC0415
-+        from octop.infra.backend.docker_spec import resolve_username_placeholder  # noqa: PLC0415
++        from octop.infra.backend.docker_spec import (  # noqa: PLC0415
++            resolve_username_placeholder,
++            username_safe_for_placeholder,
++        )
 +
 +        spec = row_to_backend_spec(row)
 +        if not isinstance(spec, dict):
@@ -252,6 +275,13 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..a0ce825375ec8aa382bdf161c923ed44
 +        username = owner.username or ""
 +        root = spec.get("root_dir")
 +        if isinstance(root, str) and "{username}" in root:
++            if not username_safe_for_placeholder(username):
++                raise OctopError(
++                    ErrorCode.WORKSPACE_OP_UNSUPPORTED,
++                    f"the username {username!r} cannot be used for a per-user agent "
++                    "folder (it is empty or contains '.', '..', '/', '\\', or "
++                    "control characters); ask an administrator to rename the account",
++                )
 +            spec = dict(spec)
 +            spec["root_dir"] = resolve_username_placeholder(root, username)
 +            env = spec.get("env")
@@ -264,7 +294,7 @@ index 34f881975c1c79279e5471533f0f779575fda0e5..a0ce825375ec8aa382bdf161c923ed44
      def _assert_agent_name_available(
          self,
          user_id: int | None,
-@@ -2764,17 +2823,36 @@ class AgentManager:
+@@ -2764,17 +2853,36 @@ class AgentManager:
          return isinstance(spec, dict) and str(spec.get("type") or "").lower() == "opensandbox"
  
      def _prepare_docker_backend(self, backend: Any, row: AgentRow) -> Any:
@@ -339,7 +369,7 @@ index fc81c3c49cf84a5a3f58a880e3d0492b7231ef37..e9e7eb5238cc93c43772fbe2f8501bef
      if kind == "postgres":
          from octop.infra.backend.postgres_spec import row_to_postgres_spec
 diff --git a/src/octop/infra/backend/docker_spec.py b/src/octop/infra/backend/docker_spec.py
-index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..ae27954442cb5b30f5ea5332e7cbe3a9d34ea73c 100644
+index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..ebc502a7fde07342c07fe330775a61159aa19256 100644
 --- a/src/octop/infra/backend/docker_spec.py
 +++ b/src/octop/infra/backend/docker_spec.py
 @@ -64,6 +64,8 @@ def enrich_docker_backend_spec(
@@ -351,7 +381,7 @@ index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..ae27954442cb5b30f5ea5332e7cbe3a9
      """
      if str(spec.get("type") or "").lower() != "docker":
          return spec
-@@ -75,9 +77,33 @@ def enrich_docker_backend_spec(
+@@ -75,9 +77,59 @@ def enrich_docker_backend_spec(
          out.setdefault("agent_id", agent_id)
      elif scope == "user" and username and not out.get("username"):
          out["username"] = username
@@ -368,6 +398,28 @@ index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..ae27954442cb5b30f5ea5332e7cbe3a9
      return out
  
  
++def username_safe_for_placeholder(username: str | None) -> bool:
++    """Whether *username* may be substituted into a path (ZBS).
++
++    Rejects empty, ``.`` / ``..`` (directory aliases), and any username
++    containing a path separator (``/`` or ``\\``) or a control character —
++    all of these could escape the per-user folder or corrupt the path.
++    Everything else — including non-ASCII usernames and embedded dots like
++    ``john.doe`` — is used verbatim. Official Octop only requires usernames
++    to be non-empty at creation (``UserManager.create``), so unsafe legacy
++    usernames may exist in existing installs.
++    """
++    if not username:
++        return False
++    if username.strip() == "":
++        return False
++    if username in (".", ".."):
++        return False
++    if "/" in username or "\\" in username:
++        return False
++    return not any(ord(ch) < 32 or ord(ch) == 127 for ch in username)
++
++
 +def resolve_username_placeholder(value: Any, username: str | None) -> Any:
 +    """Expand ``{username}`` in *value* to the agent owner's username (ZBS).
 +
@@ -375,9 +427,13 @@ index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..ae27954442cb5b30f5ea5332e7cbe3a9
 +    the placeholder (e.g. ``/data/.octop/users/{username}``). The username is
 +    injected by :func:`enrich_docker_backend_spec`'s octop caller and shared
 +    here. Without a username the value is left as-is so the misconfiguration
-+    surfaces explicitly.
++    surfaces explicitly; an *unsafe* username (see
++    :func:`username_safe_for_placeholder`) is likewise never substituted —
++    callers decide how to report it.
 +    """
 +    if not isinstance(value, str) or not username:
++        return value
++    if not username_safe_for_placeholder(username):
 +        return value
 +    return value.replace("{username}", username)
 +
@@ -425,10 +481,10 @@ index 21d89a2e91f80ff791b19eecd0329ef5996b0d37..9d2284c3b0f4b839c1eca8486039204b
      """Return ``value`` when the policy row exists and is enabled."""
 diff --git a/tests/unit/agents/test_user_sandbox_policy.py b/tests/unit/agents/test_user_sandbox_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c9c7656cd800fc1f1bf3190c5d2cd70afdd28927
+index 0000000000000000000000000000000000000000..ae6e92762701a647bda6d0ce81f017f6bb4487e6
 --- /dev/null
 +++ b/tests/unit/agents/test_user_sandbox_policy.py
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,443 @@
 +"""Unit tests for the ZBS enforced per-user sandbox policy (settings switch).
 +
 +Covers:
@@ -492,6 +548,14 @@ index 0000000000000000000000000000000000000000..c9c7656cd800fc1f1bf3190c5d2cd70a
 +        note=None,
 +    )
 +    manager._repos.settings_repo.set(ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY, name)
++
++
++def _set_enabled(manager: AgentManager, name: str, enabled: bool) -> None:
++    """Flip a seeded storage backend's enabled flag directly on the repo."""
++    repo = manager._repos.storage_backend_repo
++    row = repo.get_by_name(name)
++    assert row is not None
++    repo.update(row.id, enabled=enabled)
 +
 +
 +# ---------------------------------------------------------------------------
@@ -590,6 +654,121 @@ index 0000000000000000000000000000000000000000..c9c7656cd800fc1f1bf3190c5d2cd70a
 +        "inherit_env": False,
 +        "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
 +    }
++
++
++async def test_create_non_ascii_username_overridden_verbatim(manager: AgentManager) -> None:
++    """ZBS round 4: non-ASCII usernames (official allows them) expand as-is."""
++    uid = _seed_user(manager, role="user", name="张三")
++    _switch_on(manager)
++    row = await manager.create(
++        AgentCreateSpec(
++            name="cn-agent",
++            user_id=uid,
++            config={"memory": {"memory_enabled": False}},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"]["root_dir"] == "/data/.octop/users/张三"
++
++
++async def test_create_username_with_embedded_dot_overridden(manager: AgentManager) -> None:
++    """ZBS round 4: embedded dots like ``john.doe`` are fine (only exactly
++    ``.`` / ``..`` are unsafe); official Octop imposes no charset."""
++    uid = _seed_user(manager, role="user", name="john.doe")
++    _switch_on(manager)
++    row = await manager.create(
++        AgentCreateSpec(
++            name="dot-agent",
++            user_id=uid,
++            config={"memory": {"memory_enabled": False}},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"]["root_dir"] == "/data/.octop/users/john.doe"
++
++
++@pytest.mark.parametrize(
++    "bad_name",
++    ["..", ".", "a/b", "a\\b", "a\x00b", "a\nb", " "],
++)
++async def test_create_unsafe_username_rejected(manager: AgentManager, bad_name: str) -> None:
++    """ZBS round 4: unsafe usernames (``.``, ``..``, separators, control
++    characters, blank) must NOT be expanded into the per-user folder path —
++    agent creation fails with a clear error instead of silently falling
++    back to the official (unisolated) default backend."""
++    uid = _seed_user(manager, role="user", name=bad_name)
++    _switch_on(manager)
++    with pytest.raises(OctopError) as ei:
++        await manager.create(
++            AgentCreateSpec(
++                name="bad-user-agent",
++                user_id=uid,
++                config={"memory": {"memory_enabled": False}},
++            ),
++            defer_bootstrap=True,
++        )
++    assert ei.value.code is ErrorCode.WORKSPACE_OP_UNSUPPORTED
++
++
++async def test_create_enforced_backend_missing_fails_closed(manager: AgentManager) -> None:
++    """ZBS round 4: switch points at a deleted backend → non-admin create
++    raises (no silent fallback to the official default = lost isolation)."""
++    uid = _seed_user(manager, role="user")
++    _switch_on(manager, name="ghost-backend")
++    # the seeded backend exists; delete it to simulate admin removal
++    row = manager._repos.storage_backend_repo.get_by_name("ghost-backend")
++    assert row is not None
++    manager._repos.storage_backend_repo.delete(row.id)
++    with pytest.raises(OctopError) as ei:
++        await manager.create(
++            AgentCreateSpec(
++                name="ghost-agent",
++                user_id=uid,
++                config={"memory": {"memory_enabled": False}},
++            ),
++            defer_bootstrap=True,
++        )
++    assert ei.value.code is ErrorCode.WORKSPACE_OP_UNSUPPORTED
++    assert "ghost-backend" in str(ei.value)
++
++
++async def test_create_enforced_backend_disabled_fails_closed(manager: AgentManager) -> None:
++    """ZBS round 4: switch points at a disabled backend → non-admin create
++    raises (same fail-closed behavior as a missing backend)."""
++    uid = _seed_user(manager, role="user")
++    _switch_on(manager, name="offline-backend")
++    _set_enabled(manager, "offline-backend", False)
++    with pytest.raises(OctopError) as ei:
++        await manager.create(
++            AgentCreateSpec(
++                name="offline-agent",
++                user_id=uid,
++                config={"memory": {"memory_enabled": False}},
++            ),
++            defer_bootstrap=True,
++        )
++    assert ei.value.code is ErrorCode.WORKSPACE_OP_UNSUPPORTED
++    assert "offline-backend" in str(ei.value)
++
++
++async def test_create_admin_unaffected_by_missing_enforced_backend(manager: AgentManager) -> None:
++    """ZBS round 4: admins are unaffected when the switch is broken —
++    their agents never go through the enforced-sandbox path."""
++    uid = _seed_user(manager, role="admin")
++    manager._repos.settings_repo.set(ENFORCED_SANDBOX_BACKEND_SETTINGS_KEY, "ghost-backend")
++    requested = {"type": "local_shell", "root_dir": "/", "virtual_mode": True}
++    row = await manager.create(
++        AgentCreateSpec(
++            name="admin-agent-2",
++            user_id=uid,
++            config={"memory": {"memory_enabled": False}, "backend": requested},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"] == requested
 +
 +
 +async def test_prepare_docker_backend_expands_username_in_named_shell(manager: AgentManager) -> None:
@@ -750,10 +929,10 @@ index 0000000000000000000000000000000000000000..c9c7656cd800fc1f1bf3190c5d2cd70a
 +        )
 +    assert ei.value.code is ErrorCode.FORBIDDEN
 diff --git a/tests/unit/test_storage_spec.py b/tests/unit/test_storage_spec.py
-index 4d800e19e3bbe2c4bcc16401669bcd625341012f..2d08b3a40af42e2bcdd9eaf6fe978033df19f164 100644
+index 4d800e19e3bbe2c4bcc16401669bcd625341012f..d4322c4428737f06cd3ff03fb20b15ecef99e23d 100644
 --- a/tests/unit/test_storage_spec.py
 +++ b/tests/unit/test_storage_spec.py
-@@ -253,6 +253,101 @@ def test_enrich_docker_backend_spec_defaults() -> None:
+@@ -253,6 +253,134 @@ def test_enrich_docker_backend_spec_defaults() -> None:
      assert "agent_id" not in fixed or fixed.get("agent_id") == "ZE6GR2"
  
  
@@ -797,6 +976,39 @@ index 4d800e19e3bbe2c4bcc16401669bcd625341012f..2d08b3a40af42e2bcdd9eaf6fe978033
 +    assert resolve_username_placeholder("/data/users/{username}", "alice") == "/data/users/alice"
 +    assert resolve_username_placeholder("/data/users/{username}", None) == "/data/users/{username}"
 +    assert resolve_username_placeholder(123, "alice") == 123
++
++
++def test_username_safe_for_placeholder_rules() -> None:
++    """ZBS round 4: which usernames may be substituted into a path."""
++    from octop.infra.backend.docker_spec import username_safe_for_placeholder
++
++    # Safe: ordinary, non-ASCII (official allows them), embedded dots.
++    assert username_safe_for_placeholder("alice") is True
++    assert username_safe_for_placeholder("张三") is True
++    assert username_safe_for_placeholder("john.doe") is True
++    assert username_safe_for_placeholder("a_b-c") is True
++    # Unsafe: empty / blank, directory aliases, separators, control chars.
++    assert username_safe_for_placeholder(None) is False
++    assert username_safe_for_placeholder("") is False
++    assert username_safe_for_placeholder("   ") is False
++    assert username_safe_for_placeholder(".") is False
++    assert username_safe_for_placeholder("..") is False
++    assert username_safe_for_placeholder("a/b") is False
++    assert username_safe_for_placeholder("a\\b") is False
++    assert username_safe_for_placeholder("a\x00b") is False
++    assert username_safe_for_placeholder("a\nb") is False
++    assert username_safe_for_placeholder("a\x7fb") is False
++
++
++def test_resolve_username_placeholder_refuses_unsafe_username() -> None:
++    """ZBS round 4: an unsafe username is never substituted (value kept)."""
++    from octop.infra.backend.docker_spec import resolve_username_placeholder
++
++    assert resolve_username_placeholder("/data/users/{username}", "..") == "/data/users/{username}"
++    assert resolve_username_placeholder("/data/users/{username}", "a/b") == (
++        "/data/users/{username}"
++    )
++    assert resolve_username_placeholder("/data/users/{username}", "张三") == "/data/users/张三"
 +
 +
 +def test_shell_adapter_passes_inherit_env_and_env() -> None:

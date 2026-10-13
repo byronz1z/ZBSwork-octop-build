@@ -458,7 +458,7 @@ index 46384d85676044d9c6886fad29b6e43dce44b20a..34f881975c1c79279e5471533f0f7795
      # ------------------------------------------------------------------
      # Hot-reload — rebuild harness agents after config / provider changes
 diff --git a/src/octop/infra/agents/providers/store.py b/src/octop/infra/agents/providers/store.py
-index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..a0cf7830ac3b4e6c21018e508e912952a8edb539 100644
+index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e93d46fa1 100644
 --- a/src/octop/infra/agents/providers/store.py
 +++ b/src/octop/infra/agents/providers/store.py
 @@ -3,7 +3,7 @@
@@ -517,7 +517,7 @@ index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..a0cf7830ac3b4e6c21018e508e912952
          return None
  
      def resolve_model_for_multimodal_turn(
-@@ -206,18 +225,34 @@ class ProviderStore:
+@@ -206,18 +225,46 @@ class ProviderStore:
          model_ref: str | None,
          *,
          needs_multimodal: bool,
@@ -526,11 +526,23 @@ index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..a0cf7830ac3b4e6c21018e508e912952
 -        """Keep explicit ref when it supports vision; else upgrade to a vision model."""
 +        """Keep explicit ref when it supports vision; else upgrade to a vision ref.
 +
-+        ZBS: when *allowed_models* is set, the explicit ref must be whitelisted
-+        and the vision upgrade only picks a whitelisted model. An explicit ref
-+        outside the whitelist is dropped (returns ``None``), never silently
-+        swapped for a non-whitelisted upgrade.
++        ZBS: with no allowlist set this is exactly the official method
++        (``return upgraded or ref``). When *allowed_models* is set, the
++        explicit ref must be whitelisted and the vision upgrade only picks
++        a whitelisted model. An explicit ref outside the whitelist is
++        dropped (returns ``None``), never silently swapped for a
++        non-whitelisted upgrade.
 +        """
++        if allowed_models is None:
++            # Official path — unchanged, including the fallback to the
++            # original ref when no vision model exists site-wide.
++            if not needs_multimodal:
++                return model_ref
++            ref = (model_ref or "").strip() or None
++            if ref and self.is_model_ref_multimodal(ref):
++                return ref
++            upgraded = self.resolve_multimodal_model_ref()
++            return upgraded or ref
          if not needs_multimodal:
 -            return model_ref
 +            if model_ref is None or model_ref_passes_allowlist(model_ref, allowed_models):
@@ -559,7 +571,7 @@ index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..a0cf7830ac3b4e6c21018e508e912952
          for row in self.iter_usable_rows():
              for model in row.get_models():
                  if not is_chat_eligible_model(
-@@ -225,8 +260,12 @@ class ProviderStore:
+@@ -225,8 +272,12 @@ class ProviderStore:
                  ):
                      continue
                  model_id = str(model.get("id") or "").strip()
@@ -1299,10 +1311,10 @@ index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c
 +    assert r.status_code == 200, r.text
 diff --git a/tests/unit/agents/test_model_policy_store.py b/tests/unit/agents/test_model_policy_store.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..568885a690a1180bf195a296dddcd5cf36edfef3
+index 0000000000000000000000000000000000000000..8f3000232490b7c3b479ab1cf071400cf1237b33
 --- /dev/null
 +++ b/tests/unit/agents/test_model_policy_store.py
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,141 @@
 +"""ZBS patch 20 — ProviderStore allowlist filtering (F8: vision upgrade, fallback)."""
 +
 +from __future__ import annotations
@@ -1415,6 +1427,34 @@ index 0000000000000000000000000000000000000000..568885a690a1180bf195a296dddcd5cf
 +    # No allowlist → official behavior (upgrade to first vision model).
 +    assert (
 +        store.resolve_model_for_multimodal_turn("a/text-only", needs_multimodal=True) == "a/vision"
++    )
++
++
++def test_resolve_model_for_multimodal_turn_no_allowlist_no_vision_returns_ref(
++    store: ProviderStore,
++) -> None:
++    """ZBS round 4: no allowlist set + no vision model site-wide → original ref.
++
++    Official code returns ``upgraded or ref`` — with no vision model anywhere
++    that falls back to the original ref. Must not become ``None`` (which
++    would reroute to AUTO) when no allowlist is configured.
++    """
++    _add_provider(store, "a", [_model("text-only")])
++    _add_provider(store, "b", [_model("also-text")])
++
++    # Sanity: no vision model exists anywhere.
++    assert store.resolve_multimodal_model_ref() is None
++
++    assert (
++        store.resolve_model_for_multimodal_turn("a/text-only", needs_multimodal=True)
++        == "a/text-only"
++    )
++    # None ref with no allowlist stays None (official behavior).
++    assert store.resolve_model_for_multimodal_turn(None, needs_multimodal=True) is None
++    # Text turns pass through unchanged with no allowlist.
++    assert (
++        store.resolve_model_for_multimodal_turn("a/text-only", needs_multimodal=False)
++        == "a/text-only"
 +    )
 diff --git a/tests/unit/gateway/test_global_processor_team.py b/tests/unit/gateway/test_global_processor_team.py
 index c0428637b77ea13721e0f968d740a29073eec639..b2269af6c2acc685beeea055f38440b1e8a00d6a 100644
