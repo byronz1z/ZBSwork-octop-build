@@ -1,0 +1,524 @@
+diff --git a/dashboard/src/api/modules/userRoles.ts b/dashboard/src/api/modules/userRoles.ts
+index 463b6335b681302f9520c6d9e3ef9d168db67886..7618b8ad045bb3fbf04393f46cd79f1c7ea1c069 100644
+--- a/dashboard/src/api/modules/userRoles.ts
++++ b/dashboard/src/api/modules/userRoles.ts
+@@ -18,6 +18,7 @@ export interface UserRole {
+   workspace_root_dir: string | null;
+   token_quota: number | null;
+   max_agents: number | null;
++  allowed_models?: string[] | null;
+   created_at: number;
+   updated_at: number;
+   avatar_url?: string | null;
+@@ -127,6 +128,7 @@ export function userRoleDrift(
+     workspace_root_dir?: string | null;
+     token_quota?: number | null;
+     max_agents?: number | null;
++    allowed_models?: string[] | null;
+   },
+   roles: UserRole[],
+ ): UserRoleDrift | null {
+@@ -155,5 +157,8 @@ export function userRoleDrift(
+   if ((row.token_quota ?? null) !== (role.token_quota ?? null))
+     return "changed";
+   if ((row.max_agents ?? null) !== (role.max_agents ?? null)) return "changed";
++  const models = JSON.stringify([...(row.allowed_models ?? [])].sort());
++  const roleModels = JSON.stringify([...(role.allowed_models ?? [])].sort());
++  if (models !== roleModels) return "changed";
+   return null;
+ }
+diff --git a/dashboard/src/locales/en.json b/dashboard/src/locales/en.json
+index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..2960c5269dbbd1e6bf77c697a3911217ab72603d 100644
+--- a/dashboard/src/locales/en.json
++++ b/dashboard/src/locales/en.json
+@@ -5425,6 +5425,13 @@
+     "policyMaxAgentsHint": "How many experts this user may create (teams excluded). Off means no limit.",
+     "policyMaxAgentsRequired": "Enter an expert limit",
+     "policyMaxAgentsPlaceholder": "e.g. 5",
++    "policyAllowedModels": "Allowed models",
++    "policyAllowedModelsHint": "The user can only use the selected models (input picker, pinned agent models, cron jobs, preferred model). Off means no limit. Admins are never restricted.",
++    "policyAllowedModelsRequired": "Select at least one model",
++    "policyAllowedModelsPlaceholder": "Search and select models",
++    "batchSetAllowedModels": "Set allowed models",
++    "batchSetAllowedModelsTitle": "Set allowed models ({{count}} users)",
++    "batchSetAllowedModelsHint": "With the switch on, the selected users can only use the chosen models; off clears the limit (all models).",
+     "modalEditTitle": "Edit user {{username}}",
+     "batchSelected": "{{count}} selected",
+     "batchSelectAll": "Select all",
+diff --git a/dashboard/src/locales/zh.json b/dashboard/src/locales/zh.json
+index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..ac757860a4a4a1b5cfc20e76dd768ebd4c045fe9 100644
+--- a/dashboard/src/locales/zh.json
++++ b/dashboard/src/locales/zh.json
+@@ -5425,6 +5425,13 @@
+     "policyMaxAgentsHint": "该用户可创建的专家数量（不含团队）。关闭表示不限制。",
+     "policyMaxAgentsRequired": "请输入专家数量上限",
+     "policyMaxAgentsPlaceholder": "例如 5",
++    "policyAllowedModels": "可用模型",
++    "policyAllowedModelsHint": "该用户只能使用列表里的模型（输入栏、Agent 固定模型、定时任务、偏好模型都受限）。关闭表示不限制。管理员不受限制。",
++    "policyAllowedModelsRequired": "请选择至少一个模型",
++    "policyAllowedModelsPlaceholder": "搜索并选择模型",
++    "batchSetAllowedModels": "设置可用模型",
++    "batchSetAllowedModelsTitle": "批量设置可用模型（{{count}} 个用户）",
++    "batchSetAllowedModelsHint": "勾选后所选用户只能使用选中的模型；不勾选则清除限制（全部可用）。",
+     "modalEditTitle": "编辑用户 {{username}}",
+     "batchSelected": "已选 {{count}} 人",
+     "batchSelectAll": "全选",
+diff --git a/dashboard/src/pages/Admin/Users/RolesPanel.tsx b/dashboard/src/pages/Admin/Users/RolesPanel.tsx
+index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb99776646a 100644
+--- a/dashboard/src/pages/Admin/Users/RolesPanel.tsx
++++ b/dashboard/src/pages/Admin/Users/RolesPanel.tsx
+@@ -39,6 +39,7 @@ import {
+   type UserRole,
+ } from "../../../api/modules/userRoles";
+ import { request } from "../../../api/request";
++import { providerApi } from "../../../api/modules/provider";
+ import { apiErrorMessage } from "../../../utils/apiError";
+ import { useCardTableView } from "../../../hooks/useCardTableView";
+ import { fetchFilesystemDefaults } from "../../Experts/components/agentBackendForm";
+@@ -66,6 +67,9 @@ export default function RolesPanel() {
+   const [permCatalog, setPermCatalog] = useState<PermissionCatalogItem[]>([]);
+   const [fsTreeRoots, setFsTreeRoots] = useState<string[]>([HOST_FS_ROOT]);
+   const [workspaceRootAllowed, setWorkspaceRootAllowed] = useState(true);
++  const [modelOptions, setModelOptions] = useState<
++    { value: string; label: string }[]
++  >([]);
+   const [editor, setEditor] = useState<UserRole | "new" | null>(null);
+   const [submitting, setSubmitting] = useState(false);
+   const [form] = Form.useForm<RoleFormValues>();
+@@ -110,6 +114,18 @@ export default function RolesPanel() {
+         setFsTreeRoots([HOST_FS_ROOT]);
+         setWorkspaceRootAllowed(true);
+       });
++    // ZBS: model catalog for the allowed_models picker (admins see all).
++    providerApi
++      .listResolvedModels()
++      .then((models) =>
++        setModelOptions(
++          models.map((m) => ({
++            value: `${m.provider_name}/${m.model}`,
++            label: `${m.provider_name} / ${m.name ?? m.model}`,
++          })),
++        ),
++      )
++      .catch(() => setModelOptions([]));
+   }, [refresh]);
+ 
+   const descriptionForForm = useCallback(
+@@ -145,6 +161,7 @@ export default function RolesPanel() {
+           limit_workspace_root: false,
+           limit_token_quota: false,
+           limit_max_agents: false,
++          limit_allowed_models: false,
+         }
+       : {
+           name: editor.user_role_name,
+@@ -161,6 +178,8 @@ export default function RolesPanel() {
+           token_quota: editor.token_quota ?? undefined,
+           limit_max_agents: editor.max_agents != null,
+           max_agents: editor.max_agents ?? undefined,
++          limit_allowed_models: editor.allowed_models != null,
++          allowed_models: editor.allowed_models ?? undefined,
+         };
+   const formKey =
+     editor === "new" ? "new" : editor ? editor.user_role_id : "closed";
+@@ -307,7 +326,8 @@ export default function RolesPanel() {
+               const limited =
+                 Boolean(row.workspace_root_dir) ||
+                 row.token_quota != null ||
+-                row.max_agents != null;
++                row.max_agents != null ||
++                row.allowed_models != null;
+               return (
+                 <article key={row.user_role_id} className={styles.roleCard}>
+                   <div className={styles.roleCardBody}>
+@@ -446,7 +466,8 @@ export default function RolesPanel() {
+                 const limited =
+                   Boolean(row.workspace_root_dir) ||
+                   row.token_quota != null ||
+-                  row.max_agents != null;
++                  row.max_agents != null ||
++                  row.allowed_models != null;
+                 return limited
+                   ? t("adminUsers.rolePolicyLimited")
+                   : t("adminUsers.rolePolicyUnlimited");
+@@ -659,6 +680,7 @@ export default function RolesPanel() {
+               <ResourcePolicyFields
+                 fsTreeRoots={fsTreeRoots}
+                 workspaceRootAllowed={workspaceRootAllowed}
++                modelOptions={modelOptions}
+               />
+             </>
+           )}
+diff --git a/dashboard/src/pages/Admin/Users/UsersListPanel.tsx b/dashboard/src/pages/Admin/Users/UsersListPanel.tsx
+index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a6d87f362 100644
+--- a/dashboard/src/pages/Admin/Users/UsersListPanel.tsx
++++ b/dashboard/src/pages/Admin/Users/UsersListPanel.tsx
+@@ -65,6 +65,7 @@ import {
+ } from "lucide-react";
+ import { useTranslation } from "react-i18next";
+ import { request } from "../../../api/request";
++import { providerApi } from "../../../api/modules/provider";
+ import {
+   userRolesApi,
+   snapshotRoleLabel,
+@@ -120,6 +121,7 @@ interface UserRow {
+   workspace_root_dir?: string | null;
+   token_quota?: number | null;
+   max_agents?: number | null;
++  allowed_models?: string[] | null;
+ }
+ 
+ export interface PermissionCatalogItem {
+@@ -142,6 +144,8 @@ export interface PolicyFormValues {
+   token_quota?: number | null;
+   limit_max_agents?: boolean;
+   max_agents?: number | null;
++  limit_allowed_models?: boolean;
++  allowed_models?: string[] | undefined;
+ }
+ 
+ interface CreateValues extends PolicyFormValues {
+@@ -180,6 +184,8 @@ function policyFieldsFromRole(
+     token_quota: role.token_quota ?? undefined,
+     limit_max_agents: role.max_agents != null,
+     max_agents: role.max_agents ?? undefined,
++    limit_allowed_models: role.allowed_models != null,
++    allowed_models: role.allowed_models ?? undefined,
+   };
+ }
+ 
+@@ -422,7 +428,8 @@ type BatchAction =
+   | "disable"
+   | "delete"
+   | "set_token_quota"
+-  | "set_max_agents";
++  | "set_max_agents"
++  | "set_allowed_models";
+ 
+ interface BatchResponse {
+   action: BatchAction;
+@@ -446,6 +453,11 @@ interface BatchMaxAgentsFormValues {
+   max_agents?: number | null;
+ }
+ 
++interface BatchAllowedModelsFormValues {
++  limit_allowed_models?: boolean;
++  allowed_models?: string[] | null;
++}
++
+ const FIELD_ICON_PROPS = {
+   size: 16 as const,
+   style: { color: "var(--fn-text-tertiary)" },
+@@ -458,6 +470,7 @@ export function policyPayload(
+   workspace_root_dir: string | null;
+   token_quota: number | null;
+   max_agents: number | null;
++  allowed_models: string[] | null;
+ } {
+   return {
+     workspace_root_dir:
+@@ -466,6 +479,9 @@ export function policyPayload(
+         : null,
+     token_quota: values.limit_token_quota ? values.token_quota ?? null : null,
+     max_agents: values.limit_max_agents ? values.max_agents ?? null : null,
++    allowed_models: values.limit_allowed_models
++      ? values.allowed_models ?? null
++      : null,
+   };
+ }
+ 
+@@ -487,6 +503,12 @@ export function rolePoliciesFromForm(
+   if (flat.max_agents != null) {
+     policies.push({ name: "max_agents", value: String(flat.max_agents) });
+   }
++  if (flat.allowed_models != null) {
++    policies.push({
++      name: "allowed_models",
++      value: JSON.stringify(flat.allowed_models),
++    });
++  }
+   return policies;
+ }
+ 
+@@ -616,9 +638,11 @@ function MaxAgentsInput({ value, onChange }: MaxAgentsInputProps) {
+ export function ResourcePolicyFields({
+   fsTreeRoots,
+   workspaceRootAllowed,
++  modelOptions,
+ }: {
+   fsTreeRoots: string[];
+   workspaceRootAllowed: boolean;
++  modelOptions: { value: string; label: string }[];
+ }) {
+   const { t } = useTranslation();
+   return (
+@@ -725,6 +749,42 @@ export function ResourcePolicyFields({
+           ) : null
+         }
+       </Form.Item>
++      <Form.Item
++        label={t("adminUsers.policyAllowedModels")}
++        extra={t("adminUsers.policyAllowedModelsHint")}
++      >
++        <Form.Item name="limit_allowed_models" valuePropName="checked" noStyle>
++          <Switch />
++        </Form.Item>
++      </Form.Item>
++      <Form.Item
++        noStyle
++        shouldUpdate={(prev, cur) =>
++          prev.limit_allowed_models !== cur.limit_allowed_models
++        }
++      >
++        {({ getFieldValue }) =>
++          getFieldValue("limit_allowed_models") ? (
++            <Form.Item
++              name="allowed_models"
++              rules={[
++                {
++                  required: true,
++                  message: t("adminUsers.policyAllowedModelsRequired"),
++                },
++              ]}
++            >
++              <Select
++                mode="multiple"
++                options={modelOptions}
++                showSearch
++                optionFilterProp="label"
++                placeholder={t("adminUsers.policyAllowedModelsPlaceholder")}
++              />
++            </Form.Item>
++          ) : null
++        }
++      </Form.Item>
+     </div>
+   );
+ }
+@@ -1254,11 +1314,16 @@ export default function UsersListPanel() {
+   const [batchTokenForm] = Form.useForm<BatchTokenFormValues>();
+   const [batchMaxAgentsOpen, setBatchMaxAgentsOpen] = useState(false);
+   const [batchMaxAgentsForm] = Form.useForm<BatchMaxAgentsFormValues>();
++  const [batchAllowedModelsOpen, setBatchAllowedModelsOpen] = useState(false);
++  const [batchAllowedModelsForm] = Form.useForm<BatchAllowedModelsFormValues>();
+   const { viewMode, setViewMode, showCardView } = useCardTableView("table");
+   const [permCatalog, setPermCatalog] = useState<PermissionCatalogItem[]>([]);
+   const [userRoles, setUserRoles] = useState<UserRole[]>([]);
+   const [fsTreeRoots, setFsTreeRoots] = useState<string[]>([HOST_FS_ROOT]);
+   const [workspaceRootAllowed, setWorkspaceRootAllowed] = useState(true);
++  const [modelOptions, setModelOptions] = useState<
++    { value: string; label: string }[]
++  >([]);
+ 
+   const permLabelByKey = useMemo(() => {
+     const map = new Map<string, string>();
+@@ -1421,6 +1486,7 @@ export default function UsersListPanel() {
+       options?: {
+         token_quota?: number | null;
+         max_agents?: number | null;
++        allowed_models?: string[] | null;
+       },
+     ) => {
+       if (selectedIds.length === 0) return;
+@@ -1437,6 +1503,9 @@ export default function UsersListPanel() {
+             ...(action === "set_max_agents"
+               ? { max_agents: options?.max_agents ?? null }
+               : {}),
++            ...(action === "set_allowed_models"
++              ? { allowed_models: options?.allowed_models ?? null }
++              : {}),
+           }),
+         });
+         reportBatchResult(body);
+@@ -1445,6 +1514,8 @@ export default function UsersListPanel() {
+         batchTokenForm.resetFields();
+         setBatchMaxAgentsOpen(false);
+         batchMaxAgentsForm.resetFields();
++        setBatchAllowedModelsOpen(false);
++        batchAllowedModelsForm.resetFields();
+         void refreshUsers();
+       } catch (err) {
+         message.error(
+@@ -1460,6 +1531,7 @@ export default function UsersListPanel() {
+       clearSelection,
+       batchTokenForm,
+       batchMaxAgentsForm,
++      batchAllowedModelsForm,
+       refreshUsers,
+       t,
+     ],
+@@ -1521,6 +1593,24 @@ export default function UsersListPanel() {
+       max_agents: values.limit_max_agents ? values.max_agents ?? null : null,
+     });
+   };
++
++  const openBatchAllowedModels = () => {
++    batchAllowedModelsForm.setFieldsValue({
++      limit_allowed_models: true,
++      allowed_models: [],
++    });
++    setBatchAllowedModelsOpen(true);
++  };
++
++  const submitBatchAllowedModels = async (
++    values: BatchAllowedModelsFormValues,
++  ) => {
++    await runBatch("set_allowed_models", {
++      allowed_models: values.limit_allowed_models
++        ? values.allowed_models ?? null
++        : null,
++    });
++  };
+   useEffect(() => {
+     if (!hasLockedUser) return;
+     const anyExpired = rows.some(
+@@ -1609,6 +1699,18 @@ export default function UsersListPanel() {
+       .list()
+       .then(setUserRoles)
+       .catch(() => setUserRoles([]));
++    // ZBS: model catalog for the allowed_models picker (admins see all).
++    providerApi
++      .listResolvedModels()
++      .then((models) =>
++        setModelOptions(
++          models.map((m) => ({
++            value: `${m.provider_name}/${m.model}`,
++            label: `${m.provider_name} / ${m.name ?? m.model}`,
++          })),
++        ),
++      )
++      .catch(() => setModelOptions([]));
+     fetchFilesystemDefaults()
+       .then((defaults) => {
+         setFsTreeRoots(
+@@ -1696,6 +1798,8 @@ export default function UsersListPanel() {
+       token_quota: undefined,
+       limit_max_agents: false,
+       max_agents: undefined,
++      limit_allowed_models: false,
++      allowed_models: [],
+       ...(userRole ? policyFieldsFromRole(userRole, workspaceRootAllowed) : {}),
+     });
+     setPendingUserAvatar(null);
+@@ -1726,6 +1830,8 @@ export default function UsersListPanel() {
+       token_quota: row.token_quota ?? undefined,
+       limit_max_agents: row.max_agents != null,
+       max_agents: row.max_agents ?? undefined,
++      limit_allowed_models: row.allowed_models != null,
++      allowed_models: row.allowed_models ?? undefined,
+     });
+   };
+ 
+@@ -1945,6 +2051,13 @@ export default function UsersListPanel() {
+             >
+               {t("adminUsers.batchSetMaxAgents")}
+             </Button>
++            <Button
++              size="small"
++              loading={batchSubmitting}
++              onClick={openBatchAllowedModels}
++            >
++              {t("adminUsers.batchSetAllowedModels")}
++            </Button>
+             <Button
+               size="small"
+               danger
+@@ -2299,6 +2412,7 @@ export default function UsersListPanel() {
+             limit_workspace_root: false,
+             limit_token_quota: false,
+             limit_max_agents: false,
++            limit_allowed_models: false,
+           }}
+           className={styles.createUserForm}
+         >
+@@ -2438,6 +2552,7 @@ export default function UsersListPanel() {
+           <ResourcePolicyFields
+             fsTreeRoots={fsTreeRoots}
+             workspaceRootAllowed={workspaceRootAllowed}
++            modelOptions={modelOptions}
+           />
+         </Form>
+       </Drawer>
+@@ -2646,6 +2761,7 @@ export default function UsersListPanel() {
+           <ResourcePolicyFields
+             fsTreeRoots={fsTreeRoots}
+             workspaceRootAllowed={workspaceRootAllowed}
++            modelOptions={modelOptions}
+           />
+         </Form>
+       </Drawer>
+@@ -2832,6 +2948,74 @@ export default function UsersListPanel() {
+           </Form.Item>
+         </Form>
+       </Modal>
++
++      <Modal
++        title={t("adminUsers.batchSetAllowedModelsTitle", {
++          count: selectedIds.length,
++        })}
++        open={batchAllowedModelsOpen}
++        onCancel={() => {
++          setBatchAllowedModelsOpen(false);
++          batchAllowedModelsForm.resetFields();
++        }}
++        onOk={() => batchAllowedModelsForm.submit()}
++        okText={t("common.confirm")}
++        cancelText={t("common.cancel")}
++        confirmLoading={batchSubmitting}
++        destroyOnHidden
++      >
++        <Text type="secondary" style={{ display: "block", marginBottom: 12 }}>
++          {t("adminUsers.batchSetAllowedModelsHint")}
++        </Text>
++        <Form<BatchAllowedModelsFormValues>
++          form={batchAllowedModelsForm}
++          layout="vertical"
++          onFinish={(values) => void submitBatchAllowedModels(values)}
++        >
++          <Form.Item
++            label={t("adminUsers.policyAllowedModels")}
++            extra={t("adminUsers.policyAllowedModelsHint")}
++          >
++            <Form.Item
++              name="limit_allowed_models"
++              valuePropName="checked"
++              noStyle
++            >
++              <Switch />
++            </Form.Item>
++          </Form.Item>
++          <Form.Item
++            noStyle
++            shouldUpdate={(prev, cur) =>
++              prev.limit_allowed_models !== cur.limit_allowed_models
++            }
++          >
++            {({ getFieldValue }) =>
++              getFieldValue("limit_allowed_models") ? (
++                <Form.Item
++                  name="allowed_models"
++                  rules={[
++                    {
++                      required: true,
++                      message: t("adminUsers.policyAllowedModelsRequired"),
++                    },
++                  ]}
++                >
++                  <Select
++                    mode="multiple"
++                    options={modelOptions}
++                    showSearch
++                    optionFilterProp="label"
++                    placeholder={t(
++                      "adminUsers.policyAllowedModelsPlaceholder",
++                    )}
++                  />
++                </Form.Item>
++              ) : null
++            }
++          </Form.Item>
++        </Form>
++      </Modal>
+     </>
+   );
+ }

@@ -1,0 +1,1656 @@
+diff --git a/src/octop/api/common/validators.py b/src/octop/api/common/validators.py
+index e41ea4d3..55433d04 100644
+--- a/src/octop/api/common/validators.py
++++ b/src/octop/api/common/validators.py
+@@ -2,10 +2,14 @@
+ 
+ from __future__ import annotations
+ 
++import json
+ from typing import Any
+ 
+ from octop.infra.errors import ErrorCode, OctopError
+-from octop.infra.users.resource_policy import raise_if_backend_outside_user_root
++from octop.infra.users.resource_policy import (
++    enforced_workspace_backend_name,
++    raise_if_backend_outside_user_root,
++)
+ from octop.infra.utils.host_dirs import assert_backend_root_dirs_allowed
+ 
+ 
+@@ -33,6 +37,44 @@ def assert_user_backend_root_dirs(
+         raise OctopError(ErrorCode.WORKSPACE_OP_UNSUPPORTED, str(exc)) from exc
+ 
+ 
++def assert_user_may_change_backend(
++    user: Any,
++    *,
++    current_config_json: str | None,
++    new_config: Any,
++    settings_repo: Any,
++) -> None:
++    """ZBS F5: block backend changes on agents when the workspace switch is on.
++
++    Applies to non-admin *user* requests carrying a ``config`` dict whose
++    ``backend`` differs from the agent's stored one — including a *missing*
++    key, since PATCH replaces the whole config (a dropped key would silently
++    revert the agent to the official default backend). Admins pass through.
++    The switch itself is the settings key ``agent_enforced_backend``; when it
++    is unset everything behaves exactly like official Octop.
++    """
++    if user is None or getattr(user, "is_admin", False):
++        return
++    if not isinstance(new_config, dict):
++        return
++    if enforced_workspace_backend_name(settings_repo) is None:
++        return
++    try:
++        stored = json.loads(current_config_json or "{}")
++    except (json.JSONDecodeError, TypeError):
++        stored = {}
++    if not isinstance(stored, dict):
++        stored = {}
++    stored_backend = stored.get("backend")
++    if "backend" in new_config and new_config["backend"] == stored_backend:
++        return
++    raise OctopError(
++        ErrorCode.FORBIDDEN,
++        "agent backend is enforced by the administrator and cannot be changed"
++        " (settings key 'agent_enforced_backend')",
++    )
++
++
+ async def validate_chat_mcp_servers(
+     server: Any,
+     *,
+diff --git a/src/octop/api/routers/agents.py b/src/octop/api/routers/agents.py
+index 2ea02c90..49956ec1 100644
+--- a/src/octop/api/routers/agents.py
++++ b/src/octop/api/routers/agents.py
+@@ -11,7 +11,10 @@ from fastapi.responses import Response
+ 
+ from octop.api.common.agent import assert_agent_access_row, assert_agent_owner
+ from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
+-from octop.api.common.validators import assert_user_backend_root_dirs
++from octop.api.common.validators import (
++    assert_user_backend_root_dirs,
++    assert_user_may_change_backend,
++)
+ from octop.api.common.workspace import require_agent_workspace
+ from octop.api.deps import current_user, get_server
+ from octop.infra.agents.experts.avatar import (
+@@ -389,6 +392,12 @@ async def patch_agent(
+         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
+     _assert_agent_owner(row, user)
+     if body.config is not None and isinstance(body.config, dict):
++        assert_user_may_change_backend(
++            user,
++            current_config_json=row.config_json,
++            new_config=body.config,
++            settings_repo=server.services.settings_repo,
++        )
+         assert_user_backend_root_dirs(
+             user,
+             body.config.get("backend"),
+diff --git a/src/octop/api/routers/settings.py b/src/octop/api/routers/settings.py
+index c8b368d1..86b16974 100644
+--- a/src/octop/api/routers/settings.py
++++ b/src/octop/api/routers/settings.py
+@@ -11,6 +11,7 @@ from octop.api.deps import current_user, get_server, require_permission
+ from octop.config import OctopConfig
+ from octop.infra.agents.security import tool_execution_may_pause
+ from octop.infra.auth.captcha import current_env, load_view, save_settings
++from octop.infra.errors import ErrorCode, OctopError
+ from octop.infra.users.identity import User
+ 
+ router = APIRouter()
+@@ -183,3 +184,82 @@ async def put_captcha_settings(
+         payload=f"source={view['source']}",
+     )
+     return CaptchaSettingsResponse.model_validate(view)
++
++
++class AgentWorkspaceSettingsResponse(BaseModel):
++    name: str | None = Field(
++        description="Enforced per-user workspace storage backend name, or null when off.",
++    )
++
++
++class AgentWorkspaceSettingsPut(BaseModel):
++    name: str | None = Field(
++        description="A kind=shell storage backend name (root_dir may use {username}); null/empty disables.",
++    )
++
++
++@router.get(
++    "/settings/agent-enforced-backend",
++    summary="Enforced per-user workspace backend (ZBS)",
++    response_model=AgentWorkspaceSettingsResponse,
++)
++async def get_agent_workspace_settings(
++    _admin: User = Depends(require_permission("storage_backends")),
++    server: Any = Depends(get_server),
++) -> AgentWorkspaceSettingsResponse:
++    """Return the enforced per-user workspace backend name (null = switch off)."""
++    from octop.infra.users.resource_policy import enforced_workspace_backend_name
++
++    return AgentWorkspaceSettingsResponse(
++        name=enforced_workspace_backend_name(server.services.settings_repo),
++    )
++
++
++@router.put(
++    "/settings/agent-enforced-backend",
++    summary="Set the enforced per-user workspace backend (ZBS)",
++    response_model=AgentWorkspaceSettingsResponse,
++)
++async def put_agent_workspace_settings(
++    body: AgentWorkspaceSettingsPut,
++    admin: User = Depends(require_permission("storage_backends")),
++    server: Any = Depends(get_server),
++) -> AgentWorkspaceSettingsResponse:
++    """Point the enforced-workspace switch at a configured shell storage backend.
++
++    Non-admin users' new agents are then created on that backend (a local
++    shell backend whose ``root_dir`` may use a per-user ``{username}``
++    placeholder), and those users may no longer change their agents'
++    backend. Pass ``null`` (or an empty name) to turn the switch off.
++    """
++    from octop.infra.users.resource_policy import (
++        ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY,
++        enforced_workspace_backend_name,
++    )
++
++    repo = server.services.storage_backend_repo
++    name = (body.name or "").strip() or None
++    if name is not None:
++        row = repo.get_by_name(name)
++        if row is None:
++            raise OctopError(
++                ErrorCode.STORAGE_BACKEND_REFERENCED,
++                f"storage backend {name!r} not found",
++            )
++        if str(row.kind or "").lower() != "shell" or not row.enabled:
++            raise OctopError(
++                ErrorCode.STORAGE_BACKEND_REFERENCED,
++                f"storage backend {name!r} must be an enabled shell backend",
++            )
++    if name is None:
++        server.services.settings_repo.delete(ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY)
++    else:
++        server.services.settings_repo.set(ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY, name)
++    server.services.audit_repo.write(
++        actor=admin.username,
++        action="settings.agent_workspace.update",
++        target=name or "",
++    )
++    return AgentWorkspaceSettingsResponse(
++        name=enforced_workspace_backend_name(server.services.settings_repo),
++    )
+diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
+index 34f88197..5bb7774d 100644
+--- a/src/octop/infra/agents/manager.py
++++ b/src/octop/infra/agents/manager.py
+@@ -123,6 +123,18 @@ def _memory_namespace(agent_id: str) -> str:
+     return f"{_MEMORY_NS_PREFIX}{agent_id}"
+ 
+ 
++def _browser_file_policy_enabled(repos: Any) -> bool:
++    """ZBS F11: local-file browser policy needs the workspace switch on."""
++    from octop.infra.users.resource_policy import (  # noqa: PLC0415
++        enforced_workspace_backend_name,
++    )
++
++    settings_repo = getattr(repos, "settings_repo", None)
++    if settings_repo is None:
++        return False
++    return enforced_workspace_backend_name(settings_repo) is not None
++
++
+ def skills_disabled_set(cfg: dict[str, Any]) -> set[str]:
+     """Return the set of disabled skill slugs from agent config."""
+     raw = cfg.get("skills_disabled")
+@@ -641,6 +690,12 @@ class AgentManager:
+                         self._repos.agent_repo,
+                         spec.user_id,
+                     )
++                # ZBS: enforced per-user workspace — when the site-wide switch is
++                # set, non-admin owners' agents always land on the named
++                # storage backend recorded in settings (F4).
++                enforced_backend = self._enforced_user_workspace_backend(spec.user_id)
++                if enforced_backend is not None:
++                    config["backend"] = enforced_backend
+                 raise_if_backend_outside_user_root(
+                     self._repos.user_policy_repo,
+                     spec.user_id,
+@@ -2529,6 +2584,89 @@ class AgentManager:
+     # Internal — validation
+     # ------------------------------------------------------------------
+ 
++    def _enforced_user_workspace_backend(self, user_id: int) -> dict[str, Any] | None:
++        """Named-backend spec to force onto non-admin owners' new agents (ZBS F4).
++
++        Returns ``{"type": "named", "name": ...}`` when the site-wide switch
++        (settings key ``agent_enforced_backend``) is set and *user_id* is a
++        non-admin user; ``None`` otherwise (switch off, admin owner, or
++        unknown user — official Octop behavior everywhere).
++
++        Fails closed for non-admin owners: when the switch points at a
++        backend that no longer exists or has been disabled, or when the
++        owner's username is unsafe to substitute into ``{username}``
++        (empty, ``.`` / ``..``, path separator, control character), this
++        raises ``OctopError`` instead of silently falling back to the
++        official default backend (which would drop the isolation without
++        anyone noticing). Admins are unaffected — their agents never go
++        through this path.
++        """
++        from octop.infra.users.resource_policy import (
++            enforced_workspace_backend_name,
++            user_row_is_admin,
++        )
++
++        # getattr: minimal test harnesses may stub ``repos`` without every
++        # attribute — a missing repo reads as "switch off" (official behavior).
++        settings_repo = getattr(self._repos, "settings_repo", None)
++        if settings_repo is None:
++            return None
++        name = enforced_workspace_backend_name(settings_repo)
++        if not name:
++            return None
++        owner = self._repos.user_repo.get(user_id)
++        if owner is None or user_row_is_admin(owner):
++            return None
++        row = self._repos.storage_backend_repo.get_by_name(name)
++        if row is None:
++            raise OctopError(
++                ErrorCode.WORKSPACE_OP_UNSUPPORTED,
++                "the enforced agent backend "
++                f"{name!r} (settings key 'agent_enforced_backend') no longer exists; "
++                "ask an administrator to fix or disable the agent workspace switch",
++            )
++        if not int(getattr(row, "enabled", 1) or 0):
++            raise OctopError(
++                ErrorCode.WORKSPACE_OP_UNSUPPORTED,
++                "the enforced agent backend "
++                f"{name!r} (settings key 'agent_enforced_backend') is disabled; "
++                "ask an administrator to re-enable it or disable the agent workspace switch",
++            )
++        # Expand the named backend into a concrete local_shell spec so that
++        # ``seed_workspace_dir_on_create`` sees the scoped ``root_dir`` and
++        # places the agent workspace under the owner's folder (F4 file
++        # isolation). ``{username}`` resolves to the owner's username here;
++        # ``_prepare_docker_backend`` would also expand it at runtime, but
++        # the on-disk workspace path is decided at create time from the
++        # persisted spec, so the placeholder must be resolved now.
++        from octop.infra.backend.adapter import row_to_backend_spec  # noqa: PLC0415
++        from octop.infra.backend.docker_spec import (  # noqa: PLC0415
++            resolve_username_placeholder,
++            username_safe_for_placeholder,
++        )
++
++        spec = row_to_backend_spec(row)
++        if not isinstance(spec, dict):
++            return {"type": "named", "name": name}
++        username = owner.username or ""
++        root = spec.get("root_dir")
++        if isinstance(root, str) and "{username}" in root:
++            if not username_safe_for_placeholder(username):
++                raise OctopError(
++                    ErrorCode.WORKSPACE_OP_UNSUPPORTED,
++                    f"the username {username!r} cannot be used for a per-user agent "
++                    "folder (it is empty or contains '.', '..', '/', '\\', or "
++                    "control characters); ask an administrator to rename the account",
++                )
++            spec = dict(spec)
++            spec["root_dir"] = resolve_username_placeholder(root, username)
++            env = spec.get("env")
++            if isinstance(env, dict):
++                spec["env"] = {
++                    str(k): resolve_username_placeholder(v, username) for k, v in env.items()
++                }
++        return spec
++
+     def _assert_agent_name_available(
+         self,
+         user_id: int | None,
+@@ -2764,17 +2902,36 @@ class AgentManager:
+         return isinstance(spec, dict) and str(spec.get("type") or "").lower() == "opensandbox"
+ 
+     def _prepare_docker_backend(self, backend: Any, row: AgentRow) -> Any:
+-        """Inject Octop docker defaults (prefix / agent_id / username) without overwrite."""
+-        if not isinstance(backend, dict) or backend.get("type") != "docker":
++        """Inject Octop defaults and ``{username}`` placeholders, without overwrite."""
++        if not isinstance(backend, dict):
+             return backend
+-        from octop.infra.utils.env_file import env_file_path  # noqa: PLC0415
++        if backend.get("type") == "docker":
++            from octop.infra.utils.env_file import env_file_path  # noqa: PLC0415
+ 
+-        enriched = enrich_docker_backend_spec(
+-            backend,
+-            agent_id=row.agent_id,
+-            username=self._owner_username(row),
+-        )
+-        return inject_docker_global_environment(enriched, env_file_path(self._paths.root))
++            enriched = enrich_docker_backend_spec(
++                backend,
++                agent_id=row.agent_id,
++                username=self._owner_username(row),
++            )
++            return inject_docker_global_environment(enriched, env_file_path(self._paths.root))
++        # ZBS: per-user local backends — expand ``{username}`` in ``root_dir`` /
++        # ``env`` values to the agent owner's username (named shell backends
++        # rooted at e.g. ``/data/.octop/users/{username}``).
++        if backend.get("type") in ("local_shell", "filesystem"):
++            from octop.infra.backend.docker_spec import resolve_username_placeholder  # noqa: PLC0415
++
++            username = self._owner_username(row)
++            root = backend.get("root_dir")
++            if username and isinstance(root, str) and "{username}" in root:
++                resolved = dict(backend)
++                resolved["root_dir"] = resolve_username_placeholder(root, username)
++                env = resolved.get("env")
++                if isinstance(env, dict):
++                    resolved["env"] = {
++                        str(k): resolve_username_placeholder(v, username) for k, v in env.items()
++                    }
++                return resolved
++        return backend
+ 
+     def _backend_workspace_for_row(
+         self,
+@@ -3056,6 +3213,78 @@ class AgentManager:
+             return connector_user_id
+         return row.user_id
+ 
++    def _browser_file_resolver(self, user_raw: Any) -> "Callable[[int, str], tuple[str, bool] | None]":
++        """Build the per-turn local-file resolver for BrowserProfileMiddleware.
++
++        ZBS F11. Returns a closure ``(user_id, agent_spoken_path) ->
++        (host_path, allowed) | None``. ``None`` means "leave the call alone"
++        (switch off or the turn's user is an admin — official behavior).
++        The closure resolves agent-facing paths (``/.octop/workspaces/…`` or
++        legacy ``/data/.octop/agents/…``) onto the host the same way
++        ``workspace/dir.py:resolve_workspace_host_path`` does, then requires
++        the symlink/``..``-resolved result to stay inside that user's
++        enforced backend root_dir.
++        """
++        from octop.infra.users.resource_policy import (  # noqa: PLC0415
++            user_row_is_admin,
++        )
++
++        try:
++            user_id = int(user_raw)
++        except (TypeError, ValueError):
++            return lambda _uid, _path: None
++        row = self._repos.user_repo.get(user_id)
++        if row is None or user_row_is_admin(row):
++            return lambda _uid, _path: None
++
++        def _resolve(uid: int, path: str) -> tuple[str, bool] | None:
++            from octop.infra.agents.workspace.dir import (  # noqa: PLC0415
++                resolve_workspace_host_path,
++            )
++            from octop.infra.backend.docker_spec import (  # noqa: PLC0415
++                resolve_username_placeholder,
++                username_safe_for_placeholder,
++            )
++            from octop.infra.users.resource_policy import (  # noqa: PLC0415
++                enforced_workspace_backend_name,
++            )
++
++            name = enforced_workspace_backend_name(self._repos.settings_repo)
++            if not name:
++                return None
++            backend_row = self._repos.storage_backend_repo.get_by_name(name)
++            if backend_row is None or not int(getattr(backend_row, "enabled", 1) or 0):
++                return None
++            from octop.infra.backend.adapter import row_to_backend_spec  # noqa: PLC0415
++
++            spec = row_to_backend_spec(backend_row)
++            root_raw = spec.get("root_dir") if isinstance(spec, dict) else None
++            if not isinstance(root_raw, str) or not root_raw.strip():
++                return None
++            # Named shell backends carry the raw ``{username}`` placeholder —
++            # expand it to the turn user's username (same rules as F4 create).
++            username = row.username or ""
++            if "{username}" in root_raw:
++                if not username_safe_for_placeholder(username):
++                    return None
++                root_raw = resolve_username_placeholder(root_raw, username)
++            root = Path(root_raw).expanduser().resolve()
++            cfg = {"backend": dict(spec, root_dir=root_raw)}
++            text = str(path).strip()
++            try:
++                host = resolve_workspace_host_path(text, cfg)
++            except (ValueError, OSError):
++                return "", False
++            try:
++                resolved = host.resolve()
++            except OSError:
++                resolved = host
++            if resolved != root and root not in resolved.parents:
++                return "", False
++            return str(resolved), True
++
++        return _resolve
++
+     def _prepare_stream_request(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
+         from octop_harness.plugins import collect_plugin_tool_configs  # noqa: PLC0415
+ 
+@@ -3071,7 +3300,20 @@ class AgentManager:
+             configurable = dict(req.get("configurable") or {})
+             configurable["plugin_tool_configs"] = tool_configs
+             req["configurable"] = configurable
+-        return apply_agent_runtime_to_stream_request(req, agent_cfg)
++        out = apply_agent_runtime_to_stream_request(req, agent_cfg)
++        # ZBS F11: hand BrowserProfileMiddleware a per-turn local-file
++        # resolver (None → official behavior) for the user driving this turn.
++        # See ``_browser_file_resolver``; skips cheap work when the switch is
++        # off or no user id is present on the request.
++        if _browser_file_policy_enabled(self._repos):
++            user_raw = out.get("user")
++            if user_raw is not None:
++                configurable = dict(out.get("configurable") or {})
++                configurable["browser_file_resolver"] = self._browser_file_resolver(
++                    user_raw
++                )
++                out["configurable"] = configurable
++        return out
+ 
+     def _build_harness_config(self, row: AgentRow) -> HarnessAgentConfig:
+         """Convert an AgentRow into a HarnessAgentConfig."""
+diff --git a/src/octop/infra/agents/middleware/browser_profile.py b/src/octop/infra/agents/middleware/browser_profile.py
+index ecf3b35b..82e0c649 100644
+--- a/src/octop/infra/agents/middleware/browser_profile.py
++++ b/src/octop/infra/agents/middleware/browser_profile.py
+@@ -22,6 +22,146 @@ _MISSING_USER = (
+     "so a browser profile cannot be isolated."
+ )
+ 
++# ZBS F11: agent actions whose kwargs carry a local file address. Only
++# ``navigate``/``new_tab`` take a ``url`` (the harness tool coalesces the
++# ``target_url``/``href``/``query``/``link``/``address`` aliases into it, but
++# we still rewrite every alias-shaped key for safety) and ``screenshot`` takes
++# an output ``path``. Upload does not exist and eval_js runs inside the page
++# with no filesystem access (see patch 21 README).
++_FILE_URL_ACTIONS = frozenset({"navigate", "new_tab", "goto", "start"})
++_URL_KEYS = ("url", "target_url", "href", "query", "link", "address")
++_PATH_ACTIONS = frozenset({"screenshot", "snapshot"})
++_BLOCKED_FILE_URL = (
++    "浏览器只能打开你自己文件夹里的文件和 http/https 网址；"
++    "这个地址不在你的范围内，已取消本次浏览器操作。"
++    "要看别人的文件，请让文件的主人发给你或上传到你的对话里；"
++    "要看服务器上的公共文件，请联系管理员。"
++)
++_BLOCKED_PATH = (
++    "截图只能保存到你自己文件夹里；"
++    "指定的保存位置不在你的范围内，已取消本次浏览器操作。"
++    "换一个自己文件夹里的位置即可。"
++)
++
++
++def _local_path_from_file_url(url: str) -> str | None:
++    """Return the host path a ``file:`` URL points at, or ``None``.
++
++    Non-file schemes (http/https/about/data/…) return ``None`` so they are
++    untouched. Leading whitespace and ``view-source:`` prefixes are stripped
++    first — Chromium treats ``view-source:file:///…`` as a plain file view of
++    that path (verified in zt026-octop2: the marker text of a file outside the
++    user's folder is fully readable), so it must be judged by the same rules.
++    ``file:///a/b`` → ``/a/b``; ``file://host/…`` names a host
++    (not meaningful for this deployment) and yields ``""`` so callers refuse
++    it rather than guessing which file was meant.
++    """
++    text = str(url).strip()
++    if not text:
++        return None
++    # view-source: is its own scheme stacked on the real one; Chromium allows
++    # it to be repeated (view-source:view-source:file:…), so strip a run.
++    lowered = text.lower()
++    while lowered.startswith("view-source:"):
++        text = text[len("view-source:") :].lstrip()
++        lowered = text.lower()
++    if not text:
++        return None
++    if not lowered.startswith("file:"):
++        return None
++    body = text[len("file:") :].lstrip()
++    if body.startswith("//"):
++        rest = body[2:]
++        if not rest.startswith("/"):
++            return ""
++        body = rest  # file:///a/b → body "//a/b" → rest "/a/b"
++    if not body.startswith("/"):
++        return ""
++    from urllib.parse import unquote
++
++    return unquote(body)
++
++
++def _is_local_fs_path(value: str) -> bool:
++    """True when *value* is a bare filesystem path (not a URL)."""
++    text = str(value).strip()
++    if not text:
++        return False
++    lowered = text.lower()
++    if "://" in lowered or lowered.startswith(("file:", "about:", "data:", "mailto:")):
++        return False
++    return text.startswith("/")
++
++
++def _apply_file_policy(
++    request: ToolCallRequest,
++    file_resolver: Callable[[int, str], "tuple[str, bool] | None"],
++    user_id: int,
++    args: dict[str, Any],
++    tool_call: dict[str, Any],
++) -> ToolCallRequest | ToolMessage:
++    """Rewrite or block local-file kwargs for non-admin users (ZBS F11).
++
++    ``file_resolver`` maps (user_id, agent-spoken path) to
++    ``(host_path, allowed)``; ``None`` means "policy off / not applicable"
++    (leave the call exactly as the model wrote it). Returns the possibly
++    rewritten request, or a ToolMessage to refuse the call.
++    """
++    action = str(args.get("action") or "").strip()
++    raw_url_keys: list[str] = []
++    raw_path_keys: list[str] = []
++    if action in _FILE_URL_ACTIONS or not action:
++        raw_url_keys = [k for k in _URL_KEYS if str(args.get(k) or "").strip()]
++    if action in _PATH_ACTIONS:
++        raw_path_keys = ["path"] if str(args.get("path") or "").strip() else []
++    if not raw_url_keys and not raw_path_keys:
++        return request
++
++    new_args = dict(args)
++    for key in raw_url_keys:
++        value = str(args[key])
++        path = _local_path_from_file_url(value)
++        if path is None:
++            continue  # http(s)/other scheme — untouched
++        if path == "":
++            return _refuse(request, tool_call, _BLOCKED_FILE_URL)
++        resolved = file_resolver(user_id, path)
++        if resolved is None:
++            continue  # switch off / admin — official behavior
++        host_path, allowed = resolved
++        if not allowed:
++            return _refuse(request, tool_call, _BLOCKED_FILE_URL)
++        # Percent-encode the path so filenames with spaces, non-ASCII
++        # characters, ``#`` or ``?`` survive the round-trip (agent-spoken
++        # plain paths would otherwise break on ``#`` — Chromium treats it as
++        # the fragment delimiter, verified in zt026-octop2).
++        from urllib.parse import quote
++
++        new_args[key] = "file://" + quote(host_path, safe="/:")
++
++    for key in raw_path_keys:
++        value = str(args[key])
++        if not _is_local_fs_path(value):
++            continue  # relative paths land under the workspace screenshots dir
++        resolved = file_resolver(user_id, value)
++        if resolved is None:
++            continue
++        host_path, allowed = resolved
++        if not allowed:
++            return _refuse(request, tool_call, _BLOCKED_PATH)
++        new_args[key] = host_path
++
++    return request.override(tool_call={**tool_call, "args": new_args})
++
++
++def _refuse(request: ToolCallRequest, tool_call: dict[str, Any], message: str) -> ToolMessage:
++    logger.info("browser_use local-file policy: %s", message)
++    return ToolMessage(
++        content=message,
++        tool_call_id=str(tool_call.get("id") or ""),
++        status="error",
++    )
++
+ 
+ def _bind_browser_profile(request: ToolCallRequest) -> ToolCallRequest | ToolMessage:
+     tool_call = request.tool_call
+@@ -41,7 +181,16 @@ def _bind_browser_profile(request: ToolCallRequest) -> ToolCallRequest | ToolMes
+     raw_args = tool_call.get("args")
+     args = dict(raw_args) if isinstance(raw_args, dict) else {}
+     args["profile"] = user_browser_profile(user_id)
+-    return request.override(tool_call={**tool_call, "args": args})
++    bound = request.override(tool_call={**tool_call, "args": args})
++
++    # ZBS F11: rewrite/block local file addresses for non-admin users while
++    # the per-user workspace switch is on. The resolver is injected by
++    # AgentManager (see ``_browser_file_resolver``) through the turn's
++    # ``configurable``; without one the middleware stays exactly official.
++    resolver = configurable.get("browser_file_resolver")
++    if callable(resolver):
++        return _apply_file_policy(bound, resolver, user_id, args, tool_call)
++    return bound
+ 
+ 
+ class BrowserProfileMiddleware(AgentMiddleware[Any, Any]):
+diff --git a/src/octop/infra/backend/adapter.py b/src/octop/infra/backend/adapter.py
+index fc81c3c4..e9e7eb52 100644
+--- a/src/octop/infra/backend/adapter.py
++++ b/src/octop/infra/backend/adapter.py
+@@ -119,7 +119,22 @@ def row_to_backend_spec(row: BackendRow) -> dict[str, Any] | None:
+ 
+     if kind == "shell":
+         root = cfg.get("root_dir") or row.bucket or "/"
+-        return {"type": "local_shell", "root_dir": str(root), "virtual_mode": True}
++        spec: dict[str, Any] = {
++            "type": "local_shell",
++            "root_dir": str(root),
++            "virtual_mode": True,
++        }
++        # ZBS: named shell backends may also pin the command environment
++        # (harness ``resolve_backend`` passes these through to the shell
++        # backend, e.g. ``SSL_CERT_FILE`` for jailed https, ``inherit_env``
++        # false so agent commands don't see the Octop process secrets).
++        if "inherit_env" in cfg:
++            spec["inherit_env"] = bool(cfg["inherit_env"])
++        if isinstance(cfg.get("env"), dict):
++            spec["env"] = {
++                str(k): str(v) for k, v in cfg["env"].items() if str(k).strip()
++            }
++        return spec
+ 
+     if kind == "postgres":
+         from octop.infra.backend.postgres_spec import row_to_postgres_spec
+diff --git a/src/octop/infra/backend/docker_spec.py b/src/octop/infra/backend/docker_spec.py
+index 577ddba1..ebc502a7 100644
+--- a/src/octop/infra/backend/docker_spec.py
++++ b/src/octop/infra/backend/docker_spec.py
+@@ -64,6 +64,8 @@ def enrich_docker_backend_spec(
+     - ``sandbox_scope`` defaults to ``agent``
+     - ``agent`` scope: set ``agent_id`` when missing
+     - ``user`` scope: set ``username`` from the agent owner when missing
++    - ``root_dir`` (and ``env`` values) may contain a ``{username}`` placeholder
++      resolved to the agent owner's username (per-user local backends, ZBS)
+     """
+     if str(spec.get("type") or "").lower() != "docker":
+         return spec
+@@ -75,9 +77,59 @@ def enrich_docker_backend_spec(
+         out.setdefault("agent_id", agent_id)
+     elif scope == "user" and username and not out.get("username"):
+         out["username"] = username
++    root = out.get("root_dir")
++    if root is not None:
++        out["root_dir"] = resolve_username_placeholder(root, username)
++    env = out.get("env")
++    if isinstance(env, dict):
++        resolved_env = {
++            str(k): resolve_username_placeholder(v, username) for k, v in env.items()
++        }
++        if resolved_env != env:
++            out["env"] = resolved_env
+     return out
+ 
+ 
++def username_safe_for_placeholder(username: str | None) -> bool:
++    """Whether *username* may be substituted into a path (ZBS).
++
++    Rejects empty, ``.`` / ``..`` (directory aliases), and any username
++    containing a path separator (``/`` or ``\\``) or a control character —
++    all of these could escape the per-user folder or corrupt the path.
++    Everything else — including non-ASCII usernames and embedded dots like
++    ``john.doe`` — is used verbatim. Official Octop only requires usernames
++    to be non-empty at creation (``UserManager.create``), so unsafe legacy
++    usernames may exist in existing installs.
++    """
++    if not username:
++        return False
++    if username.strip() == "":
++        return False
++    if username in (".", ".."):
++        return False
++    if "/" in username or "\\" in username:
++        return False
++    return not any(ord(ch) < 32 or ord(ch) == 127 for ch in username)
++
++
++def resolve_username_placeholder(value: Any, username: str | None) -> Any:
++    """Expand ``{username}`` in *value* to the agent owner's username (ZBS).
++
++    Used for per-user local backends whose ``root_dir`` / ``env`` values carry
++    the placeholder (e.g. ``/data/.octop/users/{username}``). The username is
++    injected by :func:`enrich_docker_backend_spec`'s octop caller and shared
++    here. Without a username the value is left as-is so the misconfiguration
++    surfaces explicitly; an *unsafe* username (see
++    :func:`username_safe_for_placeholder`) is likewise never substituted —
++    callers decide how to report it.
++    """
++    if not isinstance(value, str) or not username:
++        return value
++    if not username_safe_for_placeholder(username):
++        return value
++    return value.replace("{username}", username)
++
++
+ def inject_docker_global_environment(
+     spec: dict[str, Any],
+     env_file: str | Path | None,
+diff --git a/src/octop/infra/users/resource_policy.py b/src/octop/infra/users/resource_policy.py
+index 46d00f6a..9833b5ae 100644
+--- a/src/octop/infra/users/resource_policy.py
++++ b/src/octop/infra/users/resource_policy.py
+@@ -7,6 +7,7 @@ import os
+ from collections.abc import Mapping, Sequence
+ from typing import Any
+ 
++from octop.infra.db.repos.user_roles import ADMIN_USER_ROLE_ID
+ from octop.infra.errors import ErrorCode, OctopError
+ from octop.infra.utils.host_dirs import (
+     assert_backend_root_dirs_allowed,
+@@ -20,6 +21,25 @@ POLICY_WORKSPACE_ROOT_DIR = "workspace_root_dir"
+ POLICY_TOKEN_QUOTA = "token_quota"
+ POLICY_MAX_AGENTS = "max_agents"
+ 
++# ZBS: settings key holding the site-wide enforced per-user workspace backend
++# (a ``storage_backends.name`` of a kind=shell row; root_dir may use
++# ``{username}``). Empty/absent = switch off = official Octop behavior.
++ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY = "agent_enforced_backend"
++
++
++def enforced_workspace_backend_name(settings_repo: Any) -> str | None:
++    """Name of the enforced per-user workspace backend, or ``None`` when off."""
++    raw = settings_repo.get(ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY)
++    if raw is None:
++        return None
++    name = str(raw).strip()
++    return name or None
++
++
++def user_row_is_admin(user_row: Any) -> bool:
++    """True when a ``users`` row (``UserRow``) carries the admin role."""
++    return getattr(user_row, "role", None) == ADMIN_USER_ROLE_ID
++
+ 
+ def active_policy_value(row: Any) -> str | None:
+     """Return ``value`` when the policy row exists and is enabled."""
+diff --git a/tests/unit/agents/test_browser_file_policy.py b/tests/unit/agents/test_browser_file_policy.py
+new file mode 100644
+index 00000000..f65dcc83
+--- /dev/null
++++ b/tests/unit/agents/test_browser_file_policy.py
+@@ -0,0 +1,292 @@
++"""Unit tests for the ZBS F11 browser local-file policy.
++
++Covers the ``browser_profile`` middleware's file-address rewriting:
++- ``file:`` URLs to the user's own folder are rewritten to the host path
++- file URLs outside the folder are refused with a Chinese explanation
++- http/https and non-file actions are untouched
++- screenshot ``path`` gets the same treatment
++- alias url keys and action aliases are covered
++- no resolver (switch off / admin) → official behavior
++"""
++
++from __future__ import annotations
++
++from unittest.mock import AsyncMock
++
++import pytest
++from langgraph.prebuilt.tool_node import ToolCallRequest
++
++from octop.infra.agents.middleware import browser_profile
++
++
++def _request(name: str, args: dict[str, object]) -> ToolCallRequest:
++    return ToolCallRequest(
++        tool_call={"name": name, "args": args, "id": "call-1"},
++        tool=None,
++        state={},
++        runtime=None,  # type: ignore[arg-type]
++    )
++
++
++def _patch_user(monkeypatch, user: object = "42") -> None:
++    monkeypatch.setattr(browser_profile, "get_config", lambda: {"configurable": {"user": user}})
++
++
++async def _run(monkeypatch, args: dict[str, object], resolver=None) -> object:
++    _patch_user(monkeypatch)
++    monkeypatch.setattr(
++        browser_profile, "user_browser_profile", lambda uid: f"user-{uid}"
++    )
++    cfg = {"configurable": {"user": "42"}}
++    if resolver is not None:
++        cfg["configurable"]["browser_file_resolver"] = resolver
++    monkeypatch.setattr(browser_profile, "get_config", lambda: cfg)
++    handler = AsyncMock(return_value=object())
++    request = _request("browser_use", args)
++    await browser_profile.BrowserProfileMiddleware().awrap_tool_call(request, handler)
++    return handler
++
++
++def _own(host: str) -> object:
++    def _resolver(uid: int, path: str):
++        return host, True
++
++    return _resolver
++
++
++def _deny() -> object:
++    def _resolver(uid: int, path: str):
++        return "", False
++
++    return _resolver
++
++
++def _off() -> object:
++    def _resolver(uid: int, path: str):
++        return None
++
++    return _resolver
++
++
++@pytest.mark.asyncio
++async def test_file_url_own_folder_rewritten(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {"action": "navigate", "url": "file:///.octop/workspaces/ABC/page.html"},
++        resolver=_own("/srv/users/alice/.octop/workspaces/ABC/page.html"),
++    )
++    forwarded = handler.await_args.args[0]
++    assert forwarded.tool_call["args"]["url"] == (
++        "file:///srv/users/alice/.octop/workspaces/ABC/page.html"
++    )
++    assert forwarded.tool_call["args"]["profile"] == "user-42"
++
++
++@pytest.mark.asyncio
++async def test_file_url_other_user_refused_with_explanation(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {"action": "navigate", "url": "file:///data/.octop/users/bob/secret.txt"},
++        resolver=_deny(),
++    )
++    handler.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++async def test_http_untouched(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {"action": "navigate", "url": "https://example.com/file:maybe"},
++        resolver=_deny(),
++    )
++    forwarded = handler.await_args.args[0]
++    assert forwarded.tool_call["args"]["url"] == "https://example.com/file:maybe"
++
++
++@pytest.mark.asyncio
++async def test_new_tab_url_covered(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {"action": "new_tab", "url": "file:///etc/passwd"},
++        resolver=_deny(),
++    )
++    handler.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++async def test_alias_url_key_covered(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {"action": "navigate", "href": "file:///data/.octop/users/bob/x.txt"},
++        resolver=_deny(),
++    )
++    handler.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++async def test_goto_alias_covered(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {"action": "goto", "url": "file:///data/.octop/users/bob/x.txt"},
++        resolver=_deny(),
++    )
++    handler.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++async def test_screenshot_path_outside_refused(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {"action": "screenshot", "path": "/etc/octop/shot.png"},
++        resolver=_deny(),
++    )
++    handler.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++async def test_screenshot_path_inside_rewritten(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {"action": "screenshot", "path": "/.octop/workspaces/ABC/out/shot.png"},
++        resolver=_own("/srv/users/alice/.octop/workspaces/ABC/out/shot.png"),
++    )
++    forwarded = handler.await_args.args[0]
++    assert forwarded.tool_call["args"]["path"] == (
++        "/srv/users/alice/.octop/workspaces/ABC/out/shot.png"
++    )
++
++
++@pytest.mark.asyncio
++async def test_screenshot_relative_path_untouched(monkeypatch) -> None:
++    # Relative paths land under the workspace screenshots dir — not a
++    # host-absolute path, so the policy leaves them alone.
++    handler = await _run(
++        monkeypatch,
++        {"action": "screenshot", "path": "shot.png"},
++        resolver=_deny(),
++    )
++    forwarded = handler.await_args.args[0]
++    assert forwarded.tool_call["args"]["path"] == "shot.png"
++
++
++@pytest.mark.asyncio
++async def test_no_resolver_official_behavior(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {"action": "navigate", "url": "file:///etc/passwd"},
++        resolver=None,
++    )
++    forwarded = handler.await_args.args[0]
++    assert forwarded.tool_call["args"]["url"] == "file:///etc/passwd"
++    assert forwarded.tool_call["args"]["profile"] == "user-42"
++
++
++@pytest.mark.asyncio
++async def test_resolver_none_keeps_call(monkeypatch) -> None:
++    # resolver present but returns None (switch off / admin mid-turn)
++    handler = await _run(
++        monkeypatch,
++        {"action": "navigate", "url": "file:///etc/passwd"},
++        resolver=_off(),
++    )
++    forwarded = handler.await_args.args[0]
++    assert forwarded.tool_call["args"]["url"] == "file:///etc/passwd"
++
++
++@pytest.mark.asyncio
++async def test_file_url_with_host_refused(monkeypatch) -> None:
++    # file://host/path names a host — refuse rather than guess.
++    handler = await _run(
++        monkeypatch,
++        {"action": "navigate", "url": "file://localhost/etc/passwd"},
++        resolver=_own("/etc/passwd"),
++    )
++    handler.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++async def test_other_actions_untouched(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {"action": "dom_tree", "url": "whatever"},
++        resolver=_deny(),
++    )
++    forwarded = handler.await_args.args[0]
++    assert forwarded.tool_call["args"]["url"] == "whatever"
++
++
++def test_local_path_from_file_url_parsing() -> None:
++    assert browser_profile._local_path_from_file_url("file:///a/b") == "/a/b"
++    assert browser_profile._local_path_from_file_url("FILE:///a/B") == "/a/B"
++    assert browser_profile._local_path_from_file_url("file:///a/%E4%B8%AD") == "/a/中"
++    assert browser_profile._local_path_from_file_url("https://x/y") is None
++    assert browser_profile._local_path_from_file_url("about:blank") is None
++    assert browser_profile._local_path_from_file_url("file://host/a") == ""
++
++
++def test_local_path_from_file_url_view_source_prefix() -> None:
++    """ZBS round 6: ``view-source:file:///…`` is judged by the same rules.
++
++    Chromium opens it as a plain view of that file (verified in
++    zt026-octop2: a marker file outside the user's folder was fully
++    readable through ``view-source:file://``), so the prefix must be
++    stripped before the file policy decides.
++    """
++    assert browser_profile._local_path_from_file_url(
++        "view-source:file:///data/.octop/users/bob/secret.txt"
++    ) == "/data/.octop/users/bob/secret.txt"
++    # Leading whitespace around the whole value / between prefixes.
++    assert browser_profile._local_path_from_file_url(
++        "  view-source:  file:///a/b"
++    ) == "/a/b"
++    # Repeated prefixes are Chromium-legal and stripped the same way.
++    assert browser_profile._local_path_from_file_url(
++        "view-source:view-source:file:///a/b"
++    ) == "/a/b"
++    # http(s) under view-source stays untouched (still not a file: URL).
++    assert browser_profile._local_path_from_file_url(
++        "view-source:https://example.com/x"
++    ) is None
++
++
++@pytest.mark.asyncio
++async def test_view_source_file_url_other_user_refused(monkeypatch) -> None:
++    handler = await _run(
++        monkeypatch,
++        {
++            "action": "navigate",
++            "url": "view-source:file:///data/.octop/users/bob/secret.txt",
++        },
++        resolver=_deny(),
++    )
++    handler.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++async def test_own_folder_filename_percent_encoded(monkeypatch) -> None:
++    """ZBS round 6: allowed paths are percent-encoded so spaces, non-ASCII
++    and ``#`` survive the URL round-trip (``#`` starts the fragment and
++    truncated the path in zt026-octop2)."""
++    host = "/srv/users/alice/.octop/workspaces/ABC/中文 测试#1.html"
++    handler = await _run(
++        monkeypatch,
++        {"action": "navigate", "url": "file:///.octop/workspaces/ABC/page.html"},
++        resolver=_own(host),
++    )
++    forwarded = handler.await_args.args[0]
++    assert forwarded.tool_call["args"]["url"] == (
++        "file:///srv/users/alice/.octop/workspaces/ABC/%E4%B8%AD%E6%96%87%20%E6%B5%8B%E8%AF%95%231.html"
++    )
++
++
++@pytest.mark.asyncio
++async def test_refusal_message_is_chinese_explanation(monkeypatch) -> None:
++    _patch_user(monkeypatch)
++    cfg = {"configurable": {"user": "42", "browser_file_resolver": _deny()}}
++    monkeypatch.setattr(browser_profile, "get_config", lambda: cfg)
++    handler = AsyncMock(return_value=object())
++    request = _request("browser_use", {"action": "navigate", "url": "file:///data/other.txt"})
++    result = await browser_profile.BrowserProfileMiddleware().awrap_tool_call(request, handler)
++    handler.assert_not_awaited()
++    assert "你自己文件夹里的文件" in str(result.content)
++    assert "替代" in str(result.content) or "请" in str(result.content)
+diff --git a/tests/unit/agents/test_user_workspace_policy.py b/tests/unit/agents/test_user_workspace_policy.py
+new file mode 100644
+index 00000000..dea52221
+--- /dev/null
++++ b/tests/unit/agents/test_user_workspace_policy.py
+@@ -0,0 +1,443 @@
++"""Unit tests for the ZBS enforced per-user workspace policy (settings switch).
++
++Covers:
++- ``AgentManager.create`` backend override for non-admin owners (F4)
++- ``assert_user_may_change_backend`` guard for agent PATCH (F5)
++- ``enforced_workspace_backend_name`` settings-key reading (switch on/off)
++"""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++import pytest
++
++from octop.api.common.validators import assert_user_may_change_backend
++from octop.config import OctopConfig
++from octop.infra.agents.manager import AgentCreateSpec, AgentManager
++from octop.infra.db.migrate import run_migrations
++from octop.infra.db.pool import SqlitePool
++from octop.infra.db.services import build_shared_services
++from octop.infra.errors import ErrorCode, OctopError
++from octop.infra.users.identity import Role, User
++from octop.infra.users.resource_policy import (
++    ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY,
++    enforced_workspace_backend_name,
++)
++from octop.infra.utils.paths import PathLayout
++
++
++@pytest.fixture
++def manager(tmp_path: Path) -> AgentManager:
++    paths = PathLayout(tmp_path / ".octop")
++    paths.ensure_root()
++    db = SqlitePool(paths.db)
++    run_migrations(db)
++    services = build_shared_services(db=db, paths=paths, config=OctopConfig())
++    return AgentManager(repos=services.repos, paths=services.paths)
++
++
++def _seed_user(manager: AgentManager, *, role: str, name: str = "alice") -> int:
++    return manager._repos.user_repo.create(username=name, role=role, password_hash=None)
++
++
++def _switch_on(manager: AgentManager, name: str = "per-user-home") -> None:
++    manager._repos.storage_backend_repo.create(
++        name=name,
++        kind="shell",
++        endpoint=None,
++        access_key=None,
++        secret_key=None,
++        bucket=None,
++        region=None,
++        config_json=json.dumps(
++            {
++                "root_dir": "/data/.octop/users/{username}",
++                "inherit_env": False,
++                "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++            }
++        ),
++        note=None,
++    )
++    manager._repos.settings_repo.set(ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY, name)
++
++
++def _set_enabled(manager: AgentManager, name: str, enabled: bool) -> None:
++    """Flip a seeded storage backend's enabled flag directly on the repo."""
++    repo = manager._repos.storage_backend_repo
++    row = repo.get_by_name(name)
++    assert row is not None
++    repo.update(row.id, enabled=enabled)
++
++
++# ---------------------------------------------------------------------------
++# switch reading
++# ---------------------------------------------------------------------------
++
++
++def test_switch_off_by_default(manager: AgentManager) -> None:
++    assert enforced_workspace_backend_name(manager._repos.settings_repo) is None
++
++
++def test_switch_reads_settings_key(manager: AgentManager) -> None:
++    manager._repos.settings_repo.set(ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY, "sbx")
++    assert enforced_workspace_backend_name(manager._repos.settings_repo) == "sbx"
++    manager._repos.settings_repo.set(ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY, "  ")
++    assert enforced_workspace_backend_name(manager._repos.settings_repo) is None
++
++
++# ---------------------------------------------------------------------------
++# F4 — create() backend override
++# ---------------------------------------------------------------------------
++
++
++async def test_create_overrides_backend_for_non_admin(manager: AgentManager) -> None:
++    uid = _seed_user(manager, role="user")
++    _switch_on(manager)
++    row = await manager.create(
++        AgentCreateSpec(
++            name="sbx-agent",
++            user_id=uid,
++            config={
++                "memory": {"memory_enabled": False},
++                "backend": {"type": "local_shell", "root_dir": "/", "virtual_mode": True},
++            },
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"] == {
++        "type": "local_shell",
++        "root_dir": "/data/.octop/users/alice",
++        "virtual_mode": True,
++        "inherit_env": False,
++        "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++    }
++
++
++async def test_create_official_backend_when_switch_off(manager: AgentManager) -> None:
++    uid = _seed_user(manager, role="user")
++    requested = {"type": "local_shell", "root_dir": "/", "virtual_mode": True}
++    row = await manager.create(
++        AgentCreateSpec(
++            name="plain-agent",
++            user_id=uid,
++            config={"memory": {"memory_enabled": False}, "backend": requested},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"] == requested
++
++
++async def test_create_admin_owner_not_overridden(manager: AgentManager) -> None:
++    uid = _seed_user(manager, role="admin")
++    _switch_on(manager)
++    requested = {"type": "local_shell", "root_dir": "/", "virtual_mode": True}
++    row = await manager.create(
++        AgentCreateSpec(
++            name="admin-agent",
++            user_id=uid,
++            config={"memory": {"memory_enabled": False}, "backend": requested},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"] == requested
++
++
++async def test_create_team_agent_also_overridden(manager: AgentManager) -> None:
++    uid = _seed_user(manager, role="user")
++    _switch_on(manager)
++    row = await manager.create(
++        AgentCreateSpec(
++            name="team",
++            user_id=uid,
++            kind="team",
++            config={},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"] == {
++        "type": "local_shell",
++        "root_dir": "/data/.octop/users/alice",
++        "virtual_mode": True,
++        "inherit_env": False,
++        "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++    }
++
++
++async def test_create_non_ascii_username_overridden_verbatim(manager: AgentManager) -> None:
++    """ZBS round 4: non-ASCII usernames (official allows them) expand as-is."""
++    uid = _seed_user(manager, role="user", name="张三")
++    _switch_on(manager)
++    row = await manager.create(
++        AgentCreateSpec(
++            name="cn-agent",
++            user_id=uid,
++            config={"memory": {"memory_enabled": False}},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"]["root_dir"] == "/data/.octop/users/张三"
++
++
++async def test_create_username_with_embedded_dot_overridden(manager: AgentManager) -> None:
++    """ZBS round 4: embedded dots like ``john.doe`` are fine (only exactly
++    ``.`` / ``..`` are unsafe); official Octop imposes no charset."""
++    uid = _seed_user(manager, role="user", name="john.doe")
++    _switch_on(manager)
++    row = await manager.create(
++        AgentCreateSpec(
++            name="dot-agent",
++            user_id=uid,
++            config={"memory": {"memory_enabled": False}},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"]["root_dir"] == "/data/.octop/users/john.doe"
++
++
++@pytest.mark.parametrize(
++    "bad_name",
++    ["..", ".", "a/b", "a\\b", "a\x00b", "a\nb", " "],
++)
++async def test_create_unsafe_username_rejected(manager: AgentManager, bad_name: str) -> None:
++    """ZBS round 4: unsafe usernames (``.``, ``..``, separators, control
++    characters, blank) must NOT be expanded into the per-user folder path —
++    agent creation fails with a clear error instead of silently falling
++    back to the official (unisolated) default backend."""
++    uid = _seed_user(manager, role="user", name=bad_name)
++    _switch_on(manager)
++    with pytest.raises(OctopError) as ei:
++        await manager.create(
++            AgentCreateSpec(
++                name="bad-user-agent",
++                user_id=uid,
++                config={"memory": {"memory_enabled": False}},
++            ),
++            defer_bootstrap=True,
++        )
++    assert ei.value.code is ErrorCode.WORKSPACE_OP_UNSUPPORTED
++
++
++async def test_create_enforced_backend_missing_fails_closed(manager: AgentManager) -> None:
++    """ZBS round 4: switch points at a deleted backend → non-admin create
++    raises (no silent fallback to the official default = lost isolation)."""
++    uid = _seed_user(manager, role="user")
++    _switch_on(manager, name="ghost-backend")
++    # the seeded backend exists; delete it to simulate admin removal
++    row = manager._repos.storage_backend_repo.get_by_name("ghost-backend")
++    assert row is not None
++    manager._repos.storage_backend_repo.delete(row.id)
++    with pytest.raises(OctopError) as ei:
++        await manager.create(
++            AgentCreateSpec(
++                name="ghost-agent",
++                user_id=uid,
++                config={"memory": {"memory_enabled": False}},
++            ),
++            defer_bootstrap=True,
++        )
++    assert ei.value.code is ErrorCode.WORKSPACE_OP_UNSUPPORTED
++    assert "ghost-backend" in str(ei.value)
++
++
++async def test_create_enforced_backend_disabled_fails_closed(manager: AgentManager) -> None:
++    """ZBS round 4: switch points at a disabled backend → non-admin create
++    raises (same fail-closed behavior as a missing backend)."""
++    uid = _seed_user(manager, role="user")
++    _switch_on(manager, name="offline-backend")
++    _set_enabled(manager, "offline-backend", False)
++    with pytest.raises(OctopError) as ei:
++        await manager.create(
++            AgentCreateSpec(
++                name="offline-agent",
++                user_id=uid,
++                config={"memory": {"memory_enabled": False}},
++            ),
++            defer_bootstrap=True,
++        )
++    assert ei.value.code is ErrorCode.WORKSPACE_OP_UNSUPPORTED
++    assert "offline-backend" in str(ei.value)
++
++
++async def test_create_admin_unaffected_by_missing_enforced_backend(manager: AgentManager) -> None:
++    """ZBS round 4: admins are unaffected when the switch is broken —
++    their agents never go through the enforced-workspace path."""
++    uid = _seed_user(manager, role="admin")
++    manager._repos.settings_repo.set(ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY, "ghost-backend")
++    requested = {"type": "local_shell", "root_dir": "/", "virtual_mode": True}
++    row = await manager.create(
++        AgentCreateSpec(
++            name="admin-agent-2",
++            user_id=uid,
++            config={"memory": {"memory_enabled": False}, "backend": requested},
++        ),
++        defer_bootstrap=True,
++    )
++    cfg = json.loads(manager._repos.agent_repo.get(row.agent_id).config_json or "{}")
++    assert cfg["backend"] == requested
++
++
++async def test_prepare_docker_backend_expands_username_in_named_shell(manager: AgentManager) -> None:
++    """ZBS: a named shell backend's ``{username}`` resolves to the agent owner."""
++    uid = _seed_user(manager, role="user", name="alice")
++    _switch_on(manager)
++    row = await manager.create(
++        AgentCreateSpec(name="sbx2", user_id=uid, config={"memory": {"memory_enabled": False}}),
++        defer_bootstrap=True,
++    )
++    prepared = manager._prepare_docker_backend(manager._backend_spec_for_row(row), row)
++    assert prepared["type"] == "local_shell"
++    assert prepared["root_dir"] == "/data/.octop/users/alice"
++    assert prepared["inherit_env"] is False
++    assert prepared["env"] == {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"}
++
++
++# ---------------------------------------------------------------------------
++# F5 — PATCH backend change guard
++# ---------------------------------------------------------------------------
++
++
++def _user(is_admin: bool) -> User:
++    return User(
++        id=1,
++        username="u",
++        role=Role.ADMIN if is_admin else Role.USER,
++        display_name=None,
++    )
++
++
++def _settings_repo(switch: str | None) -> object:
++    class _Repo:
++        def __init__(self, value: str | None) -> None:
++            self.value = value
++
++        def get(self, key: str) -> str | None:
++            return self.value if key == ENFORCED_WORKSPACE_BACKEND_SETTINGS_KEY else None
++
++    return _Repo(switch)
++
++
++_STORED = json.dumps({"backend": {"type": "named", "name": "per-user-home"}, "persona": "INTJ"})
++
++
++def test_patch_blocks_backend_change_when_switch_on() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={"backend": {"type": "local_shell", "root_dir": "/"}},
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_missing_backend_key_when_switch_on() -> None:
++    # PATCH replaces the whole config blob — dropping the key would revert
++    # the agent to the official default backend, so it must be rejected too.
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={"persona": "INTJ"},
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_allows_same_backend_when_switch_on() -> None:
++    assert_user_may_change_backend(
++        _user(False),
++        current_config_json=_STORED,
++        new_config={
++            "backend": {"type": "named", "name": "per-user-home"},
++            "persona": "ENFP",
++        },
++        settings_repo=_settings_repo("per-user-home"),
++    )
++
++
++def test_patch_allows_anything_when_switch_off() -> None:
++    assert_user_may_change_backend(
++        _user(False),
++        current_config_json=_STORED,
++        new_config={"persona": "ENFP"},
++        settings_repo=_settings_repo(None),
++    )
++
++
++def test_patch_admin_bypasses_guard() -> None:
++    assert_user_may_change_backend(
++        _user(True),
++        current_config_json=_STORED,
++        new_config={"backend": {"type": "local_shell", "root_dir": "/"}},
++        settings_repo=_settings_repo("per-user-home"),
++    )
++
++
++def test_patch_non_dict_config_ignored() -> None:
++    assert_user_may_change_backend(
++        _user(False),
++        current_config_json=_STORED,
++        new_config=None,
++        settings_repo=_settings_repo("per-user-home"),
++    )
++
++
++# ---------------------------------------------------------------------------
++# F5 — the four concrete escape attempts the decision-maker named
++# (stored backend is ``{"type": "named", "name": "per-user-home"}``; all four
++# differ from it, so each must be rejected when the switch is on)
++# ---------------------------------------------------------------------------
++
++
++def test_patch_blocks_root_dir_to_other_user_folder() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={"backend": {"type": "local_shell", "root_dir": "/data/.octop/users/tb"}},
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_root_dir_to_host_root() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={"backend": {"type": "local_shell", "root_dir": "/"}},
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_flipping_inherit_env() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={
++                "backend": {"type": "local_shell", "root_dir": "/data/.octop/users/ta", "inherit_env": True}
++            },
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_switching_backend_type() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED,
++            new_config={"backend": {"type": "filesystem", "root_dir": "/data"}},
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
+diff --git a/tests/unit/test_storage_spec.py b/tests/unit/test_storage_spec.py
+index 4d800e19..d4322c44 100644
+--- a/tests/unit/test_storage_spec.py
++++ b/tests/unit/test_storage_spec.py
+@@ -253,6 +253,134 @@ def test_enrich_docker_backend_spec_defaults() -> None:
+     assert "agent_id" not in fixed or fixed.get("agent_id") == "ZE6GR2"
+ 
+ 
++def test_enrich_docker_backend_spec_resolves_root_dir_username_placeholder() -> None:
++    from octop.infra.backend.docker_spec import enrich_docker_backend_spec
++
++    spec = enrich_docker_backend_spec(
++        {
++            "type": "docker",
++            "image": "python:3.12-slim",
++            "sandbox_scope": "user",
++            "root_dir": "/data/.octop/users/{username}",
++            "env": {"HOME": "/data/.octop/users/{username}"},
++        },
++        agent_id="ZE6GR2",
++        username="alice",
++    )
++    assert spec["root_dir"] == "/data/.octop/users/alice"
++    assert spec["env"] == {"HOME": "/data/.octop/users/alice"}
++
++
++def test_enrich_docker_backend_spec_keeps_placeholder_without_username() -> None:
++    from octop.infra.backend.docker_spec import enrich_docker_backend_spec
++
++    spec = enrich_docker_backend_spec(
++        {
++            "type": "docker",
++            "image": "python:3.12-slim",
++            "sandbox_scope": "agent",
++            "root_dir": "/data/.octop/users/{username}",
++        },
++        agent_id="ZE6GR2",
++        username=None,
++    )
++    assert spec["root_dir"] == "/data/.octop/users/{username}"
++
++
++def test_resolve_username_placeholder_helpers() -> None:
++    from octop.infra.backend.docker_spec import resolve_username_placeholder
++
++    assert resolve_username_placeholder("/data/users/{username}", "alice") == "/data/users/alice"
++    assert resolve_username_placeholder("/data/users/{username}", None) == "/data/users/{username}"
++    assert resolve_username_placeholder(123, "alice") == 123
++
++
++def test_username_safe_for_placeholder_rules() -> None:
++    """ZBS round 4: which usernames may be substituted into a path."""
++    from octop.infra.backend.docker_spec import username_safe_for_placeholder
++
++    # Safe: ordinary, non-ASCII (official allows them), embedded dots.
++    assert username_safe_for_placeholder("alice") is True
++    assert username_safe_for_placeholder("张三") is True
++    assert username_safe_for_placeholder("john.doe") is True
++    assert username_safe_for_placeholder("a_b-c") is True
++    # Unsafe: empty / blank, directory aliases, separators, control chars.
++    assert username_safe_for_placeholder(None) is False
++    assert username_safe_for_placeholder("") is False
++    assert username_safe_for_placeholder("   ") is False
++    assert username_safe_for_placeholder(".") is False
++    assert username_safe_for_placeholder("..") is False
++    assert username_safe_for_placeholder("a/b") is False
++    assert username_safe_for_placeholder("a\\b") is False
++    assert username_safe_for_placeholder("a\x00b") is False
++    assert username_safe_for_placeholder("a\nb") is False
++    assert username_safe_for_placeholder("a\x7fb") is False
++
++
++def test_resolve_username_placeholder_refuses_unsafe_username() -> None:
++    """ZBS round 4: an unsafe username is never substituted (value kept)."""
++    from octop.infra.backend.docker_spec import resolve_username_placeholder
++
++    assert resolve_username_placeholder("/data/users/{username}", "..") == "/data/users/{username}"
++    assert resolve_username_placeholder("/data/users/{username}", "a/b") == (
++        "/data/users/{username}"
++    )
++    assert resolve_username_placeholder("/data/users/{username}", "张三") == "/data/users/张三"
++
++
++def test_shell_adapter_passes_inherit_env_and_env() -> None:
++    from octop.infra.backend.adapter import row_to_backend_spec
++    from octop.infra.db.repos.backends import BackendRow
++
++    row = BackendRow(
++        id=1,
++        name="per-user",
++        kind="shell",
++        endpoint=None,
++        access_key=None,
++        secret_key=None,
++        bucket=None,
++        region=None,
++        config_json='{"root_dir": "/data/.octop/users/{username}",'
++                    ' "inherit_env": false, "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"}}',
++        note=None,
++        enabled=1,
++        created_at=0,
++        updated_at=0,
++    )
++    spec = row_to_backend_spec(row)
++    assert spec == {
++        "type": "local_shell",
++        "root_dir": "/data/.octop/users/{username}",
++        "virtual_mode": True,
++        "inherit_env": False,
++        "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++    }
++
++
++def test_shell_adapter_defaults_without_env_keys() -> None:
++    from octop.infra.backend.adapter import row_to_backend_spec
++    from octop.infra.db.repos.backends import BackendRow
++
++    row = BackendRow(
++        id=1,
++        name="plain-shell",
++        kind="shell",
++        endpoint=None,
++        access_key=None,
++        secret_key=None,
++        bucket="/srv/data",
++        region=None,
++        config_json=None,
++        note=None,
++        enabled=1,
++        created_at=0,
++        updated_at=0,
++    )
++    spec = row_to_backend_spec(row)
++    assert spec == {"type": "local_shell", "root_dir": "/srv/data", "virtual_mode": True}
++
++
+ def test_inject_docker_global_environment_sets_file() -> None:
+     from octop.infra.backend.docker_spec import inject_docker_global_environment
+ 

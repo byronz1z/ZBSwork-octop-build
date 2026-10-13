@@ -21,14 +21,17 @@ uv run --no-project --with pyyaml shared/tools/check_ownership.py         # 模�
 
 ```bash
 python shared/tools/build_image.py --reference <本机官方克隆>   # 一条龙：施工树 → context.tar → docker build
-python shared/tools/verify_image.py octop:1.0.2b6-zbs1 --reference <本机官方克隆>
+python shared/tools/verify_image.py octop:1.0.2b6-zbs2 --reference <本机官方克隆>
 ```
 
 两个脚本都可不传 `--reference`：施工树 `.work/src` 本身就是官方仓库的克隆（带官方 tag），
 不传时 verify 直接用它做比对来源，不写死任何本机路径（云端流程即如此运行）。
 
-- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2b6-zbs1`
-  （ZT-025 本阶段 `--no-build` 已生成源码包，尚未构建镜像）。
+- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2b6-zbs2`
+  （2026-10-13 ZT-026 第 5 轮：补丁 21 改名 user-workspace 并加浏览器 file: 按用户分；
+  补丁 60 加 0003 浏览器本体——序号 zbs1 → zbs2。本轮未构建镜像，待云端构建）。
+  历史段：zbs1 = 2026-10-10 ZT-018（镜像加装本地向量/OCR 依赖 + 用户工具），经本机构建
+  与 verify 验证（5.68 GB 磁盘占用口径），生产在用 `ghcr.io/byronz1z/octop:1.0.2b6-zbs1`。
 - **施工树**：`shared/tools/prepare_lf.py`（prepare.py 的 LF/符号链接版；不改 prepare.py 现有参数行为，
   recipe-check.yml 不受影响）准备 `.work/src`，克隆/检出固定 `-c core.autocrlf=false -c core.eol=lf`，
   并把 git 里 mode 120000 的链接在 Windows 工作区恢复成真链接（失败只告警，不影响构建）。
@@ -77,7 +80,9 @@ python shared/tools/verify_image.py octop:1.0.2b6-zbs1 --reference <本机官方
 |---|---|---|
 | brand | 品牌包（方形/横版/竖版 logo + 产品名；网页端 + 桌面端） | 启用（第一期扩充中，见 Issue） |
 | 10 | PostgreSQL 模式重启死循环修复 | 启用（生产在用） |
-| 60 | 镜像加装本地向量/OCR 依赖 | 启用（生产在用） |
+| 20 | 按角色/用户的可用模型名单；接口对非管理员不返回模型密钥 | 启用（未部署） |
+| 21 | 按用户文件夹：活动范围 {username}、浏览器 file: 按用户分 | 启用（未部署） |
+| 60 | 镜像加装本地向量/OCR 依赖 + 用户工具 + 浏览器本体 | 启用（0001 生产在用；0002/0003 未部署） |
 
 桌面端是单独一条线 `desk/`（与 `server/` 并列），尚未建立；按全景，不再叫 50 号。
 旧 AI 线产物未经用户确认，不占编号；代码只留在归档 tag `archive/2026-10/build-init` 供追溯，不作参考。
