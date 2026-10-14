@@ -17,7 +17,9 @@
   3. cvm-ai-doctor 技能目录在镜像里是符号链接（官方 git 树 mode 120000）
   4. dashboard 的 index.html 标题为品牌名；施工树 brand_check 通过
   5. antiword 可执行；系统 python3 12 包导入且版本等于钉版；venv 2 包同（均在原样镜像上测）
-  6. manager.py 等于官方原件；wrapper/__init__.py 以官方树为准（官方无则要求不存在）
+  6. manager.py 与施工树（官方 + 补丁 + 品牌）逐字节相同——施工树外的改动才 FAIL，
+     不再要求等于官方原件（补丁 20、21 按登记改了它）；并写明施工树版本相对官方是原件还是被改过。
+     wrapper/__init__.py 以官方树为准（官方无则要求不存在）
   7. 镜像标签齐全且值正确：cn.zbswork.context.sha256 与现场重做的源码包 sha256 相等才算 PASS
      （用 build_image.py 的同一个 context_tar() 函数重做，这就是"可复现"的检查）
   8. 冒烟：import octop 输出 ok
@@ -352,16 +354,25 @@ def _verify(args, temp_containers: list[str]) -> int:
             f"版本{'齐' if not bad_venv else json.dumps(bad_venv, ensure_ascii=False)}；"
             f"导入(原样镜像): {imp_venv[:160]}")
 
-    # ---- 检查 6: manager.py 原件 / wrapper 不存在 ----------------------------
+    # ---- 检查 6: manager.py 同施工树（不得有施工树外改动）/ wrapper 以官方树为准 --
+    # 6a 原为"等于官方原件"（ZT-018 ba242c2），当时 shared_files 为空、没有补丁改 manager.py，
+    # "等于官方"隐含"同施工树"；补丁 20、21 按 modules.yaml 登记改了它之后改为与施工树比：
+    # 镜像里的 manager.py 必须与施工树（官方 + 补丁 + 品牌，即 prepare 展开的 .work/src）逐字节相同，
+    # 施工树外的改动仍判 FAIL。施工树版本相对官方是"原件"还是"被补丁改过"写进输出。
     e = gt.entry(MANAGER_PATH)
     info6 = img_entries.get("app/" + MANAGER_PATH)
-    ok_mgr = (e is not None and info6 is not None and info6.isfile()
-              and img_content(MANAGER_PATH, info6) == gt.blob(e[1]))
+    et = tree_gt.entry(MANAGER_PATH)
+    img_mgr = img_content(MANAGER_PATH, info6) if (info6 is not None and info6.isfile()) else None
+    tree_mgr = tree_gt.blob(et[1]) if (et is not None and et[0] != "120000") else None
+    ok_mgr = (img_mgr is not None and tree_mgr is not None and img_mgr == tree_mgr)
+    tree_vs_official = (tree_mgr is not None and e is not None and tree_mgr == gt.blob(e[1]))
+    verdict(ok_mgr, "6a. manager.py 与施工树逐字节相同（施工树外的改动才 FAIL）",
+            f"本次施工树 manager.py {'等于官方原件' if tree_vs_official else '被补丁改过（与官方不同）'}"
+            + ("；镜像与施工树逐字节相同" if ok_mgr else "；镜像与施工树不同"))
     e2 = gt.entry(WRAPPER_PATH)
     info6b = img_entries.get("app/" + WRAPPER_PATH)
     ok_wrap = (info6b is None) if e2 is None else (
         info6b is not None and info6b.isfile() and img_content(WRAPPER_PATH, info6b) == gt.blob(e2[1]))
-    verdict(ok_mgr, "6a. manager.py 等于官方原件")
     verdict(ok_wrap, "6b. wrapper/__init__.py 状态与官方树一致",
             f"官方 {'无此文件' if e2 is None else '有'}，镜像 {'无' if info6b is None else '有'}")
 
