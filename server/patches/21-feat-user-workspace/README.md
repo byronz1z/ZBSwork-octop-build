@@ -235,7 +235,7 @@ zt026-octop2，镜像内 chromium-1228，CDP `Page.navigate` 原生链路）：
 
 ## 补丁 20 在本模块文件里的改动记录
 
-补丁 20 在 `manager.py` 的 `_build_harness_config` 里改了默认模型的挑法（按 Agent 主人的可用模型名单），位置在补丁 21 所有改动之后，不重叠。
+补丁 20 在 `manager.py` 的 `_build_harness_config` 里改了默认模型的挑法（按 Agent 主人的可用模型名单），位置在补丁 21 所有改动之后，不重叠。同次还在 `resource_policy.py`（本模块是主人）文件末尾加了补丁 20 自己的三个函数、文件开头加了一行 `import collections.abc`，都不碰本模块改过的行（总调度集成时补记，2026-10-16）。
 
 - 改了什么：见上段。
 - 谁改的：执行 · Claude Code 命令行 · glm-5.3。

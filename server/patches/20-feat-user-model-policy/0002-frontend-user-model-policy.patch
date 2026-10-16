@@ -28,10 +28,19 @@ index 463b6335b681302f9520c6d9e3ef9d168db67886..7618b8ad045bb3fbf04393f46cd79f1c
    return null;
  }
 diff --git a/dashboard/src/locales/en.json b/dashboard/src/locales/en.json
-index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..2960c5269dbbd1e6bf77c697a3911217ab72603d 100644
+index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..643e15bbc447fca49fb48c9e3b8432d9fae493aa 100644
 --- a/dashboard/src/locales/en.json
 +++ b/dashboard/src/locales/en.json
-@@ -5425,6 +5425,13 @@
+@@ -185,6 +185,8 @@
+     "KNOWLEDGE_UNSUPPORTED_TYPE": "This document type is not supported for knowledge bases.",
+     "KNOWLEDGE_NAME_TAKEN": "You already have a knowledge base with this name.",
+     "KNOWLEDGE_NAME_INVALID": "Invalid name.",
++    "MODEL_NOT_ALLOWED": "You don't have permission to use this model. Please contact your administrator.",
++    "NO_ALLOWED_MODEL_AVAILABLE": "None of the models available to you can be used right now. Please contact your administrator.",
+     "AVATAR_INVALID": "Avatar must be a PNG, JPEG, WebP, or GIF image.",
+     "AVATAR_TOO_LARGE": "Avatar exceeds the 5 MB size limit.",
+     "INVITE_INVALID": "This invite code is invalid.",
+@@ -5425,6 +5427,13 @@
      "policyMaxAgentsHint": "How many experts this user may create (teams excluded). Off means no limit.",
      "policyMaxAgentsRequired": "Enter an expert limit",
      "policyMaxAgentsPlaceholder": "e.g. 5",
@@ -46,10 +55,19 @@ index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..2960c5269dbbd1e6bf77c697a3911217
      "batchSelected": "{{count}} selected",
      "batchSelectAll": "Select all",
 diff --git a/dashboard/src/locales/zh.json b/dashboard/src/locales/zh.json
-index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..ac757860a4a4a1b5cfc20e76dd768ebd4c045fe9 100644
+index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..c4827b0fd9a4245266b09e3e5b31fad752198ac2 100644
 --- a/dashboard/src/locales/zh.json
 +++ b/dashboard/src/locales/zh.json
-@@ -5425,6 +5425,13 @@
+@@ -185,6 +185,8 @@
+     "KNOWLEDGE_UNSUPPORTED_TYPE": "知识库不支持此文档类型。",
+     "KNOWLEDGE_NAME_TAKEN": "您已有同名知识库。",
+     "KNOWLEDGE_NAME_INVALID": "名称无效。",
++    "MODEL_NOT_ALLOWED": "你没有使用这个模型的权限，请联系管理员。",
++    "NO_ALLOWED_MODEL_AVAILABLE": "你可用的模型当前都无法使用，请联系管理员。",
+     "AVATAR_INVALID": "头像须为 PNG、JPEG、WebP 或 GIF 图片。",
+     "AVATAR_TOO_LARGE": "头像超过 5 MB 大小限制。",
+     "INVITE_INVALID": "邀请码无效。",
+@@ -5425,6 +5427,13 @@
      "policyMaxAgentsHint": "该用户可创建的专家数量（不含团队）。关闭表示不限制。",
      "policyMaxAgentsRequired": "请输入专家数量上限",
      "policyMaxAgentsPlaceholder": "例如 5",
