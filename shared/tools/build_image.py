@@ -66,6 +66,8 @@ def context_tar(src: Path, tar_path: Path, tag: str, version: str, n_patches: in
     build_image.py 出镜像与 verify_image.py 现场重做核对镜像标签，用的都是这一个函数
     （检查不允许各写各的）。重复调用可复现：先回滚到上游 tag 干净检出再套补丁/品牌
     （prepare_lf.py 刚跑完时 HEAD 已是 tag 检出 + 未提交改动，此时跳过回滚）。
+    提交前把全称版本号（<官方版本>-<server/VERSION>，如 1.0.2b6-zbs2）写进施工树
+    src/octop/zbs_version.txt（ZT-032 约定，页面版本号读它），两次调用写的内容相同。
     """
     r = subprocess.run(["git", "-C", str(src), "rev-parse", "HEAD"], capture_output=True, text=True)
     head = r.stdout.strip()
@@ -86,6 +88,10 @@ def context_tar(src: Path, tar_path: Path, tag: str, version: str, n_patches: in
     env = dict(os.environ,
                GIT_AUTHOR_NAME=author[0], GIT_AUTHOR_EMAIL=author[1], GIT_AUTHOR_DATE=author[2],
                GIT_COMMITTER_NAME=author[0], GIT_COMMITTER_EMAIL=author[1], GIT_COMMITTER_DATE=author[2])
+    # 全称版本号写进施工树（在确定性提交之前，两种调用路径——prepare_lf 刚跑完或
+    # 回滚重放补丁——都会走到这里），build 与 verify 重做的 tar 因此保持逐字节相同
+    zbs_version = f"{tag.lstrip('v')}-{version}\n"
+    (src / "src" / "octop" / "zbs_version.txt").write_text(zbs_version, encoding="utf-8", newline="\n")
     run(["git", "add", "-A"], cwd=src)
     subprocess.run(["git", "commit", "-q", "--allow-empty", "-m",
                     f"build: {tag} + {n_patches} patches + brand ({version})"],
