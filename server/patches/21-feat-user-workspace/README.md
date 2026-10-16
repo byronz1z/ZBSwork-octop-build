@@ -232,3 +232,12 @@ zt026-octop2，镜像内 chromium-1228，CDP `Page.navigate` 原生链路）：
 - 主服务容器必须加 `SYS_ADMIN` 和 `seccomp=unconfined` 两项权限（不加，Agent 命令在围栏里跑不了——
   `bwrap` 建 namespace 会 `Operation not permitted`；见 `原始输出\28` C 段）。
 - 关掉开关后一切行为与官方完全一致：覆写和校验函数开头都先读开关，未设置直接返回。
+
+## 补丁 20 在本模块文件里的改动记录
+
+补丁 20 在 `manager.py` 的 `_build_harness_config` 里改了默认模型的挑法（按 Agent 主人的可用模型名单），位置在补丁 21 所有改动之后，不重叠。
+
+- 改了什么：见上段。
+- 谁改的：执行 · Claude Code 命令行 · glm-5.3。
+- 来源：用户指示（#353）。
+- 依据：ZT-030 任务书 一.0 30c。（ZT-030，2026-10-16）
