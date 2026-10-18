@@ -20,6 +20,40 @@ index d4de095f4291da5957983ef7ec410a8cb3a177b0..ea89003688f6cc390829ec7b92896037
      composer_updates: dict[str, Any] = {}
      if model_ref is not None:
          composer_updates["model_ref"] = model_ref
+diff --git a/src/octop/api/routers/chat/ws.py b/src/octop/api/routers/chat/ws.py
+index d59c49fb6643aa8e6b9626202e7136518f762c1a..1bed602fcc65f30839577441e2d797006182aeab 100644
+--- a/src/octop/api/routers/chat/ws.py
++++ b/src/octop/api/routers/chat/ws.py
+@@ -158,7 +158,13 @@ async def dashboard_chat_ws(
+                     turn=turn,
+                 )
+             except OctopError as exc:
+-                await send_frame({"type": "error", "message": str(exc)})
++                # ZBS: whitelist errors get the localized per-scenario sentence;
++                # every other OctopError keeps the official str(exc) display.
++                from octop.infra.users.resource_policy import (  # noqa: PLC0415
++                    model_policy_error_text,
++                )
++
++                await send_frame({"type": "error", "message": model_policy_error_text(exc, user)})
+                 await send_frame({"type": "done"})
+                 continue
+ 
+@@ -270,7 +276,13 @@ async def _bridge_chat_ws(
+                     on_frame=send_frame,
+                 )
+             except OctopError as exc:
+-                await send_frame({"type": "error", "message": str(exc)})
++                # ZBS: whitelist errors get the localized per-scenario sentence;
++                # every other OctopError keeps the official str(exc) display.
++                from octop.infra.users.resource_policy import (  # noqa: PLC0415
++                    model_policy_error_text,
++                )
++
++                await send_frame({"type": "error", "message": model_policy_error_text(exc, user)})
+                 await send_frame({"type": "done"})
+             except Exception:
+                 logger.exception("bridge chat relay failed")
 diff --git a/src/octop/api/routers/cron.py b/src/octop/api/routers/cron.py
 index 6e7bc2c29999760287b7baa5176f2dbc50f32c39..1658a1c431cfd94c8f6bea19150feb7475a72f85 100644
 --- a/src/octop/api/routers/cron.py
@@ -426,8 +460,34 @@ index 864597079ff5a9b88bc9d89bd49af236e45d4a2d..0d8d23da7f35b6d52c675c0b9837f055
              )
          )
      succeeded = sum(1 for item in results if item.ok)
+diff --git a/src/octop/i18n/en.json b/src/octop/i18n/en.json
+index 7e77c41023eafe02c3a65ac29e5ee00e2b2f5265..c91c3c2edd5babe3e236240c255033612f3db028 100644
+--- a/src/octop/i18n/en.json
++++ b/src/octop/i18n/en.json
+@@ -474,6 +474,8 @@
+     "KNOWLEDGE_UNSUPPORTED_TYPE": "This document type is not supported for knowledge bases.",
+     "KNOWLEDGE_NAME_TAKEN": "You already have a knowledge base with this name.",
+     "KNOWLEDGE_NAME_INVALID": "Invalid name.",
++    "MODEL_NOT_ALLOWED": "You don't have permission to use this model. Please contact your administrator.",
++    "NO_ALLOWED_MODEL_AVAILABLE": "None of the models available to you can be used right now. Please contact your administrator.",
+     "AVATAR_INVALID": "Avatar must be a PNG, JPEG, WebP, or GIF image.",
+     "AVATAR_TOO_LARGE": "Avatar exceeds the 5 MB size limit.",
+     "INVITE_INVALID": "This invite code is invalid.",
+diff --git a/src/octop/i18n/zh.json b/src/octop/i18n/zh.json
+index 4921fd92fac9432ae53506c9474668a490e59e58..59886490d15cb6f95a3766ca58a0af61ce229fe4 100644
+--- a/src/octop/i18n/zh.json
++++ b/src/octop/i18n/zh.json
+@@ -474,6 +474,8 @@
+     "KNOWLEDGE_UNSUPPORTED_TYPE": "知识库不支持此文档类型。",
+     "KNOWLEDGE_NAME_TAKEN": "您已有同名知识库。",
+     "KNOWLEDGE_NAME_INVALID": "名称无效。",
++    "MODEL_NOT_ALLOWED": "你没有使用这个模型的权限，请联系管理员。",
++    "NO_ALLOWED_MODEL_AVAILABLE": "你可用的模型当前都无法使用，请联系管理员。",
+     "AVATAR_INVALID": "头像须为 PNG、JPEG、WebP 或 GIF 图片。",
+     "AVATAR_TOO_LARGE": "头像超过 5 MB 大小限制。",
+     "INVITE_INVALID": "邀请码无效。",
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
-index 46384d85676044d9c6886fad29b6e43dce44b20a..34f881975c1c79279e5471533f0f779575fda0e5 100644
+index 46384d85676044d9c6886fad29b6e43dce44b20a..91b5ea976ceff6da59f0d3d2bd07cf6325ffa21a 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
 @@ -1360,14 +1360,22 @@ class AgentManager:
@@ -457,6 +517,58 @@ index 46384d85676044d9c6886fad29b6e43dce44b20a..34f881975c1c79279e5471533f0f7795
  
      # ------------------------------------------------------------------
      # Hot-reload — rebuild harness agents after config / provider changes
+@@ -3357,6 +3365,30 @@ class AgentManager:
+             else backend
+         )
+ 
++        # ZBS patch 20 (feature 4): memory distillation must respect the agent
++        # owner's model whitelist; policy lives in resource_policy, here only
++        # the call (below patch 21's changes in this file, no overlap).
++        from octop.infra.users.resource_policy import (  # noqa: PLC0415
++            allowed_models_for_agent_owner,
++            memory_model_settings_for_agent,
++        )
++
++        memory_kwargs = _memory_extract_settings(
++            cfg, is_ref_usable=self._providers.is_model_ref_usable
++        )
++        if "memory_aux_model_enabled" not in _HARNESS_AGENT_CONFIG_FIELDS:
++            memory_kwargs.pop("memory_aux_model_enabled", None)
++        default_model, memory_kwargs = memory_model_settings_for_agent(
++            user_id=row.user_id,
++            allowed_models=allowed_models_for_agent_owner(
++                self._repos.user_policy_repo, self._repos.user_repo, row.user_id
++            ),
++            explicit_default_model=lambda: self._providers.resolve_explicit_default_model(row, cfg),
++            fallback_model_ref=self.resolve_fallback_model_ref,
++            memory_kwargs=memory_kwargs,
++            log_warning=logger.warning,
++        )
++
+         harness_cfg = HarnessAgentConfig(
+             name=_memory_namespace(row.agent_id),
+             workspace_dir=harness_workspace,
+@@ -3366,10 +3398,8 @@ class AgentManager:
+             # first, else first usable) — so promotion works whenever chat does.
+             # Per-turn AUTO routing is unaffected: the gateway resolves models via
+             # ``resolve_explicit_default_model`` directly.
+-            default_model=(
+-                self._providers.resolve_explicit_default_model(row, cfg)
+-                or self.resolve_fallback_model_ref()
+-            ),
++            default_model=default_model,
++            **memory_kwargs,
+             system_prompt=system_prompt,
+             memory=memory,
+             backend=harness_backend,  # spec, or live OpenSandbox instance
+@@ -3384,7 +3414,6 @@ class AgentManager:
+             default_timezone=self._config.default_timezone,
+             log_dir=str(self.paths.logs_dir),
+             media_generation=self._media_generation.harness_config(),
+-            **_memory_extract_settings(cfg, is_ref_usable=self._providers.is_model_ref_usable),
+             **_resolve_memory_backend_kwargs(cfg, workspace_dir=workspace_dir, config=self._config),
+         )
+         if "tools_disabled" in _HARNESS_AGENT_CONFIG_FIELDS:
 diff --git a/src/octop/infra/agents/providers/store.py b/src/octop/infra/agents/providers/store.py
 index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e93d46fa1 100644
 --- a/src/octop/infra/agents/providers/store.py
@@ -587,31 +699,62 @@ index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e
  
      def is_model_ref_usable(self, ref: str) -> bool:
 diff --git a/src/octop/infra/cron/delivery.py b/src/octop/infra/cron/delivery.py
-index a0017279889bf47d539afbeb36b2b93eda32df04..c62c00e3c96d28d15904aad69eb119d0099ba69e 100644
+index a0017279889bf47d539afbeb36b2b93eda32df04..3439d25867a2a755b7b16f5042fde37d95c4d447 100644
 --- a/src/octop/infra/cron/delivery.py
 +++ b/src/octop/infra/cron/delivery.py
-@@ -218,11 +218,29 @@ class CronDeliveryService:
+@@ -218,11 +218,60 @@ class CronDeliveryService:
  
          row = self._agent_manager.get_row(command.agent_id)
          default_model = (row.default_model if row is not None else None) or None
 +        # ZBS: the cron model must sit inside the job owner's allowed_models
-+        # whitelist (no policy set = unrestricted, official behavior). A
-+        # non-whitelisted stored model is dropped so the harness falls back
-+        # to routing (composer context still carries it for display only).
++        # whitelist (no policy set = unrestricted, official behavior). The
++        # model is picked exactly like a conversation turn: the stored model
++        # when whitelisted and usable, else the agent default when whitelisted
++        # and usable, else the global fallback (whitelist-aware). When a
++        # whitelist is set and nothing resolves, the run fails with a clear
++        # localized reason — never a non-whitelisted model.
 +        cron_model = command.model
-+        if cron_model is not None:
-+            from octop.infra.agents.providers.store import (  # noqa: PLC0415
-+                model_ref_passes_allowlist,
-+            )
-+            from octop.infra.users.resource_policy import (  # noqa: PLC0415
-+                allowed_models_for_user_id,
-+            )
++        from octop.infra.agents.providers.store import (  # noqa: PLC0415
++            model_ref_passes_allowlist,
++        )
++        from octop.infra.users.resource_policy import (  # noqa: PLC0415
++            allowed_models_for_user_id,
++        )
 +
-+            allowed = allowed_models_for_user_id(
-+                self._repos.user_policy_repo, self._repos.user_repo, session.user_id
-+            )
-+            if not model_ref_passes_allowlist(cron_model, allowed):
++        allowed = allowed_models_for_user_id(
++            self._repos.user_policy_repo, self._repos.user_repo, session.user_id
++        )
++        if allowed is not None:
++            providers = self._agent_manager.providers
++            if cron_model is not None and not (
++                model_ref_passes_allowlist(cron_model, allowed)
++                and providers.is_model_ref_usable(cron_model)
++            ):
 +                cron_model = None
++            if cron_model is None and default_model is not None:
++                cron_model = default_model
++                if not (
++                    model_ref_passes_allowlist(cron_model, allowed)
++                    and providers.is_model_ref_usable(cron_model)
++                ):
++                    cron_model = None
++            if cron_model is None:
++                fallback = self._agent_manager.resolve_fallback_model_ref(allowed)
++                cron_model = (
++                    fallback.strip() if isinstance(fallback, str) and fallback.strip() else None
++                )
++            if cron_model is None:
++                from octop.infra.errors import ErrorCode, OctopError  # noqa: PLC0415
++
++                locale = resolve_user_locale(
++                    user_repo=self._repos.user_repo,
++                    user_id=session.user_id,
++                    channel_type=session.channel_type,
++                )
++                raise OctopError.localized(
++                    ErrorCode.NO_ALLOWED_MODEL_AVAILABLE,
++                    locale,
++                )
          composer = build_composer_context(
              mcp_servers=servers or None,
              skills=None,
@@ -621,7 +764,7 @@ index a0017279889bf47d539afbeb36b2b93eda32df04..c62c00e3c96d28d15904aad69eb119d0
              default_model=default_model,
          )
          message_kwargs = {COMPOSER_CTX_KEY: composer} if composer else None
-@@ -233,7 +251,7 @@ class CronDeliveryService:
+@@ -233,7 +282,7 @@ class CronDeliveryService:
              session_key=command.session_key,
              source=session.channel_type,
              text=command.prompt,
@@ -630,8 +773,30 @@ index a0017279889bf47d539afbeb36b2b93eda32df04..c62c00e3c96d28d15904aad69eb119d0
              message_kwargs=message_kwargs,
          )
          if servers:
+diff --git a/src/octop/infra/errors.py b/src/octop/infra/errors.py
+index 3db15702e07c19c97c813134e707df63b9891101..73e379714578e0a216647f6b9cbfdeeba13eaef1 100644
+--- a/src/octop/infra/errors.py
++++ b/src/octop/infra/errors.py
+@@ -117,6 +117,8 @@ class ErrorCode(StrEnum):
+     KNOWLEDGE_UNSUPPORTED_TYPE = "KNOWLEDGE_UNSUPPORTED_TYPE"
+     KNOWLEDGE_NAME_TAKEN = "KNOWLEDGE_NAME_TAKEN"
+     KNOWLEDGE_NAME_INVALID = "KNOWLEDGE_NAME_INVALID"
++    MODEL_NOT_ALLOWED = "MODEL_NOT_ALLOWED"
++    NO_ALLOWED_MODEL_AVAILABLE = "NO_ALLOWED_MODEL_AVAILABLE"
+     AVATAR_INVALID = "AVATAR_INVALID"
+     AVATAR_TOO_LARGE = "AVATAR_TOO_LARGE"
+     INVITE_INVALID = "INVITE_INVALID"
+@@ -247,6 +249,8 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
+     ErrorCode.KNOWLEDGE_UNSUPPORTED_TYPE: 400,
+     ErrorCode.KNOWLEDGE_NAME_TAKEN: 409,
+     ErrorCode.KNOWLEDGE_NAME_INVALID: 400,
++    ErrorCode.MODEL_NOT_ALLOWED: 403,
++    ErrorCode.NO_ALLOWED_MODEL_AVAILABLE: 403,
+     ErrorCode.AVATAR_INVALID: 400,
+     ErrorCode.AVATAR_TOO_LARGE: 413,
+     ErrorCode.INVITE_INVALID: 400,
 diff --git a/src/octop/infra/gateway/process/processor.py b/src/octop/infra/gateway/process/processor.py
-index eb229f88c3511917deaa2caac96dcc156f72e43b..e946039023518c0dbee988b11d0b23a80fb077c3 100644
+index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d8d520eba 100644
 --- a/src/octop/infra/gateway/process/processor.py
 +++ b/src/octop/infra/gateway/process/processor.py
 @@ -22,6 +22,7 @@ from octop_harness.teams.util import PeerCall, PeerSession
@@ -642,15 +807,26 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..e946039023518c0dbee988b11d0b23a8
  from octop.infra.agents.settings.profile import parse_config_json
  from octop.infra.agents.teams import is_team_agent
  from octop.infra.agents.teams.team_manager import (
-@@ -528,8 +529,15 @@ class GlobalProcessor:
+@@ -30,7 +31,7 @@ from octop.infra.agents.teams.team_manager import (
+ from octop.infra.agents.teams.team_manager import (
+     stamp_team_host_chunk as _maybe_stamp_team_host,
+ )
+-from octop.infra.errors import OctopError
++from octop.infra.errors import ErrorCode, OctopError
+ from octop.infra.gateway.cli.events import message_event_to_cli_chunks
+ from octop.infra.gateway.hitl.coordinator import (
+     HitlAnswerOutcome,
+@@ -528,8 +529,17 @@ class GlobalProcessor:
          - Stale overrides (deleted / disabled catalog refs) are dropped so routing
            falls through to a usable expert default or harness AUTO.
          - When a model is passed and the turn needs vision, upgrade to a vision ref.
 +        - ZBS: candidates outside the user's ``allowed_models`` whitelist are
 +          dropped at every priority level; the vision upgrade and the global
-+          fallback also only pick whitelisted models. When none of the
-+          whitelisted models resolves, ``None`` is returned (harness AUTO
-+          surfaces a clear routing error) — never a non-whitelisted model.
++          fallback also only pick whitelisted models. When a whitelist is set
++          and none of its models resolves, ``NO_ALLOWED_MODEL_AVAILABLE`` is
++          raised so the turn stops with a clear, localized reason — never a
++          non-whitelisted model. Without a whitelist ``None`` is returned
++          (harness AUTO) exactly as official.
          """
          providers = self._agent_manager.providers
 +        allowed_models = self._allowed_models_for_user(user_id)
@@ -658,7 +834,7 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..e946039023518c0dbee988b11d0b23a8
          thread_model = self._agent_manager.get_thread_model(agent_id, thread_id)
          thread_row = self._thread_registry.get_thread(thread_id)
          model_ref = self._model_ref_from_meta(
-@@ -539,6 +547,8 @@ class GlobalProcessor:
+@@ -539,6 +549,8 @@ class GlobalProcessor:
          )
          if model_ref and not providers.is_model_ref_usable(model_ref):
              model_ref = None
@@ -667,7 +843,7 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..e946039023518c0dbee988b11d0b23a8
          if not model_ref:
              row = self._agent_repo.get(agent_id)
              if row is not None:
-@@ -546,6 +556,8 @@ class GlobalProcessor:
+@@ -546,6 +558,8 @@ class GlobalProcessor:
                      row,
                      self._agent_manager.get_config(agent_id),
                  )
@@ -676,7 +852,7 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..e946039023518c0dbee988b11d0b23a8
          if not model_ref:
              user_row = self._user_repo.get(user_id)
              preferred = get_preferred_model_from_json(
-@@ -553,16 +565,34 @@ class GlobalProcessor:
+@@ -553,15 +567,44 @@ class GlobalProcessor:
              )
              if preferred and self._agent_manager.providers.is_model_ref_usable(preferred):
                  model_ref = preferred
@@ -687,13 +863,25 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..e946039023518c0dbee988b11d0b23a8
 +            fallback = self._agent_manager.resolve_fallback_model_ref(allowed_models)
              model_ref = fallback.strip() if isinstance(fallback, str) and fallback.strip() else None
          if not model_ref:
++            if allowed_models is not None:
++                raise OctopError(
++                    ErrorCode.NO_ALLOWED_MODEL_AVAILABLE,
++                    "no usable model in the user's allowed_models whitelist",
++                )
              return None
-         return providers.resolve_model_for_multimodal_turn(
+-        return providers.resolve_model_for_multimodal_turn(
++        resolved = providers.resolve_model_for_multimodal_turn(
              model_ref,
              needs_multimodal=needs_multimodal,
 +            allowed_models=allowed_models,
          )
- 
++        if resolved is None and allowed_models is not None:
++            raise OctopError(
++                ErrorCode.NO_ALLOWED_MODEL_AVAILABLE,
++                "no usable model in the user's allowed_models whitelist",
++            )
++        return resolved
++
 +    def _allowed_models_for_user(self, user_id: int) -> list[str] | None:
 +        """ZBS: the ``allowed_models`` whitelist for *user_id* (None = unrestricted).
 +
@@ -708,10 +896,77 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..e946039023518c0dbee988b11d0b23a8
 +        if policy_repo is None:
 +            return None
 +        return allowed_models_for_user_id(policy_repo, self._user_repo, user_id)
-+
+ 
      def _resolve_reasoning_overrides(
          self,
-         *,
+@@ -759,13 +802,20 @@ class GlobalProcessor:
+             media_backend=media_backend,
+             locale=locale,
+         )
+-        model_ref = self._resolve_harness_model(
+-            agent_id,
+-            thread_id,
+-            None,
+-            user_id=user_id,
+-            needs_multimodal=content_blocks_need_vision(content),
+-        )
++        try:
++            model_ref = self._resolve_harness_model(
++                agent_id,
++                thread_id,
++                None,
++                user_id=user_id,
++                needs_multimodal=content_blocks_need_vision(content),
++            )
++        except OctopError as exc:
++            # ZBS: the whitelist blocked every candidate — stop the turn with
++            # the localized reason instead of silently routing elsewhere.
++            yield MessageEvent.error_event(exc.localized_message(locale))
++            yield MessageEvent.completed()
++            return
+         mcp_servers = await self._resolve_turn_mcp_servers(
+             agent_id=agent_id,
+             user_id=user_id,
+@@ -1088,14 +1138,31 @@ class GlobalProcessor:
+             )
+ 
+         self._hitl.expire_pending_for_thread(thread_id, agent_id=agent_id, user_id=user_id)
+-        request = await self._build_dashboard_request(
+-            msg,
+-            agent_id=agent_id,
+-            user_id=user_id,
+-            session_key=session_key,
+-            thread_id=thread_id,
+-            meta=meta,
+-        )
++        try:
++            request = await self._build_dashboard_request(
++                msg,
++                agent_id=agent_id,
++                user_id=user_id,
++                session_key=session_key,
++                thread_id=thread_id,
++                meta=meta,
++            )
++        except OctopError as exc:
++            # ZBS: the whitelist blocked every candidate — stop the turn with
++            # the localized reason instead of silently routing elsewhere.
++            if exc.code == ErrorCode.NO_ALLOWED_MODEL_AVAILABLE:
++                yield _maybe_stamp_team_host(
++                    {
++                        "type": "error",
++                        "message": exc.localized_message(locale),
++                        "error_code": exc.code.value,
++                    },
++                    agent_id,
++                    team_host,
++                )
++                yield _maybe_stamp_team_host(self._done_chunk(thread_id), agent_id, team_host)
++                return
++            raise
+         history_tracker = await self._begin_history(agent_id, thread_id, request)
+         await self._observe_turn_start_context(
+             agent_id=agent_id,
 diff --git a/src/octop/infra/users/manager.py b/src/octop/infra/users/manager.py
 index 23f7343bec564ff2e7664aabe11cf6485915b87a..13fad549019b2d343f668487309f32d0d95ce276 100644
 --- a/src/octop/infra/users/manager.py
@@ -777,18 +1032,19 @@ index 23f7343bec564ff2e7664aabe11cf6485915b87a..13fad549019b2d343f668487309f32d0
          row = self._services.user_repo.get_by_username(username)
          if row is None:
 diff --git a/src/octop/infra/users/resource_policy.py b/src/octop/infra/users/resource_policy.py
-index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..21d89a2e91f80ff791b19eecd0329ef5996b0d37 100644
+index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..193f5587d563033c9c8720331676281e72d622c7 100644
 --- a/src/octop/infra/users/resource_policy.py
 +++ b/src/octop/infra/users/resource_policy.py
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,8 @@
  
  from __future__ import annotations
  
++import collections.abc
 +import json
  import os
  from collections.abc import Mapping, Sequence
  from typing import Any
-@@ -89,6 +90,82 @@ def max_agents_of(raw: Any) -> int | None:
+@@ -89,6 +91,84 @@ def max_agents_of(raw: Any) -> int | None:
          return None
  
  
@@ -824,7 +1080,9 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..21d89a2e91f80ff791b19eecd0329ef5
 +    """Validate and canonicalize an ``allowed_models`` request value.
 +
 +    ``None`` / empty clears the policy (unrestricted). Every entry must be a
-+    ``provider/model`` ref; duplicates collapse preserving order.
++    ``provider/model`` ref (model ids may contain ``/``, cf. official
++    ``providers/store.py::is_model_ref_usable``); duplicates collapse
++    preserving order.
 +    """
 +    if raw is None:
 +        return None
@@ -835,7 +1093,7 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..21d89a2e91f80ff791b19eecd0329ef5
 +        if not ref:
 +            continue
 +        provider_name, _, model_id = ref.partition("/")
-+        if not provider_name or not model_id or "/" in model_id:
++        if not provider_name or not model_id:
 +            raise OctopError(
 +                ErrorCode.FORBIDDEN,
 +                f"allowed_models entries must be 'provider/model' refs, got: {ref!r}",
@@ -871,7 +1129,7 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..21d89a2e91f80ff791b19eecd0329ef5
  def public_policy_fields(rows: Sequence[Any] | Mapping[str, str] | None) -> dict[str, Any]:
      """HTTP-facing subset of known policies (disabled / missing = unlimited)."""
      by_name: dict[str, str] = {}
-@@ -104,6 +181,7 @@ def public_policy_fields(rows: Sequence[Any] | Mapping[str, str] | None) -> dict
+@@ -104,6 +184,7 @@ def public_policy_fields(rows: Sequence[Any] | Mapping[str, str] | None) -> dict
          "workspace_root_dir": workspace_root_dir_of(by_name),
          "token_quota": token_quota_of(by_name.get(POLICY_TOKEN_QUOTA)),
          "max_agents": max_agents_of(by_name.get(POLICY_MAX_AGENTS)),
@@ -879,7 +1137,7 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..21d89a2e91f80ff791b19eecd0329ef5
      }
  
  
-@@ -205,3 +283,46 @@ def assert_agent_quota_available(policy_repo: Any, agent_repo: Any, user_id: int
+@@ -205,3 +286,129 @@ def assert_agent_quota_available(policy_repo: Any, agent_repo: Any, user_id: int
              "agent quota exceeded",
              details={"used": owned, "quota": limit},
          )
@@ -918,20 +1176,103 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..21d89a2e91f80ff791b19eecd0329ef5
 +    user_id: int,
 +    ref: str,
 +) -> None:
-+    """Raise ``FORBIDDEN`` when *ref* is outside the user's model whitelist."""
++    """Raise ``MODEL_NOT_ALLOWED`` when *ref* is outside the user's model whitelist."""
 +    allowed = allowed_models_for_user_id(policy_repo, user_repo, user_id)
 +    if not model_ref_is_allowed(ref, allowed):
 +        raise OctopError(
-+            ErrorCode.FORBIDDEN,
++            ErrorCode.MODEL_NOT_ALLOWED,
 +            "model is not in this user's allowed models",
 +            details={"model": ref, "allowed_models": list(allowed or [])},
 +        )
++
++
++# ZBS: the two whitelist error codes that must reach the user as the
++# localized per-scenario sentence; every other OctopError keeps its original
++# display (str(exc)) in the chat transports.
++_MODEL_POLICY_ERROR_CODES = frozenset(
++    {ErrorCode.MODEL_NOT_ALLOWED, ErrorCode.NO_ALLOWED_MODEL_AVAILABLE}
++)
++
++
++def model_policy_error_text(exc: OctopError, user_row: Any) -> str:
++    """Localized sentence for the two whitelist errors; ``None``-like passthrough otherwise.
++
++    Chat transports (dashboard WS / bridge) call this instead of localizing
++    every ``OctopError``: for any other code the caller keeps the official
++    ``str(exc)`` display.
++    """
++    if exc.code not in _MODEL_POLICY_ERROR_CODES:
++        return str(exc)
++    from octop.infra.utils.locale import locale_from_user_row  # noqa: PLC0415
++
++    return exc.localized_message(locale_from_user_row(user_row))
++
++
++# ZBS patch 20 (feature 4): background memory distillation must respect the
++# agent owner's model whitelist. Called from AgentManager's harness-config
++# builder; all agent-side inputs arrive as callables so this module keeps no
++# dependency on the agents package.
++def memory_model_settings_for_agent(
++    *,
++    user_id: int | None,
++    allowed_models: Sequence[str] | None,
++    explicit_default_model: collections.abc.Callable[[], str | None],
++    fallback_model_ref: collections.abc.Callable[[Sequence[str] | None], str | None],
++    memory_kwargs: dict[str, Any],
++    log_warning: collections.abc.Callable[[str, object], None] | None = None,
++) -> tuple[str | None, dict[str, Any]]:
++    """Whitelist-aware ``(default_model, memory kwargs)`` for the harness config.
++
++    No whitelist (``None``, admin / unknown owner) keeps official behavior
++    unchanged: explicit default first, else the site-wide fallback. With a
++    whitelist:
++
++    - the default model is picked inside the whitelist (explicit default when
++      whitelisted, else the whitelist-restricted fallback);
++    - when none of the whitelisted models is usable, an empty default_model
++      would make the harness silently fall back to the first enabled model of
++      ANY provider (``HarnessAgentConfig.pick_default_model_ref``), so the aux
++      memory LLM is switched off instead — distillation is skipped, capture
++      and raw recall still work;
++    - a non-whitelisted ``memory.aux_model`` override is dropped so extraction
++      cannot escape the whitelist via the aux tier.
++    """
++    default_model = explicit_default_model()
++    if allowed_models is None:
++        return default_model or fallback_model_ref(None), memory_kwargs
++    if not model_ref_is_allowed(default_model or "", allowed_models):
++        default_model = None
++    default_model = default_model or fallback_model_ref(allowed_models)
++    if default_model is None:
++        memory_kwargs["memory_aux_model_enabled"] = False
++    aux_ref = memory_kwargs.get("memory_aux_light_model")
++    if aux_ref is not None and not model_ref_is_allowed(aux_ref, allowed_models):
++        if log_warning is not None:
++            log_warning(
++                "memory aux_model %r is outside the agent owner's model "
++                "whitelist; dropping it so extraction stays whitelisted",
++                aux_ref,
++            )
++        memory_kwargs.pop("memory_aux_light_model", None)
++        memory_kwargs.pop("memory_aux_heavy_model", None)
++    return default_model, memory_kwargs
++
++
++def allowed_models_for_agent_owner(
++    policy_repo: Any,
++    user_repo: Any,
++    user_id: int | None,
++) -> Sequence[str] | None:
++    """Whitelist of an agent owner; ``None`` for shared agents (no owner)."""
++    if user_id is None:
++        return None
++    return allowed_models_for_user_id(policy_repo, user_repo, user_id)
 diff --git a/tests/integration/test_model_policy_api.py b/tests/integration/test_model_policy_api.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c94edcc26
+index 0000000000000000000000000000000000000000..f626f2104cfe437c424ecd5edcda647fab5819a5
 --- /dev/null
 +++ b/tests/integration/test_model_policy_api.py
-@@ -0,0 +1,377 @@
+@@ -0,0 +1,537 @@
 +"""ZBS patch 20 — allowed_models HTTP surface (F7/F9/F11 + F8 entry checks)."""
 +
 +from __future__ import annotations
@@ -939,8 +1280,6 @@ index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c
 +import json
 +
 +from tests.support.auth import (
-+    auth_header,
-+    bootstrap_admin,
 +    create_user,
 +    resolve_user_id,
 +    seed_openai_provider,
@@ -1096,9 +1435,7 @@ index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c
 +
 +    # Switching to the plain user role clears the whitelist (full replace).
 +    uid = r.json()["id"]
-+    r = await c.patch(
-+        f"/api/users/{uid}", headers=auth, json={"role": "user"}
-+    )
++    r = await c.patch(f"/api/users/{uid}", headers=auth, json={"role": "user"})
 +    assert r.status_code == 200, r.text
 +    assert r.json()["allowed_models"] is None
 +    assert r.json()["token_quota"] is None
@@ -1168,27 +1505,20 @@ index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c
 +    assert r.status_code == 200, r.text
 +
 +    # Inside the whitelist: accepted.
-+    r = await c.patch(
-+        "/api/preferences", headers=alice, json={"preferred_model": "openai/gpt-4o"}
-+    )
++    r = await c.patch("/api/preferences", headers=alice, json={"preferred_model": "openai/gpt-4o"})
 +    assert r.status_code == 200, r.text
 +    assert r.json()["preferred_model"] == "openai/gpt-4o"
 +
-+    # Outside the whitelist: 403 with a clear error code (message is the
-+    # localized generic FORBIDDEN text; details carry the model + whitelist).
-+    r = await c.patch(
-+        "/api/preferences", headers=alice, json={"preferred_model": "second/m2"}
-+    )
++    # Outside the whitelist: 403 with MODEL_NOT_ALLOWED and the localized reason.
++    r = await c.patch("/api/preferences", headers=alice, json={"preferred_model": "second/m2"})
 +    assert r.status_code == 403, r.text
-+    assert r.json()["error"]["code"] == "FORBIDDEN"
++    assert r.json()["error"]["code"] == "MODEL_NOT_ALLOWED"
 +    assert r.json()["error"]["details"]["model"] == "second/m2"
 +    assert r.json()["error"]["details"]["allowed_models"] == ["openai/gpt-4o"]
 +
 +    # Unrestricted user: official behavior (any enabled model).
 +    bob = await create_user(c, auth, username="bob")
-+    r = await c.patch(
-+        "/api/preferences", headers=bob, json={"preferred_model": "second/m2"}
-+    )
++    r = await c.patch("/api/preferences", headers=bob, json={"preferred_model": "second/m2"})
 +    assert r.status_code == 200, r.text
 +
 +
@@ -1232,6 +1562,7 @@ index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c
 +        json={"model": "second/m2"},
 +    )
 +    assert r.status_code == 403, r.text
++    assert r.json()["error"]["code"] == "MODEL_NOT_ALLOWED"
 +
 +    # Creating with a non-whitelisted model is rejected.
 +    r = await c.post(
@@ -1272,19 +1603,88 @@ index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c
 +    assert r.status_code == 200, r.text
 +
 +    async with ws_connect(c._octop_app, chat_ws_path(agent_id, alice)) as ws:
-+        await ws.send_json(
-+            {"type": "user_turn", "text": "hi", "default_model": "second/m2"}
-+        )
++        await ws.send_json({"type": "user_turn", "text": "hi", "default_model": "second/m2"})
 +        frame = await asyncio.wait_for(ws.receive_json(), timeout=10)
 +        assert frame.get("type") == "error"
-+        assert "allowed models" in frame.get("message", "")
++        assert "你没有使用这个模型的权限，请联系管理员。" in frame.get("message", "")
 +
 +    async with ws_connect(c._octop_app, chat_ws_path(agent_id, alice)) as ws:
-+        await ws.send_json(
-+            {"type": "user_turn", "text": "hi", "default_model": "openai/gpt-4o"}
-+        )
++        await ws.send_json({"type": "user_turn", "text": "hi", "default_model": "openai/gpt-4o"})
 +        frame = await asyncio.wait_for(ws.receive_json(), timeout=10)
 +        assert frame.get("type") != "error"
++
++
++async def test_slash_model_ids_saved_everywhere(env) -> None:
++    """Model ids containing "/" save via role template, single user and batch."""
++    c, _srv, auth = env
++    await _seed_providers(c, auth)
++    slash_ref = "Aliyun api/ZHIPU/GLM-5.3-Flash"
++    r = await c.post(
++        "/api/admin/providers",
++        headers=auth,
++        json={
++            "name": "Aliyun api",
++            "kind": "openai",
++            "base_url": "https://aliyun.example/v1",
++            "api_key": "k3",
++            "models": [
++                {
++                    "id": "ZHIPU/GLM-5.3-Flash",
++                    "name": "GLM-5.3-Flash",
++                    "enabled": True,
++                    "input": ["text"],
++                    "thinking": False,
++                }
++            ],
++        },
++    )
++    assert r.status_code == 201, r.text
++
++    # Role template.
++    r = await c.post(
++        "/api/users/roles",
++        headers=auth,
++        json={
++            "user_role_name": "带斜杠",
++            "permissions": [],
++            "policies": [{"name": "allowed_models", "value": json.dumps([slash_ref])}],
++        },
++    )
++    assert r.status_code == 201, r.text
++    assert r.json()["allowed_models"] == [slash_ref]
++    role_id = r.json()["user_role_id"]
++
++    # Single user: create with the role, then PATCH keeps the ref.
++    r = await c.post(
++        "/api/users",
++        headers=auth,
++        json={
++            "username": "slash-user",
++            "password": "TestPass12",
++            "role": role_id,
++        },
++    )
++    assert r.status_code == 201, r.text
++    assert r.json()["allowed_models"] == [slash_ref]
++    uid = r.json()["id"]
++    r = await c.patch(f"/api/users/{uid}", headers=auth, json={"allowed_models": [slash_ref]})
++    assert r.status_code == 200, r.text
++    assert r.json()["allowed_models"] == [slash_ref]
++
++    # Batch set.
++    r = await c.post(
++        "/api/users/batch",
++        headers=auth,
++        json={
++            "user_ids": [uid],
++            "action": "set_allowed_models",
++            "allowed_models": [slash_ref],
++        },
++    )
++    assert r.status_code == 200, r.text
++    assert r.json()["succeeded"] == 1
++    rows = {u["username"]: u for u in (await c.get("/api/users", headers=auth)).json()}
++    assert rows["slash-user"]["allowed_models"] == [slash_ref]
 +
 +
 +async def test_admin_never_restricted(env) -> None:
@@ -1296,19 +1696,302 @@ index 0000000000000000000000000000000000000000..ca3602544966564a550afd8fedcfc90c
 +    from octop.infra.users.resource_policy import POLICY_ALLOWED_MODELS
 +
 +    srv_admin = env[1]
-+    srv_admin.services.user_policy_repo.set(
-+        me["id"], POLICY_ALLOWED_MODELS, '["openai/gpt-4o"]'
-+    )
++    srv_admin.services.user_policy_repo.set(me["id"], POLICY_ALLOWED_MODELS, '["openai/gpt-4o"]')
 +
 +    r = await c.get("/api/providers/resolved", headers=auth)
 +    assert {f"{m['provider_name']}/{m['model']}" for m in r.json()} == {
 +        "openai/gpt-4o",
 +        "second/m2",
 +    }
++    r = await c.patch("/api/preferences", headers=auth, json={"preferred_model": "second/m2"})
++    assert r.status_code == 200, r.text
++
++
++async def test_turn_stops_when_whitelisted_models_unusable(env) -> None:
++    """Auto turn with no usable whitelisted model stops with the localized reason."""
++    import asyncio
++
++    from tests.support.http import chat_ws_path, ws_connect
++
++    c, srv, auth = env
++    await _seed_providers(c, auth)
++    alice = await create_user(c, auth, username="alice")
++    alice_id = await resolve_user_id(c, auth, "alice")
++
++    r = await c.post(
++        "/api/agents",
++        headers=alice,
++        json={"name": "alice-auto", "config": {"providers": ["openai"]}},
++    )
++    assert r.status_code == 201, r.text
++    agent_id = r.json()["agent_id"]
++
 +    r = await c.patch(
-+        "/api/preferences", headers=auth, json={"preferred_model": "second/m2"}
++        f"/api/users/{alice_id}", headers=auth, json={"allowed_models": ["second/m2"]}
 +    )
 +    assert r.status_code == 200, r.text
++
++    # Admin disables the only whitelisted model (provider "second" -> m2 off).
++    providers = (await c.get("/api/admin/providers", headers=auth)).json()
++    second = next(row for row in providers if row["name"] == "second")
++    m2 = next(m for m in second["models"] if m["id"] == "m2")
++    r = await c.patch(
++        f"/api/admin/providers/{second['id']}",
++        headers=auth,
++        json={"models": [{**m2, "enabled": False}]},
++    )
++    assert r.status_code == 200, r.text
++
++    # A turn with no explicit model ("auto") must stop with the localized
++    # NO_ALLOWED_MODEL_AVAILABLE reason, not fall back to openai/gpt-4o.
++    async with ws_connect(c._octop_app, chat_ws_path(agent_id, alice)) as ws:
++        await ws.send_json({"type": "user_turn", "text": "hi"})
++        frames = []
++        while True:
++            frame = await asyncio.wait_for(ws.receive_json(), timeout=10)
++            frames.append(frame)
++            if frame.get("type") == "done":
++                break
++    errors = [f for f in frames if f.get("type") == "error"]
++    assert errors, frames
++    assert "你可用的模型当前都无法使用" in errors[0].get("message", "")
++
++
++async def test_cron_stops_when_whitelisted_models_unusable(env) -> None:
++    """A cron run with no usable whitelisted model fails with the localized reason."""
++    c, srv, auth = env
++    await _seed_providers(c, auth)
++    alice = await create_user(c, auth, username="alice")
++    alice_id = await resolve_user_id(c, auth, "alice")
++
++    r = await c.post(
++        "/api/agents",
++        headers=alice,
++        json={"name": "alice-cron", "config": {"providers": ["openai"]}},
++    )
++    assert r.status_code == 201, r.text
++    agent_id = r.json()["agent_id"]
++
++    r = await c.patch(
++        f"/api/users/{alice_id}", headers=auth, json={"allowed_models": ["second/m2"]}
++    )
++    assert r.status_code == 200, r.text
++
++    r = await c.post(
++        f"/api/agents/{agent_id}/cron",
++        headers=alice,
++        json={"name": "auto", "prompt": "hi", "trigger": "interval:60", "task_type": "agent"},
++    )
++    assert r.status_code == 201, r.text
++    cron_id = r.json()["id"]
++
++    providers = (await c.get("/api/admin/providers", headers=auth)).json()
++    second = next(row for row in providers if row["name"] == "second")
++    m2 = next(m for m in second["models"] if m["id"] == "m2")
++    r = await c.patch(
++        f"/api/admin/providers/{second['id']}",
++        headers=auth,
++        json={"models": [{**m2, "enabled": False}]},
++    )
++    assert r.status_code == 200, r.text
++
++    r = await c.post(f"/api/agents/{agent_id}/cron/{cron_id}/run-now", headers=alice)
++    assert r.status_code == 204, r.text
++
++    # The run must be recorded as failed with the localized reason.
++    import time
++
++    row = None
++    for _ in range(50):
++        jobs = (await c.get(f"/api/agents/{agent_id}/cron", headers=alice)).json()
++        row = next(j for j in jobs if j["id"] == cron_id)
++        if row.get("last_status"):
++            break
++        time.sleep(0.2)
++    assert row is not None and row["last_status"] == "error", row
++    assert "你可用的模型当前都无法使用" in (row.get("last_error") or ""), row
+diff --git a/tests/unit/agents/test_memory_model_policy.py b/tests/unit/agents/test_memory_model_policy.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ee41b7f93188e175c287655c36733b815df4d69
+--- /dev/null
++++ b/tests/unit/agents/test_memory_model_policy.py
+@@ -0,0 +1,176 @@
++"""ZBS patch 20 (feature 4): memory distillation respects the owner's model whitelist.
++
++Covers ``AgentManager._build_harness_config``:
++
++- whitelisted owner: harness ``default_model`` picked inside the whitelist
++  (pinned explicit default when whitelisted, else whitelist-restricted fallback);
++- whitelisted owner, no usable whitelisted model: ``memory_aux_model_enabled``
++  is switched off instead of falling back to a non-whitelisted model
++  (harness ``pick_default_model_ref`` would otherwise pick the first enabled
++  model of ANY provider);
++- non-whitelisted ``memory.aux_model`` override is dropped so extraction
++  cannot escape the whitelist via the aux tier;
++- no whitelist / admin owner: official behavior unchanged.
++"""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++import pytest
++
++from octop.config import OctopConfig
++from octop.infra.agents.manager import AgentManager
++from octop.infra.db.migrate import run_migrations
++from octop.infra.db.pool import SqlitePool
++from octop.infra.db.repos.agents import AgentRow
++from octop.infra.db.services import build_shared_services
++from octop.infra.utils.paths import PathLayout
++
++
++@pytest.fixture
++def manager(tmp_path: Path) -> AgentManager:
++    paths = PathLayout(tmp_path / ".octop")
++    paths.ensure_root()
++    db = SqlitePool(paths.db)
++    run_migrations(db)
++    services = build_shared_services(db=db, paths=paths, config=OctopConfig())
++    return AgentManager(repos=services.repos, paths=services.paths)
++
++
++def _add_provider(manager: AgentManager, name: str, models: list[str]) -> None:
++    manager._repos.provider_repo.create(
++        name=name,
++        kind="openai",
++        base_url=f"https://{name}.example/v1",
++        api_key=f"sk-{name}",
++        models_json=json.dumps(
++            [
++                {"id": mid, "name": mid, "enabled": True, "input": ["text"], "thinking": False}
++                for mid in models
++            ]
++        ),
++    )
++
++
++def _seed_user(manager: AgentManager, *, role: str, name: str = "alice") -> int:
++    return manager._repos.user_repo.create(username=name, role=role, password_hash=None)
++
++
++def _row(
++    user_id: int, config_json: str | None = None, default_model: str | None = None
++) -> AgentRow:
++    return AgentRow(
++        id=1,
++        agent_id="01AGENT",
++        user_id=user_id,
++        name="bot",
++        description=None,
++        persona_mbti=None,
++        default_model=default_model,
++        system_prompt=None,
++        enabled=1,
++        config_json=config_json,
++        last_state=None,
++        last_error=None,
++        created_at=0,
++        updated_at=0,
++    )
++
++
++def test_whitelisted_owner_gets_whitelisted_default_model(manager: AgentManager) -> None:
++    _add_provider(manager, "a", ["m1", "m2"])
++    _add_provider(manager, "b", ["m3"])
++    manager._repos.settings_repo.set_active_model("b", "m3")  # site-wide default
++    uid = _seed_user(manager, role="user")
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m2"]))
++
++    cfg = manager._build_harness_config(_row(uid))
++
++    assert cfg.default_model == "a/m2"  # inside the whitelist, not b/m3
++    assert cfg.memory_aux_model_enabled is True
++    assert cfg.memory_aux_light_model is None
++
++
++def test_whitelisted_owner_pinned_default_outside_whitelist_falls_back_inside(
++    manager: AgentManager,
++) -> None:
++    _add_provider(manager, "a", ["m1"])
++    _add_provider(manager, "b", ["m3"])
++    uid = _seed_user(manager, role="user")
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1"]))
++
++    cfg = manager._build_harness_config(_row(uid, default_model="b/m3"))
++
++    assert cfg.default_model == "a/m1"
++
++
++def test_whitelisted_owner_no_usable_model_disables_memory_distillation(
++    manager: AgentManager,
++) -> None:
++    _add_provider(manager, "a", ["m1"])
++    _add_provider(manager, "b", ["m3"])
++    uid = _seed_user(manager, role="user")
++    # Whitelist points only at a provider that does not exist.
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["x/none"]))
++
++    cfg = manager._build_harness_config(_row(uid))
++
++    assert cfg.default_model is None
++    assert cfg.memory_aux_model_enabled is False
++
++
++def test_whitelisted_owner_non_whitelisted_aux_model_dropped(manager: AgentManager) -> None:
++    _add_provider(manager, "a", ["m1"])
++    _add_provider(manager, "b", ["m3"])
++    uid = _seed_user(manager, role="user")
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1"]))
++    config_json = json.dumps({"memory": {"aux_model": "b/m3"}})
++
++    cfg = manager._build_harness_config(_row(uid, config_json=config_json))
++
++    assert cfg.default_model == "a/m1"
++    assert cfg.memory_aux_light_model is None
++    assert cfg.memory_aux_heavy_model is None
++    assert cfg.memory_aux_model_enabled is True
++
++
++def test_whitelisted_owner_whitelisted_aux_model_kept(manager: AgentManager) -> None:
++    _add_provider(manager, "a", ["m1"])
++    uid = _seed_user(manager, role="user")
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1"]))
++    config_json = json.dumps({"memory": {"aux_model": "a/m1"}})
++
++    cfg = manager._build_harness_config(_row(uid, config_json=config_json))
++
++    assert cfg.memory_aux_light_model == "a/m1"
++    assert cfg.memory_aux_heavy_model == "a/m1"
++
++
++def test_no_whitelist_owner_behavior_unchanged(manager: AgentManager) -> None:
++    _add_provider(manager, "a", ["m1"])
++    _add_provider(manager, "b", ["m3"])
++    manager._repos.settings_repo.set_active_model("b", "m3")
++    uid = _seed_user(manager, role="user")
++
++    cfg = manager._build_harness_config(_row(uid))
++
++    assert cfg.default_model == "b/m3"  # official: site-wide active model
++    assert cfg.memory_aux_model_enabled is True
++
++
++def test_admin_owner_behavior_unchanged_even_with_whitelist_entry(
++    manager: AgentManager,
++) -> None:
++    _add_provider(manager, "a", ["m1"])
++    _add_provider(manager, "b", ["m3"])
++    manager._repos.settings_repo.set_active_model("b", "m3")
++    uid = _seed_user(manager, role="admin")
++    # Admins are never restricted; a stale policy row must not apply.
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1"]))
++
++    cfg = manager._build_harness_config(_row(uid))
++
++    assert cfg.default_model == "b/m3"
++    assert cfg.memory_aux_model_enabled is True
 diff --git a/tests/unit/agents/test_model_policy_store.py b/tests/unit/agents/test_model_policy_store.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..8f3000232490b7c3b479ab1cf071400cf1237b33
@@ -1478,19 +2161,21 @@ index c0428637b77ea13721e0f968d740a29073eec639..b2269af6c2acc685beeea055f38440b1
  
 diff --git a/tests/unit/gateway/test_model_policy_processor.py b/tests/unit/gateway/test_model_policy_processor.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..32506f312185d25f7bff62e899091571db2c3949
+index 0000000000000000000000000000000000000000..f83b424d573ff88e4def404c726cc6a0cae7e431
 --- /dev/null
 +++ b/tests/unit/gateway/test_model_policy_processor.py
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,155 @@
 +"""ZBS patch 20 — `_resolve_harness_model` allowlist filtering (F8 main chain)."""
 +
 +from __future__ import annotations
 +
 +import json
 +from typing import Any
-+from unittest.mock import MagicMock, patch
++from unittest.mock import MagicMock
 +
-+import octop.infra.gateway.process.processor as processor_module
++import pytest
++
++from octop.infra.errors import ErrorCode, OctopError
 +from octop.infra.gateway.process.processor import GlobalProcessor
 +from octop.infra.users.resource_policy import POLICY_ALLOWED_MODELS
 +
@@ -1521,9 +2206,7 @@ index 0000000000000000000000000000000000000000..32506f312185d25f7bff62e899091571
 +    providers = processor._agent_manager.providers
 +    providers.is_model_ref_usable.side_effect = lambda ref: True
 +    providers.resolve_explicit_default_model.side_effect = (
-+        None
-+        if agent_default_model is None
-+        else lambda row, cfg: agent_default_model
++        None if agent_default_model is None else lambda row, cfg: agent_default_model
 +    )
 +    # Pass-through unless the test overrides it.
 +    providers.resolve_model_for_multimodal_turn.side_effect = (
@@ -1551,12 +2234,8 @@ index 0000000000000000000000000000000000000000..32506f312185d25f7bff62e899091571
 +    repos.user_policy_repo = _Policies(allowed_models)
 +    processor._agent_manager._repos = repos
 +
-+    processor._agent_manager.resolve_fallback_model_ref.side_effect = (
-+        lambda allowed=None: (
-+            "fallback/model"
-+            if allowed is None or "fallback/model" in allowed
-+            else None
-+        )
++    processor._agent_manager.resolve_fallback_model_ref.side_effect = lambda allowed=None: (
++        "fallback/model" if allowed is None or "fallback/model" in allowed else None
 +    )
 +    return processor
 +
@@ -1591,9 +2270,22 @@ index 0000000000000000000000000000000000000000..32506f312185d25f7bff62e899091571
 +    assert resolved == "fallback/model"
 +
 +
-+def test_no_whitelisted_model_usable_returns_none() -> None:
-+    """Nothing in the whitelist resolves → None (clear failure, no silent swap)."""
++def test_no_whitelisted_model_usable_raises_no_allowed_model() -> None:
++    """Nothing in the whitelist resolves → NO_ALLOWED_MODEL_AVAILABLE (clear stop)."""
 +    p = _processor(allowed_models=["p/none"], preferred_model="p/other")
++    with pytest.raises(OctopError) as exc:
++        p._resolve_harness_model("a1", "t1", None, needs_multimodal=False)
++    assert exc.value.code is ErrorCode.NO_ALLOWED_MODEL_AVAILABLE
++    assert exc.value.status == 403
++
++
++def test_no_policy_none_still_means_harness_auto() -> None:
++    """Without a whitelist a failed resolution still returns None (official AUTO)."""
++    p = _processor(allowed_models=None, agent_default_model=None, preferred_model="p/gone")
++    providers = p._agent_manager.providers
++    providers.resolve_explicit_default_model.return_value = None
++    p._user_repo.get.return_value = MagicMock(preferences_json="{}")
++    p._agent_manager.resolve_fallback_model_ref.side_effect = lambda allowed=None: None
 +    assert p._resolve_harness_model("a1", "t1", None, needs_multimodal=False) is None
 +
 +
@@ -1611,6 +2303,18 @@ index 0000000000000000000000000000000000000000..32506f312185d25f7bff62e899091571
 +    )
 +
 +
++def test_multimodal_upgrade_blocked_by_allowlist_raises() -> None:
++    """Whitelist set and the vision upgrade picks nothing → NO_ALLOWED_MODEL_AVAILABLE."""
++    p = _processor(allowed_models=["p/ok"])
++    providers = p._agent_manager.providers
++    providers.resolve_model_for_multimodal_turn.side_effect = (
++        lambda ref, *, needs_multimodal, allowed_models=None: None
++    )
++    with pytest.raises(OctopError) as exc:
++        p._resolve_harness_model("a1", "t1", {"model": "p/ok"}, needs_multimodal=True)
++    assert exc.value.code is ErrorCode.NO_ALLOWED_MODEL_AVAILABLE
++
++
 +def test_admin_policy_row_is_ignored() -> None:
 +    """A stray policy row on an admin user does not restrict (whitelist reads None)."""
 +    p = _processor(allowed_models=["p/only"], is_admin=True)
@@ -1618,10 +2322,10 @@ index 0000000000000000000000000000000000000000..32506f312185d25f7bff62e899091571
 +    assert p._allowed_models_for_user(1) is None
 diff --git a/tests/unit/users/test_allowed_models_policy.py b/tests/unit/users/test_allowed_models_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..dc58aa379ad35f841a9faa2784f7d877c87c8df4
+index 0000000000000000000000000000000000000000..7551b1da0eb4607578706d58ecfa85ea0175c029
 --- /dev/null
 +++ b/tests/unit/users/test_allowed_models_policy.py
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,121 @@
 +"""ZBS patch 20 — allowed_models policy primitives (F7)."""
 +
 +from __future__ import annotations
@@ -1679,7 +2383,14 @@ index 0000000000000000000000000000000000000000..dc58aa379ad35f841a9faa2784f7d877
 +        normalize_allowed_models(["gpt-4o"])
 +    assert exc.value.code is ErrorCode.FORBIDDEN
 +    with pytest.raises(OctopError):
-+        normalize_allowed_models(["a/b/c"])
++        normalize_allowed_models(["/gpt-4o"])
++    with pytest.raises(OctopError):
++        normalize_allowed_models(["openai/"])
++    # Model ids containing "/" pass (first "/" splits provider/model).
++    assert normalize_allowed_models(["a/b/c"]) == ["a/b/c"]
++    assert normalize_allowed_models(["Aliyun api/ZHIPU/GLM-5.3-Flash"]) == [
++        "Aliyun api/ZHIPU/GLM-5.3-Flash"
++    ]
 +
 +
 +def test_allowed_models_json_roundtrip() -> None:
@@ -1726,7 +2437,8 @@ index 0000000000000000000000000000000000000000..dc58aa379ad35f841a9faa2784f7d877
 +    assert_model_allowed_for_user(policies, users, uid, "openai/gpt-4o")
 +    with pytest.raises(OctopError) as exc:
 +        assert_model_allowed_for_user(policies, users, uid, "anthropic/claude-4")
-+    assert exc.value.code is ErrorCode.FORBIDDEN
++    assert exc.value.code is ErrorCode.MODEL_NOT_ALLOWED
++    assert exc.value.status == 403
 +    assert exc.value.details["model"] == "anthropic/claude-4"
 +
 +

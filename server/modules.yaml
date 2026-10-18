@@ -38,6 +38,7 @@
 # "活动范围说明"（F13）整个删掉（manager.py 常量/判定函数/追加段、
 # test_workspace_boundary_prompt.py）。拒绝行为本身（403、设置不变）原样保留。
 # prepare.py --check-only 退出码 0；check_ownership.py 退出码 0（72 文件）。
+# 2026-10-16 ZT-030（task/ZT-030-model-policy-fixes，执行方 glm-5.3 三个小任务并行，总调度集成）：补丁 20 修正（带"/"的模型能存；对话、定时任务、记忆整理越不过名单；按场景两个错误码）；in_production 改实情。
 upstream_lock: UPSTREAM.lock
 
 brand:
@@ -69,7 +70,7 @@ patches:
     order: 20
     upstream_pr: no           # ZBS 自有权限收紧策略，上游无意向；设计见 patches/20-*/README.md
     verified: {v1.0.2b6: strict}
-    in_production: no         # 2026-10-13 新增（ZT-026 第 2 步），本机单元/集成测试通过，未部署
+    in_production: partially  # ZT-026 版随 1.0.2b6-zbs2 于 2026-10-14 上生产；2026-10-16 ZT-030 修正版（存得进、守得住、按场景提示）未部署
 
   - id: 21-feat-user-workspace
     name_zh: "按用户文件夹：活动范围支持 {username}（默认进开关指定的后端、普通用户不能改运行方式、浏览器 file 地址按用户分）（现行 F1–F3/F11/F15；旧稿 F3/F4/F5，对照见 README）"
@@ -97,9 +98,11 @@ patches:
 # 按 order 先后（10→20→21）可严格套上（2026-10-13 prepare.py --check-only 实测）。
 # 2026-10-13 第 8 轮：撤掉自定义错误码与提示后，errors.py 与 src/octop/i18n/{zh,en}.json
 # 不再被 20/21 修改，对应 shared_files 登记已删除。
+# 2026-10-16 ZT-030：按决策人 10-16 #355 补丁 20 重新改 errors.py、src/octop/i18n/{zh,en}.json（两个名单错误码与提示），
+# 并改 src/octop/api/routers/chat/ws.py；这几个文件只有补丁 20 改，不需 shared_files 登记。
 shared_files:
   src/octop/infra/users/resource_policy.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 加开关读取/管理员判定函数，20 加 allowed_models 策略函数，不同位置"}
-  src/octop/infra/agents/manager.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加后端覆写、_prepare_docker_backend 加 {username} 展开、_build_harness_config 加浏览器判定回调，20 改 resolve_fallback_model_ref，不同位置"}
+  src/octop/infra/agents/manager.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加后端覆写、_prepare_docker_backend 加 {username} 展开、_build_harness_config 加浏览器判定回调，20 改 resolve_fallback_model_ref、在 _build_harness_config 末段（21 所有改动之后）调用补丁 20 的记忆模型挑选（ZT-030），不同位置"}
   dashboard/src/locales/zh.json: {owner: brand, also: [20-feat-user-model-policy], reason: "品牌只替换值不动 key；20 新增 adminUsers 段的 key（先套 20 再套品牌，均严格 apply）"}
   dashboard/src/locales/en.json: {owner: brand, also: [20-feat-user-model-policy], reason: "同 zh.json"}
 
