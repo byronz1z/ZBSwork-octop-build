@@ -10,9 +10,11 @@
 
 检查项:
   1. /app/src/octop 与官方 tag 的 src/octop 逐字节比对：
-     - 只在镜像一边的文件只允许是网页成品（src/octop/dashboard/），出现在别处判 FAIL；
      - 与官方不同的文件，与施工树（官方 + 补丁 + 品牌，git 对象取内容）同路径逐字节相同才算通过，
-       与官方不同且与施工树也不同判 FAIL。
+       与官方不同且与施工树也不同判 FAIL；
+     - 只在镜像一边的文件：dashboard/ 网页成品（Dockerfile 阶段 1 构建输出）照旧放行；其余须在
+       施工树里存在且逐字节相同（补丁新增文件，如 src/octop/zbs_version.txt，与"补丁改过的文件
+       同施工树即通过"同理），施工树没有或内容不同判 FAIL。
   2. 镜像入口脚本 == 施工树入口脚本（官方 + 补丁 10），按原始字节比（不做换行转换）
   3. cvm-ai-doctor 技能目录在镜像里是符号链接（官方 git 树 mode 120000）
   4. dashboard 的 index.html 标题为品牌名；施工树 brand_check 通过
@@ -113,6 +115,26 @@ class GitTree:
     def blob(self, sha: str) -> bytes:
         return subprocess.run(["git", "-C", self.repo, "cat-file", "blob", sha],
                               check=True, capture_output=True).stdout
+
+
+def only_img_ok(path: str, info: tarfile.TarInfo, tree_gt: GitTree, img_content) -> tuple[bool, str]:
+    """只在镜像一边（官方没有）的文件是否放行：dashboard/ 成品照旧；其余须与施工树逐字节相同。
+
+    返回 (是否通过, 归类标签)：通过时标签为 "dashboard 成品" 或 "补丁新增(同施工树)"，
+    不通过为 "异常"（施工树没有该文件，或内容与施工树不同）。
+    """
+    if path.startswith("src/octop/dashboard/"):
+        return True, "dashboard 成品"
+    e = tree_gt.entry(path)
+    if e is None:
+        return False, "异常"
+    if e[0] == "120000":  # 施工树里是符号链接：镜像侧须同为符号链接且目标一致
+        ok = info.issym() and info.linkname.encode() == tree_gt.blob(e[1])
+        return ok, "补丁新增(同施工树)"
+    if info.issym() or not info.isfile():
+        return False, "异常"
+    ok = img_content(path, info) == tree_gt.blob(e[1])
+    return ok, "补丁新增(同施工树)" if ok else "异常"
 
 
 def extract_image_tree(engine: str, image: str) -> dict[str, tarfile.TarInfo]:
@@ -256,23 +278,34 @@ def _verify(args, temp_containers: list[str]) -> int:
             else:
                 diffs.append(path)
 
-    # 只在镜像一边的文件：只允许是网页成品（dashboard/，Dockerfile 阶段 1 构建输出）
+    # 只在镜像一边的文件：dashboard/ 网页成品照旧放行；其余须与施工树逐字节相同
+    # （补丁新增文件，如 src/octop/zbs_version.txt，与"补丁改过的文件同施工树即通过"同理）
     only_img = sorted(k for k, m in img_map.items() if m.isfile() or m.issym())
-    stray = [p for p in only_img if not p.startswith("src/octop/dashboard/")]
+    new_in_tree: list[str] = []    # 官方没有、施工树有且镜像内容与施工树逐字节相同 → PASS
+    stray = []                     # dashboard 外、施工树没有或内容不同 → FAIL
+    for p in only_img:
+        ok, label = only_img_ok(p, img_map[p], tree_gt, img_content)
+        if ok:
+            if label == "补丁新增(同施工树)":
+                new_in_tree.append(p)
+        else:
+            stray.append(p)
     print(f"[info] 官方 src/octop 文件数: {len(up)}；镜像侧: {len(up) + len(only_img)}")
-    print(f"[info] 相同: {same}；补丁/品牌(同施工树): {len(same_as_tree)}；"
-          f"与官方且施工树均不同: {len(diffs)}；只在镜像: {len(only_img)}（限 dashboard/）；"
+    print(f"[info] 相同: {same}；补丁/品牌(同施工树): {len(same_as_tree)}；补丁新增(同施工树): {len(new_in_tree)}；"
+          f"与官方且施工树均不同: {len(diffs)}；只在镜像: {len(only_img)}（dashboard 放行 {len(only_img) - len(new_in_tree) - len(stray)}）；"
           f"只在官方(镜像缺失): {len(missing)}")
     for name, lst in (("与官方且施工树均不同", diffs), ("与施工树同", same_as_tree),
+                      ("补丁新增(同施工树)", new_in_tree),
                       ("只在镜像", only_img), ("只在官方", missing)):
         for x in lst[:20]:
             print(f"       [{name}] {x}")
         if len(lst) > 20:
             print(f"       [{name}] ... 共 {len(lst)} 个，仅列前 20")
     verdict(not diffs and not missing and not stray,
-            "1. /app/src/octop 与官方逐字节一致（补丁/品牌改动须与施工树逐字节相同；镜像独有文件仅限 dashboard/）",
-            f"相同 {same}/{len(up)}，同施工树 {len(same_as_tree)}，与官方且施工树均不同 {len(diffs)}，"
-            f"缺失 {len(missing)}，dashboard 外的镜像独有文件 {len(stray)}" +
+            "1. /app/src/octop 与官方逐字节一致（补丁/品牌改动与新增须与施工树逐字节相同；镜像独有文件：dashboard 成品或补丁新增）",
+            f"相同 {same}/{len(up)}，同施工树 {len(same_as_tree)}，补丁新增(同施工树) {len(new_in_tree)}，"
+            f"与官方且施工树均不同 {len(diffs)}，缺失 {len(missing)}，"
+            f"dashboard 外且施工树外/不同 {len(stray)}" +
             (f"（如 {stray[:3]}）" if stray else ""))
 
     # ---- 检查 2: 入口脚本 == 施工树入口脚本（原始字节，不转换换行） ----------

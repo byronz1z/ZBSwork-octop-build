@@ -1,0 +1,913 @@
+diff --git a/dashboard/src/components/AvatarDropdown.tsx b/dashboard/src/components/AvatarDropdown.tsx
+index 9a63d3cdbea3f5308d14f288d5b3993ee4d439c3..35be15df2477ecf303a4c26d8ece1bca898f487d 100644
+--- a/dashboard/src/components/AvatarDropdown.tsx
++++ b/dashboard/src/components/AvatarDropdown.tsx
+@@ -21,7 +21,6 @@ import {
+   Palette,
+   CircleHelp,
+   Github,
+-  RefreshCw,
+   KeyRound,
+   Lock,
+   LockOpen,
+@@ -46,7 +45,7 @@ import PaletteSwitcher from "./PaletteSwitcher";
+ import type { OctopUser } from "../api/modules/auth";
+ import { useLayoutMode } from "../context/LayoutModeContext";
+ import type { LayoutMode } from "../layouts/layoutModeStorage";
+-import { userCan } from "../utils/permissions";
++import { ZBS_PROJECT_URL } from "./zbs/constants";
+ import feishuIcon from "../assets/channels/feishu.svg";
+ import dingtalkIcon from "../assets/channels/dingtalk.svg";
+ import wecomIcon from "../assets/channels/wecom.svg";
+@@ -56,7 +55,6 @@ import {
+ } from "../pages/Admin/Users/ProfileAvatar";
+ import styles from "./AvatarDropdown.module.less";
+ 
+-const GITHUB_URL = "https://github.com/TencentCloud/Octop";
+ const HELP_FEEDBACK_URL = "https://octop.cloud";
+ const APP_OAUTH_KINDS = new Set(["feishu", "dingtalk", "wecom"]);
+ 
+@@ -382,7 +380,7 @@ export default function AvatarDropdown({
+ 
+       <a
+         className={styles.menuItem}
+-        href={GITHUB_URL}
++        href={ZBS_PROJECT_URL}
+         target="_blank"
+         rel="noopener noreferrer"
+         onClick={() => setMenuOpen(false)}
+@@ -412,20 +410,6 @@ export default function AvatarDropdown({
+         <span>{t("account.changePassword")}</span>
+       </button>
+ 
+-      {userCan(user, "update") && (
+-        <button
+-          type="button"
+-          className={styles.menuItem}
+-          onClick={() => {
+-            setMenuOpen(false);
+-            navigate("/admin/advanced?tab=updates");
+-          }}
+-        >
+-          <RefreshCw size={16} strokeWidth={1.8} />
+-          <span>{t("account.checkUpdates")}</span>
+-        </button>
+-      )}
+-
+       <Divider className={styles.menuDivider} />
+ 
+       <button
+diff --git a/dashboard/src/components/zbs/ZbsUpdateConfig.tsx b/dashboard/src/components/zbs/ZbsUpdateConfig.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..099366463d794568e105be2e0c6dac783ea4dbe5
+--- /dev/null
++++ b/dashboard/src/components/zbs/ZbsUpdateConfig.tsx
+@@ -0,0 +1,87 @@
++// 补丁 23：更新页的 ZBS 实现——只显示当前版本号 + 重启服务。
++// 官方 UpdateConfig.tsx 只在页面入口挂载本组件，官方实现保留不删。
++
++import { useCallback, useEffect, useState } from "react";
++import { useTranslation } from "react-i18next";
++import { Power, RefreshCw, Sparkles } from "lucide-react";
++import { updateApi, type UpdateStatus } from "../../api/modules/update";
++import { useServiceRestartContext } from "../../context/ServiceRestartContext";
++import { storeUpdateStatus } from "../../utils/updateStatusCache";
++import { zbsDisplayVersion } from "./constants";
++import styles from "../../pages/Settings/AdvancedSettings/UpdateConfig.module.less";
++import { TabPanelHeader } from "../../pages/Settings/AdvancedSettings/TabPanelHeader";
++
++export default function ZbsUpdateConfig() {
++  const { t } = useTranslation();
++  const [status, setStatus] = useState<UpdateStatus | null>(null);
++  const { restartPhase, isRestarting, requestRestart } =
++    useServiceRestartContext();
++
++  useEffect(() => {
++    updateApi
++      .getUpdateStatus()
++      .then((next) => {
++        storeUpdateStatus(next);
++        setStatus(next);
++      })
++      .catch(() => {});
++  }, []);
++
++  const handleRestart = useCallback(() => {
++    requestRestart();
++  }, [requestRestart]);
++
++  const isServiceMode = !!status?.service_mode;
++  const restartUiLocked = restartPhase !== "idle" && restartPhase !== "timeout";
++  const version = zbsDisplayVersion(status?.current_version);
++
++  return (
++    <div className={styles.container}>
++      <TabPanelHeader
++        icon={<RefreshCw size={22} />}
++        title={t("zbsUpdate.title")}
++        description={t("zbsUpdate.description")}
++      />
++
++      <div className={styles.layout}>
++        <section
++          className={styles.panel}
++          aria-label={t("zbsUpdate.panelTitle")}
++        >
++          <div className={styles.panelTitleRow}>
++            <span className={styles.panelTitleIcon}>
++              <Sparkles size={16} />
++            </span>
++            <h3 className={styles.panelTitle}>{t("zbsUpdate.panelTitle")}</h3>
++          </div>
++          <p className={styles.panelDesc}>{t("zbsUpdate.panelDesc")}</p>
++
++          <div className={styles.versionGrid}>
++            <div className={styles.versionCard}>
++              <span className={styles.versionLabel}>
++                {t("zbsUpdate.currentVersion")}
++              </span>
++              <span className={styles.versionValue}>{version ?? "—"}</span>
++            </div>
++          </div>
++
++          {isServiceMode && (
++            <div className={styles.actions}>
++              <button
++                type="button"
++                className={styles.btnSecondary}
++                onClick={handleRestart}
++                disabled={restartUiLocked}
++              >
++                <Power size={14} />
++                {isRestarting
++                  ? t("zbsUpdate.restarting")
++                  : t("zbsUpdate.restartServiceBtn")}
++              </button>
++            </div>
++          )}
++        </section>
++      </div>
++    </div>
++  );
++}
+diff --git a/dashboard/src/components/zbs/ZbsVersionBadge.tsx b/dashboard/src/components/zbs/ZbsVersionBadge.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..ded1a0ef3dcff379e7072a34641e96a0602f92d0
+--- /dev/null
++++ b/dashboard/src/components/zbs/ZbsVersionBadge.tsx
+@@ -0,0 +1,33 @@
++// 版本徽标：直接显示后端给的显示版本号（ZBS 段或官方版本），无更新红点。
++
++import { Tooltip } from "antd";
++import { useTranslation } from "react-i18next";
++
++import { useUpdateStatus } from "../../hooks/useUpdateStatus";
++import { zbsDisplayVersion } from "./constants";
++import styles from "../CurrentVersionBadge/index.module.less";
++
++interface ZbsVersionBadgeProps {
++  isMobile?: boolean;
++}
++
++export default function ZbsVersionBadge({ isMobile }: ZbsVersionBadgeProps) {
++  const { status } = useUpdateStatus();
++  const { t } = useTranslation();
++
++  const version = zbsDisplayVersion(status?.current_version);
++  if (!version) return null;
++
++  return (
++    <Tooltip title={t("zbsUpdate.versionTooltip", { version })} mouseEnterDelay={0.35}>
++      <span
++        className={`${styles.versionBadge} ${
++          isMobile ? styles.versionBadgeMobile : ""
++        }`}
++        aria-label={t("zbsUpdate.versionTooltip", { version })}
++      >
++        {version}
++      </span>
++    </Tooltip>
++  );
++}
+diff --git a/dashboard/src/components/zbs/constants.ts b/dashboard/src/components/zbs/constants.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a0bdc7f6921c0c665a87310fb2e90978b108a997
+--- /dev/null
++++ b/dashboard/src/components/zbs/constants.ts
+@@ -0,0 +1,14 @@
++// ZBS build constants (patch 23): own recipe repo + display version rules.
++
++/** 公开配方库（项目地址），头像菜单"项目地址"打开它。 */
++export const ZBS_PROJECT_URL = "https://github.com/byronz1z/ZBSwork-octop-build";
++
++/**
++ * 页面显示的版本号：后端 `zbs_version`（读 zbs_version.txt）已经按规则
++ * 返回 `ZBS0.3`（打了版本号的镜像）或官方版本号（本机开发，读不到文件）。
++ * 前端不再自己拼 `v` 前缀，直接显示后端给的字符串。
++ */
++export function zbsDisplayVersion(currentVersion: string | null | undefined): string | null {
++  if (!currentVersion) return null;
++  return currentVersion;
++}
+diff --git a/dashboard/src/layouts/Header.tsx b/dashboard/src/layouts/Header.tsx
+index 3b99b322463cbee300ed6f5fb5e5de967a4b2390..04542f17202f5522c8836ab0b646cacf0ed9df63 100644
+--- a/dashboard/src/layouts/Header.tsx
++++ b/dashboard/src/layouts/Header.tsx
+@@ -1,8 +1,8 @@
+ import { Layout } from "antd";
+ import { Menu as MenuIcon } from "lucide-react";
+ import PwaInstallPrompt from "../components/PwaInstallPrompt";
+-import AppVersionBadge from "../components/AppVersionBadge";
+-import CurrentVersionBadge from "../components/CurrentVersionBadge";
++// [ZBS] patch 23: version badge shows our segment only, no update dot.
++import ZbsVersionBadge from "../components/zbs/ZbsVersionBadge";
+ import { useTheme } from "../context/ThemeContext";
+ import { typeSize } from "../utils/mobileTypeScale";
+ 
+@@ -98,8 +98,7 @@ export default function Header({ onToggle, isMobile }: HeaderProps) {
+             flexShrink: 1,
+           }}
+         >
+-          <CurrentVersionBadge isMobile />
+-          <AppVersionBadge isMobile />
++          <ZbsVersionBadge isMobile />
+         </div>
+       </div>
+ 
+diff --git a/dashboard/src/layouts/Sidebar.tsx b/dashboard/src/layouts/Sidebar.tsx
+index c4c8efdf95397b799dbef05f0b06ede7dfbdf3ca..4fac6ec1726f235716c9915b5cf77143baafd286 100644
+--- a/dashboard/src/layouts/Sidebar.tsx
++++ b/dashboard/src/layouts/Sidebar.tsx
+@@ -3,8 +3,8 @@ import { useLocation, useNavigate } from "react-router-dom";
+ import { useTranslation } from "react-i18next";
+ import type { TFunction } from "i18next";
+ import AvatarDropdown from "../components/AvatarDropdown";
+-import AppVersionBadge from "../components/AppVersionBadge";
+-import CurrentVersionBadge from "../components/CurrentVersionBadge";
++// [ZBS] patch 23: version badge shows our segment only, no update dot.
++import ZbsVersionBadge from "../components/zbs/ZbsVersionBadge";
+ import { ArrowRightLeft, ChevronDown, X } from "lucide-react";
+ import { useTheme } from "../context/ThemeContext";
+ import { useLayoutMode } from "../context/LayoutModeContext";
+@@ -506,8 +506,7 @@ export default function Sidebar({
+       />
+       {!isRailCollapsed && !isMobile && (
+         <>
+-          <CurrentVersionBadge isMobile={isMobile} />
+-          <AppVersionBadge isMobile={isMobile} />
++          <ZbsVersionBadge isMobile={isMobile} />
+         </>
+       )}
+     </>
+diff --git a/dashboard/src/locales/en.json b/dashboard/src/locales/en.json
+index 2960c5269dbbd1e6bf77c697a3911217ab72603d..928a840c8782652a66f149a133c0c8d7eb63f3e7 100644
+--- a/dashboard/src/locales/en.json
++++ b/dashboard/src/locales/en.json
+@@ -6491,5 +6491,15 @@
+     "step4Desc": "When finished, type \"结束\" (or \"end\") to stop; after confirmation the skill is saved under the task goal. Type the goal keyword later to replay it.",
+     "envNotReady": "Browser environment required first",
+     "title": "Skill recording guide"
++  },
++  "zbsUpdate": {
++    "title": "Version",
++    "description": "The deployed version; new versions ship as new images.",
++    "panelTitle": "Current Version",
++    "panelDesc": "This project releases new versions as new images; no online update check or upgrade is offered here.",
++    "currentVersion": "Current Version",
++    "versionTooltip": "Current version {{version}}",
++    "restartServiceBtn": "Restart Service",
++    "restarting": "Restarting..."
+   }
+ }
+diff --git a/dashboard/src/locales/zh.json b/dashboard/src/locales/zh.json
+index ac757860a4a4a1b5cfc20e76dd768ebd4c045fe9..2b6539af4216c176e79e18cb29fbbe1bae475dfa 100644
+--- a/dashboard/src/locales/zh.json
++++ b/dashboard/src/locales/zh.json
+@@ -6491,5 +6491,15 @@
+     "step4Desc": "操作完成后，输入\"结束\"停止录制，确认后技能将以任务目标为名保存。之后只需输入任务目标关键词即可触发回放。",
+     "envNotReady": "请先安装浏览器环境",
+     "title": "技能录制引导"
++  },
++  "zbsUpdate": {
++    "title": "版本",
++    "description": "当前部署的版本号；新版本通过发布新镜像更新。",
++    "panelTitle": "当前版本",
++    "panelDesc": "本项目通过构建新镜像发布新版本，网页上不提供在线检查更新和升级。",
++    "currentVersion": "当前版本",
++    "versionTooltip": "当前版本 {{version}}",
++    "restartServiceBtn": "重启服务",
++    "restarting": "正在重启..."
+   }
+ }
+diff --git a/dashboard/src/pages/Settings/AdvancedSettings/UpdateConfig.tsx b/dashboard/src/pages/Settings/AdvancedSettings/UpdateConfig.tsx
+index a03eccebabfc88f2903ff6232b13ea4574b533c2..e70f5b2a8e380e851a89d172e983646698a44f3e 100644
+--- a/dashboard/src/pages/Settings/AdvancedSettings/UpdateConfig.tsx
++++ b/dashboard/src/pages/Settings/AdvancedSettings/UpdateConfig.tsx
+@@ -23,6 +23,7 @@ import {
+   storeUpdateStatus,
+ } from "../../../utils/updateStatusCache";
+ import { TabPanelHeader } from "./TabPanelHeader";
++import ZbsUpdateConfig from "../../../components/zbs/ZbsUpdateConfig";
+ import styles from "./UpdateConfig.module.less";
+ 
+ /** Shell snippets shown in the manual upgrade guide (commands are locale-agnostic). */
+@@ -147,7 +148,7 @@ function UpgradeGuide() {
+   );
+ }
+ 
+-export default function UpdateConfig() {
++export function UpdateConfig() {
+   const { t } = useTranslation();
+   const { modal } = App.useApp();
+   const [status, setStatus] = useState<UpdateStatus | null>(null);
+@@ -590,3 +591,7 @@ export default function UpdateConfig() {
+     </div>
+   );
+ }
++
++// [ZBS] patch 23: web update check/upgrade disabled — render the ZBS page instead.
++// Official implementation above (UpdateConfig) is kept for reference/upstream sync.
++export default ZbsUpdateConfig;
+diff --git a/src/octop/api/routers/update.py b/src/octop/api/routers/update.py
+index a7724b11b140ca9b7a582d3fd39c8a3eb86abc78..5e68d605701ed1c51e700e1ebbff15a37bf58606 100644
+--- a/src/octop/api/routers/update.py
++++ b/src/octop/api/routers/update.py
+@@ -16,7 +16,6 @@ from octop.api.deps import current_user, get_server, require_permission
+ from octop.api.routers.update_store import (
+     UpgradeTaskStatus,
+     cache_status,
+-    create_task,
+     get_cached_status,
+     get_task,
+     update_task,
+@@ -41,6 +40,7 @@ from octop.infra.setup.service import (
+     is_service_installed,
+     restart_service,
+ )
++from octop.infra.setup.zbs_version import reject_web_upgrade, zbs_status
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -190,14 +190,14 @@ async def update_status(
+     server: Any = Depends(get_server),
+ ) -> dict[str, Any]:
+     """Return last check result; re-probe PyPI when the server cache TTL expires."""
+-    stable_only = _read_stable_only(server)
+-    cached = get_cached_status()
+-    if cached is not None:
+-        return _auto_status(cached, stable_only=stable_only)
+-    return await asyncio.to_thread(
+-        _build_status,
+-        stable_only=stable_only,
+-        include_prerelease=not stable_only,
++    # [ZBS] patch 23: our version, never an update (no PyPI access).
++    return _public_status(
++        zbs_status(
++            stable_only=_read_stable_only(server),
++            detect_service_mode=detect_service_mode,
++            is_desktop_process=_is_desktop_process,
++            is_editable=get_editable_path() is not None,
++        )
+     )
+ 
+ 
+@@ -206,25 +206,14 @@ async def check_for_updates(
+     _: Any = Depends(require_permission("update")),
+     server: Any = Depends(get_server),
+ ) -> dict[str, Any]:
+-    stable_only = _read_stable_only(server)
+-    pypi_info = await asyncio.to_thread(fetch_pypi_info)
+-    if pypi_info is None:
+-        return await asyncio.to_thread(
+-            _build_status,
+-            latest=None,
+-            error="could not reach PyPI",
+-            error_code="pypi_unreachable",
+-            stable_only=stable_only,
+-            include_prerelease=True,
++    # [ZBS] patch 23: no-op — ZBS builds update via new images, never from PyPI.
++    return _public_status(
++        zbs_status(
++            stable_only=_read_stable_only(server),
++            detect_service_mode=detect_service_mode,
++            is_desktop_process=_is_desktop_process,
++            is_editable=get_editable_path() is not None,
+         )
+-    return await asyncio.to_thread(
+-        _build_status,
+-        latest_any=pypi_info.version,
+-        latest_stable=pypi_info.latest_stable,
+-        source=pypi_info.source,
+-        description=pypi_info.description,
+-        stable_only=stable_only,
+-        include_prerelease=True,
+     )
+ 
+ 
+@@ -319,26 +308,9 @@ async def trigger_upgrade(
+     server: Any = Depends(get_server),
+     _: Any = Depends(require_permission("update")),
+ ) -> dict[str, Any]:
+-    if get_editable_path() is not None:
+-        raise OctopError(
+-            ErrorCode.FORBIDDEN,
+-            "editable installs must be upgraded manually (git pull / uv sync)",
+-        )
+-    stable_only = _read_stable_only(server)
+-    info = await asyncio.to_thread(fetch_pypi_info)
+-    requested = body.version if body is not None else None
+-    target = _resolve_upgrade_target(
+-        requested=requested,
+-        latest_any=info.version if info else None,
+-        latest_stable=info.latest_stable if info else None,
+-        stable_only=stable_only,
+-    )
+-    allow_prerelease = bool(target and is_prerelease(target))
+-    task = await create_task()
+-    asyncio.create_task(
+-        _upgrade_worker(task.task_id, allow_prerelease=allow_prerelease, version=target)
+-    )
+-    return {"task_id": task.task_id, "status": "started"}
++    # [ZBS] patch 23: web upgrade disabled — new images, not PyPI installs.
++    del body, server
++    reject_web_upgrade()
+ 
+ 
+ @router.get("/progress")
+diff --git a/src/octop/infra/setup/zbs_version.py b/src/octop/infra/setup/zbs_version.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ccb40ca6f95a4fd06c061445a5ea8ff933411dfa
+--- /dev/null
++++ b/src/octop/infra/setup/zbs_version.py
+@@ -0,0 +1,88 @@
++"""ZBS build version display (patch 23).
++
++The image build pipeline stamps the full version (``<official>-zbs<ours>``,
++e.g. ``1.0.2b6-zbs0.3``) into ``src/octop/zbs_version.txt``. The web UI shows
++only our segment (``ZBS0.3``); when the file is absent (local development,
++plain pip install) the official package version is shown instead.
++"""
++
++from __future__ import annotations
++
++import time
++from collections.abc import Callable
++from pathlib import Path
++
++# src/octop/zbs_version.txt — two parents up from infra/setup/.
++_ZBS_VERSION_FILE = Path(__file__).resolve().parents[2] / "zbs_version.txt"
++_ZBS_MARKER = "-zbs"
++
++
++def read_zbs_version() -> str | None:
++    """Return our version segment (e.g. ``0.3``), or None when not stamped."""
++    try:
++        text = _ZBS_VERSION_FILE.read_text(encoding="utf-8").strip()
++    except OSError:
++        return None
++    idx = text.lower().rfind(_ZBS_MARKER)
++    if idx < 0:
++        return None
++    segment = text[idx + len(_ZBS_MARKER) :].strip()
++    return segment or None
++
++
++def display_version() -> str:
++    """Return the version label for the web UI.
++
++    ``ZBS0.3`` when the build stamped ``zbs_version.txt``; otherwise the
++    official installed package version (local development).
++    """
++    segment = read_zbs_version()
++    if segment:
++        return f"ZBS{segment}"
++    from octop.infra.setup.self_update import get_local_version
++
++    return get_local_version()
++
++
++def zbs_status(
++    *,
++    stable_only: bool,
++    detect_service_mode: Callable[[], object],
++    is_desktop_process: Callable[[], bool],
++    is_editable: bool,
++) -> dict[str, object]:
++    """Status payload for the web UI: our version, never an update.
++
++    ZBS builds ship as new images; the web update endpoints return the
++    current version and "no update" without touching PyPI. The callers pass
++    in the official helpers (service mode / desktop / editable detection) so
++    this module owns only the ZBS policy, not the probes.
++    """
++    return {
++        "current_version": display_version(),
++        "latest_version": None,
++        "latest_any": None,
++        "latest_stable": None,
++        "description": None,
++        "has_update": False,
++        "is_editable": is_editable,
++        "service_mode": detect_service_mode(),
++        "desktop": is_desktop_process(),
++        "error": None,
++        "error_code": None,
++        "source": None,
++        "last_check_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
++        "release_notes": None,
++        "stable_only": stable_only,
++        "latest_is_prerelease": False,
++    }
++
++
++def reject_web_upgrade() -> None:
++    """Raise FORBIDDEN: ZBS builds update by deploying a new image, not PyPI."""
++    from octop.infra.errors import ErrorCode, OctopError
++
++    raise OctopError(
++        ErrorCode.FORBIDDEN,
++        "this ZBS build updates by deploying a new image, not from PyPI",
++    )
+diff --git a/tests/unit/api/test_update_router.py b/tests/unit/api/test_update_router.py
+index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d550fe4e5a5 100644
+--- a/tests/unit/api/test_update_router.py
++++ b/tests/unit/api/test_update_router.py
+@@ -12,7 +12,7 @@ from octop.api.routers import update as update_router
+ from octop.api.routers import update_store
+ from octop.api.routers.update_store import UpgradeTaskStatus, create_task, get_task
+ from octop.infra.errors import ErrorCode, OctopError
+-from octop.infra.setup import self_update
++from octop.infra.setup import self_update, zbs_version
+ from octop.infra.setup.self_update import UpgradeResult
+ 
+ 
+@@ -24,15 +24,15 @@ def _clear_update_status_cache() -> None:
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_update_status_reprobes_after_cache_ttl(
++async def test_update_status_ignores_cache_and_reports_no_update(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+-    builds = 0
++    """[ZBS] patch 23: /status returns our version, never an update, no PyPI re-probe."""
++    monkeypatch.setattr(zbs_version, "display_version", lambda: "ZBS0.3")
+ 
+-    def fake_build(**_: object) -> dict[str, object]:
+-        nonlocal builds
+-        builds += 1
+-        payload = {
++    # A stale cached "update available" payload must not leak into the response.
++    update_store.cache_status(
++        {
+             "current_version": "1.0.0",
+             "latest_version": "1.0.1",
+             "has_update": True,
+@@ -42,25 +42,15 @@ async def test_update_status_reprobes_after_cache_ttl(
+             "last_check_time": "2026-01-01T00:00:00Z",
+             "release_notes": None,
+         }
+-        update_store.cache_status(payload)
+-        return payload
+-
+-    monkeypatch.setattr(update_router, "_build_status", fake_build)
++    )
+ 
+     server = _settings_server()
+     first = await update_router.update_status(_=None, server=server)
+     second = await update_router.update_status(_=None, server=server)
+-    assert first["latest_version"] == second["latest_version"]
+-    assert first["has_update"] == second["has_update"]
+-    assert builds == 1
+-
+-    update_store.cache_status(
+-        first,
+-        cached_at=0.0,  # force expiry on next read
+-    )
+-    third = await update_router.update_status(_=None, server=server)
+-    assert third["has_update"] is True
+-    assert builds == 2
++    for payload in (first, second):
++        assert payload["current_version"] == "ZBS0.3"
++        assert payload["has_update"] is False
++        assert payload["latest_version"] is None
+ 
+ 
+ @pytest.mark.asyncio
+@@ -409,16 +399,19 @@ def test_build_status_failure_via_check_keeps_error_code(
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_check_endpoint_reports_error_code_when_pypi_unreachable(
++async def test_check_endpoint_reports_no_update_without_pypi(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+-    monkeypatch.setattr(update_router, "fetch_pypi_info", lambda: None)
++    """[ZBS] patch 23: /check is a no-op — no PyPI probe, no error code."""
++    monkeypatch.setattr(zbs_version, "display_version", lambda: "ZBS0.3")
+ 
+     result = await update_router.check_for_updates(_=None, server=_settings_server())
+ 
++    assert result["current_version"] == "ZBS0.3"
++    assert result["has_update"] is False
+     assert result["latest_version"] is None
+-    assert result["error"] == "could not reach PyPI"
+-    assert result["error_code"] == "pypi_unreachable"
++    assert result["error"] is None
++    assert result["error_code"] is None
+ 
+ 
+ @pytest.mark.asyncio
+@@ -430,31 +423,33 @@ async def test_check_endpoint_success_passes_source(
+ 
+     result = await update_router.check_for_updates(_=None, server=_settings_server())
+ 
+-    assert result["latest_version"] == "1.2.3"
+-    assert result["source"] == "pypi.org"
++    # [ZBS] patch 23: even with PyPI reachable, the web check ignores it.
++    assert result["latest_version"] is None
++    assert result["source"] is None
+     assert result["error"] is None
+     assert result["stable_only"] is True
+     assert result["latest_is_prerelease"] is False
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_status_stable_only_ignores_prerelease(
++async def test_status_stable_only_reports_no_update(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
++    """[ZBS] patch 23: stable_only no longer changes the channel — never an update."""
+     info = self_update.PyPIInfo(version="0.9.34b1", latest_stable="0.9.33", source="pypi.org")
+     monkeypatch.setattr(update_router, "fetch_pypi_info", lambda: info)
+-    monkeypatch.setattr(update_router, "get_local_version", lambda: "0.9.32")
++    monkeypatch.setattr(zbs_version, "display_version", lambda: "ZBS0.3")
+ 
+     auto = await update_router.update_status(_=None, server=_settings_server(True))
+-    assert auto["latest_version"] == "0.9.33"
+-    assert auto["has_update"] is True
++    assert auto["latest_version"] is None
++    assert auto["has_update"] is False
+     assert auto["latest_is_prerelease"] is False
+     assert auto["stable_only"] is True
+ 
+     manual = await update_router.check_for_updates(_=None, server=_settings_server(True))
+-    assert manual["latest_version"] == "0.9.34b1"
+-    assert manual["has_update"] is True
+-    assert manual["latest_is_prerelease"] is True
++    assert manual["latest_version"] is None
++    assert manual["has_update"] is False
++    assert manual["latest_is_prerelease"] is False
+ 
+ 
+ @pytest.mark.asyncio
+@@ -468,101 +463,54 @@ async def test_status_includes_prerelease_when_stable_only_off(
+         description="## [0.9.34b1] - 2026-09-01\n\n- beta notes\n\n## [0.9.33]\n- old\n",
+     )
+     monkeypatch.setattr(update_router, "fetch_pypi_info", lambda: info)
+-    monkeypatch.setattr(update_router, "get_local_version", lambda: "0.9.33")
++    monkeypatch.setattr(zbs_version, "display_version", lambda: "ZBS0.3")
+ 
++    # [ZBS] patch 23: stable_only off no longer surfaces pre-releases on the web.
+     auto = await update_router.update_status(_=None, server=_settings_server(False))
+-    assert auto["latest_version"] == "0.9.34b1"
+-    assert auto["has_update"] is True
+-    assert auto["latest_is_prerelease"] is True
+-    assert auto["release_notes"] is not None
+-    assert "beta notes" in auto["release_notes"]
++    assert auto["latest_version"] is None
++    assert auto["has_update"] is False
++    assert auto["latest_is_prerelease"] is False
++    assert auto["release_notes"] is None
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_patch_settings_remaps_cached_status(
++async def test_patch_settings_persists_flag(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+-    info = self_update.PyPIInfo(version="0.9.34b1", latest_stable="0.9.33", source="pypi.org")
+-    monkeypatch.setattr(update_router, "fetch_pypi_info", lambda: info)
+-    monkeypatch.setattr(update_router, "get_local_version", lambda: "0.9.33")
++    monkeypatch.setattr(zbs_version, "display_version", lambda: "ZBS0.3")
+     server = _settings_server(True)
+ 
+     first = await update_router.update_status(_=None, server=server)
+-    assert first["latest_version"] == "0.9.33"
+-    assert first["has_update"] is False
++    assert first["stable_only"] is True
+ 
+     body = update_router.UpdateSettingsBody(stable_only=False)
+     patched = await update_router.update_settings(body, server=server, _=None)
+     assert patched["stable_only"] is False
+-    assert patched["latest_version"] == "0.9.34b1"
+-    assert patched["has_update"] is True
+     assert server.services.settings_repo.get("update.stable_only") == "false"
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_trigger_upgrade_pins_stable_when_prerelease_exists(
+-    monkeypatch: pytest.MonkeyPatch,
+-) -> None:
+-    info = self_update.PyPIInfo(version="0.9.34b1", latest_stable="0.9.33", source="pypi.org")
+-    monkeypatch.setattr(update_router, "fetch_pypi_info", lambda: info)
+-    monkeypatch.setattr(update_router, "get_editable_path", lambda: None)
+-
+-    captured: dict[str, object] = {}
+-
+-    async def fake_worker(
+-        task_id: str,
+-        *,
+-        allow_prerelease: bool = False,
+-        version: str | None = None,
+-    ) -> None:
+-        captured["task_id"] = task_id
+-        captured["allow_prerelease"] = allow_prerelease
+-        captured["version"] = version
+-
+-    monkeypatch.setattr(update_router, "_upgrade_worker", fake_worker)
+-
+-    body = update_router.UpgradeBody(version="0.9.33")
+-    result = await update_router.trigger_upgrade(
+-        body=body,
+-        server=_settings_server(True),
+-        _=None,
+-    )
+-    await asyncio.sleep(0)
+-    assert result["status"] == "started"
+-    assert captured["version"] == "0.9.33"
+-    assert captured["allow_prerelease"] is False
++async def test_trigger_upgrade_rejects_pinned_version() -> None:
++    """[ZBS] patch 23: web upgrade is forbidden regardless of the pinned version."""
++    with pytest.raises(OctopError) as exc_info:
++        await update_router.trigger_upgrade(
++            body=update_router.UpgradeBody(version="0.9.33"),
++            server=_settings_server(True),
++            _=None,
++        )
++    assert exc_info.value.code == ErrorCode.FORBIDDEN
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_trigger_upgrade_defaults_to_channel_latest(
+-    monkeypatch: pytest.MonkeyPatch,
+-) -> None:
+-    info = self_update.PyPIInfo(version="0.9.34b1", latest_stable="0.9.33", source="pypi.org")
+-    monkeypatch.setattr(update_router, "fetch_pypi_info", lambda: info)
+-    monkeypatch.setattr(update_router, "get_editable_path", lambda: None)
+-
+-    captured: dict[str, object] = {}
+-
+-    async def fake_worker(
+-        task_id: str,
+-        *,
+-        allow_prerelease: bool = False,
+-        version: str | None = None,
+-    ) -> None:
+-        captured["allow_prerelease"] = allow_prerelease
+-        captured["version"] = version
+-
+-    monkeypatch.setattr(update_router, "_upgrade_worker", fake_worker)
+-
+-    result = await update_router.trigger_upgrade(
+-        body=update_router.UpgradeBody(),
+-        server=_settings_server(True),
+-        _=None,
+-    )
+-    await asyncio.sleep(0)
+-    assert result["status"] == "started"
+-    assert captured["version"] == "0.9.33"
+-    assert captured["allow_prerelease"] is False
++async def test_trigger_upgrade_rejects_default_channel_latest() -> None:
++    """[ZBS] patch 23: no task is created; the web upgrade endpoint refuses."""
++    with pytest.raises(OctopError) as exc_info:
++        await update_router.trigger_upgrade(
++            body=update_router.UpgradeBody(),
++            server=_settings_server(True),
++            _=None,
++        )
++    assert exc_info.value.code == ErrorCode.FORBIDDEN
+ 
+ 
+ @pytest.mark.asyncio
+diff --git a/tests/unit/infra/setup/test_zbs_version.py b/tests/unit/infra/setup/test_zbs_version.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0ddd75e3e302bda4d2910dd042a257d9c678d873
+--- /dev/null
++++ b/tests/unit/infra/setup/test_zbs_version.py
+@@ -0,0 +1,115 @@
++"""Patch 23: ZBS version display + official update check disabled."""
++
++from __future__ import annotations
++
++import pytest
++
++from octop.api.routers import update as update_router
++from octop.infra.setup import zbs_version
++
++
++def _settings_server(stable_only: bool | None = None):
++    store: dict[str, str] = {}
++    if stable_only is not None:
++        store["update.stable_only"] = "true" if stable_only else "false"
++
++    class Repo:
++        def get(self, key: str):
++            return store.get(key)
++
++        def set(self, key: str, value: str) -> None:
++            store[key] = value
++
++    return type("Server", (), {"services": type("Svc", (), {"settings_repo": Repo()})()})()
++
++
++def test_read_zbs_version_parses_ours_segment(monkeypatch: pytest.MonkeyPatch) -> None:
++    class StampedFile:
++        def read_text(self, encoding: str):
++            return "1.0.2b6-zbs0.3\n"
++
++    monkeypatch.setattr(zbs_version, "_ZBS_VERSION_FILE", StampedFile())
++    assert zbs_version.read_zbs_version() == "0.3"
++
++
++def test_read_zbs_version_none_when_file_missing(monkeypatch: pytest.MonkeyPatch) -> None:
++    class MissingFile:
++        def read_text(self, encoding: str):
++            raise FileNotFoundError
++
++    monkeypatch.setattr(zbs_version, "_ZBS_VERSION_FILE", MissingFile())
++    assert zbs_version.read_zbs_version() is None
++
++
++def test_read_zbs_version_none_without_marker(monkeypatch: pytest.MonkeyPatch) -> None:
++    class PlainFile:
++        def read_text(self, encoding: str):
++            return "1.0.2b6\n"
++
++    monkeypatch.setattr(zbs_version, "_ZBS_VERSION_FILE", PlainFile())
++    assert zbs_version.read_zbs_version() is None
++
++
++def test_display_version_prefers_zbs_segment(monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.setattr(zbs_version, "read_zbs_version", lambda: "0.3")
++    assert zbs_version.display_version() == "ZBS0.3"
++
++
++def test_display_version_falls_back_to_official(monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.setattr(zbs_version, "read_zbs_version", lambda: None)
++    monkeypatch.setattr(
++        "octop.infra.setup.self_update.get_local_version", lambda: "1.0.2b6"
++    )
++    assert zbs_version.display_version() == "1.0.2b6"
++
++
++@pytest.mark.asyncio
++async def test_status_reports_zbs_version_and_never_an_update(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(zbs_version, "display_version", lambda: "ZBS0.3")
++    status = await update_router.update_status(_=None, server=_settings_server(True))
++    assert status["current_version"] == "ZBS0.3"
++    assert status["has_update"] is False
++    assert status["latest_version"] is None
++    assert status["error"] is None
++
++
++@pytest.mark.asyncio
++async def test_status_falls_back_to_official_version_without_file(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(zbs_version, "display_version", lambda: "1.0.2b6")
++    status = await update_router.update_status(_=None, server=_settings_server())
++    assert status["current_version"] == "1.0.2b6"
++    assert status["has_update"] is False
++
++
++@pytest.mark.asyncio
++async def test_check_endpoint_does_not_probe_pypi(monkeypatch: pytest.MonkeyPatch) -> None:
++    """The web check endpoint must not call PyPI even though the official helper stays."""
++    calls: list[object] = []
++
++    def fail_fetch() -> None:
++        calls.append(1)
++        raise AssertionError("web check endpoint must not touch PyPI")
++
++    monkeypatch.setattr(update_router, "fetch_pypi_info", fail_fetch)
++
++    status = await update_router.check_for_updates(_=None, server=_settings_server())
++    assert calls == []
++    assert status["has_update"] is False
++    assert status["latest_version"] is None
++
++
++@pytest.mark.asyncio
++async def test_trigger_upgrade_is_forbidden() -> None:
++    from octop.infra.errors import OctopError
++
++    with pytest.raises(OctopError) as exc_info:
++        await update_router.trigger_upgrade(
++            body=update_router.UpgradeBody(),
++            server=_settings_server(),
++            _=None,
++        )
++    assert "PyPI" in exc_info.value.message or "image" in exc_info.value.message
