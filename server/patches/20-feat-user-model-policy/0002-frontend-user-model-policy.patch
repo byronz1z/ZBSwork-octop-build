@@ -28,7 +28,7 @@ index 463b6335b681302f9520c6d9e3ef9d168db67886..7618b8ad045bb3fbf04393f46cd79f1c
    return null;
  }
 diff --git a/dashboard/src/locales/en.json b/dashboard/src/locales/en.json
-index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..643e15bbc447fca49fb48c9e3b8432d9fae493aa 100644
+index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..a56dfb813348ecedf440928928ce074e23651633 100644
 --- a/dashboard/src/locales/en.json
 +++ b/dashboard/src/locales/en.json
 @@ -185,6 +185,8 @@
@@ -54,8 +54,18 @@ index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..643e15bbc447fca49fb48c9e3b8432d9
      "modalEditTitle": "Edit user {{username}}",
      "batchSelected": "{{count}} selected",
      "batchSelectAll": "Select all",
+@@ -5453,7 +5462,8 @@
+       "disable": "Disable",
+       "delete": "Delete",
+       "set_token_quota": "Set token limit",
+-      "set_max_agents": "Set expert limit"
++      "set_max_agents": "Set expert limit",
++      "set_allowed_models": "Set allowed models"
+     }
+   },
+   "adminSso": {
 diff --git a/dashboard/src/locales/zh.json b/dashboard/src/locales/zh.json
-index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..c4827b0fd9a4245266b09e3e5b31fad752198ac2 100644
+index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..e20d5086b802c52626d712b58b90752930d04bd3 100644
 --- a/dashboard/src/locales/zh.json
 +++ b/dashboard/src/locales/zh.json
 @@ -185,6 +185,8 @@
@@ -81,6 +91,16 @@ index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..c4827b0fd9a4245266b09e3e5b31fad7
      "modalEditTitle": "编辑用户 {{username}}",
      "batchSelected": "已选 {{count}} 人",
      "batchSelectAll": "全选",
+@@ -5453,7 +5462,8 @@
+       "disable": "禁用",
+       "delete": "删除",
+       "set_token_quota": "设置 Token 上限",
+-      "set_max_agents": "设置专家上限"
++      "set_max_agents": "设置专家上限",
++      "set_allowed_models": "设置可用模型"
+     }
+   },
+   "adminSso": {
 diff --git a/dashboard/src/pages/Admin/Users/RolesPanel.tsx b/dashboard/src/pages/Admin/Users/RolesPanel.tsx
 index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb99776646a 100644
 --- a/dashboard/src/pages/Admin/Users/RolesPanel.tsx
