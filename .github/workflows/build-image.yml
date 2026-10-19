@@ -22,7 +22,15 @@ jobs:
 
       - name: 构建镜像（上游 + 补丁 + 品牌 → context.tar → docker build）
         # 不传 --reference：云端直接克隆官方仓库（prepare_lf.py 从 UPSTREAM.lock 取地址）
-        run: uv run --no-project --with pyyaml shared/tools/build_image.py --platform linux/amd64
+        # 云端构建机在海外：不用国内镜像源（10-19 实测连腾讯云 npm 源反复 ECONNRESET）；依赖按锁定文件安装，内容不变
+        run: uv run --no-project --with pyyaml shared/tools/build_image.py --platform linux/amd64 --no-mirror
+
+      - name: 构建失败时的诊断（打印磁盘、docker 占用、构建日志末尾）
+        if: failure()
+        run: |
+          echo '== 磁盘'; df -h
+          echo '== docker 占用'; docker system df || true
+          echo '== 构建日志末尾 120 行'; tail -n 120 .work/build.log || true
 
       - name: 验证镜像
         # 同上，不传 --reference：施工树 .work/src 本身就是官方仓库的克隆（带官方 tag），
