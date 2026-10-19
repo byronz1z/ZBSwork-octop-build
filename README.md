@@ -62,12 +62,12 @@ python shared/tools/verify_image.py octop:1.0.2b6-zbs0.3 --reference <本机官�
   源码包核对相等——这就是"可复现"的检查。
 - **已知限制**：
   - 官方构建方式以 `v1.0.2b4:docker/Dockerfile`（头注释第 6–31 行：构建上下文为仓库根目录、
-    dashboard 在 Dockerfile 阶段 1 内构建、四个国内加速 build-arg）与 `docker/docker_build.sh` 为准；
+    dashboard 在 Dockerfile 阶段 1 内构建、四个国内加速 build-arg——按指挥部规范 §5 我们一律不传）与 `docker/docker_build.sh` 为准；
     本脚本只是把上下文从"目录"换成"等价的 git archive tar"。
   - Windows 未开开发者模式时工作区符号链接建不出来——不影响构建（上下文走 git archive），
     但人工直接查看 .work/src 时链接是文本文件。
   - 云端流程 `.github/workflows/build-image.yml` 2026-10-10 新增，尚未在云端运行过。
-  - 本机一次完整构建约 5–7 分钟（镜像源加速 + 层缓存命中下），镜像 5.68 GB（磁盘占用口径；2026-10-10 本机 `docker images` 显示值）。
+  - 本机一次完整构建约 5–7 分钟（2026-10-10 当时走国内镜像源、层缓存命中下测得；2026-10-19 起只用官方源，2026-10-16 本机走官方源实测 5.9 分钟），镜像 5.68 GB（磁盘占用口径；2026-10-10 本机 `docker images` 显示值）。
 
 ## 文档
 
