@@ -50,16 +50,10 @@ python shared/tools/verify_image.py octop:1.0.2b6-zbs0.3 --reference <本机官�
 - **构建上下文**：不是目录而是 `git archive --format=tar HEAD` 产出的 `.work/context.tar`
   （提交的作者/提交人/日期固定为上游 tag 提交的作者与日期，同输入两次 tar 逐字节相同；
   链接按 git 记录的类型打包）。`docker build -f docker/Dockerfile -t <镜像> -`，tar 由 stdin 传入。
-- **本机实际构建参数**（网络走国内镜像源，官方 Dockerfile 自带的构建参数）：
-
-  ```
-  --build-arg PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
-  --build-arg PIP_TRUSTED_HOST=mirrors.cloud.tencent.com
-  --build-arg NPM_REGISTRY=https://mirrors.cloud.tencent.com/npm/
-  --build-arg APT_MIRROR=mirrors.cloud.tencent.com
-  ```
-
-  加 `--no-mirror` 可不带这些；`--platform linux/amd64` 可指定平台。
+- **只用官方源**（指挥部规范 §5，2026-10-19 ZT-033）：本机和云端都不传镜像源参数，官方 Dockerfile 的
+  `PIP_INDEX_URL`、`NPM_REGISTRY`、`APT_MIRROR` 留空，即从 PyPI、npm、Debian 官方源下载；依赖版本由
+  `uv.lock`、`package-lock.json` 锁定（带校验值）。不要用 `--build-arg` 传任何镜像源、中转站。
+  `--platform linux/amd64` 可指定平台。
 - **标签**：`org.opencontainers.image.version / .revision`、`cn.zbswork.upstream.tag / .commit`、
   `cn.zbswork.context.sha256`。`.revision` 记**配方提交号**（最后一次改动配方输入的提交，定义见
   `shared/tools/recipe_rev.py`），不是构建时的 HEAD；`cn.zbswork.upstream.commit` 是经版本锁核对的

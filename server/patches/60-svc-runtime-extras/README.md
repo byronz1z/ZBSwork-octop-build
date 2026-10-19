@@ -20,6 +20,7 @@
   `/app/.venv`（uv 创建、无 pip）用 `uv pip install --python /app/.venv/bin/python` 装 2 个；
   沿用 Dockerfile 已有的 `PIP_INDEX_URL` / `PIP_TRUSTED_HOST` 构建参数（该层同时映射到
   `UV_INDEX_URL` / `UV_INSECURE_HOST`，与 0001 改过的 uv sync 层同一写法）。
+  按指挥部规范 §5（只用官方源，2026-10-19 ZT-033）这两个参数一律留空，走 PyPI 官方源。
 
 ### 清单与证据（证据文件：`_input/apt-history.log`、`_input/pip-requested.txt`、`_input/pip-distinfo.txt`，取自生产容器 2026-10-10 快照）
 
