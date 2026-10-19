@@ -21,13 +21,25 @@ uv run --no-project --with pyyaml shared/tools/check_ownership.py         # 模�
 
 ```bash
 python shared/tools/build_image.py --reference <本机官方克隆>   # 一条龙：施工树 → context.tar → docker build
-python shared/tools/verify_image.py octop:1.0.2b6-zbs2 --reference <本机官方克隆>
+python shared/tools/verify_image.py octop:1.0.2b6-zbs0.3 --reference <本机官方克隆>
 ```
 
 两个脚本都可不传 `--reference`：施工树 `.work/src` 本身就是官方仓库的克隆（带官方 tag），
 不传时 verify 直接用它做比对来源，不写死任何本机路径（云端流程即如此运行）。
 
-- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2b6-zbs2`
+- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2b6-zbs0.3`。
+  版本号（2026-10-16 决策人定）：全称 = 官方版本 + 我们的版本（如 `1.0.2b6-zbs0.3`），用于镜像名；
+  我们的版本按"大改.加功能.修 bug"三段走（0.3 → 0.3.1 → 0.4），不随官方升级归零；
+  网页上只显示我们这段（`ZBS0.3`，由出镜像工具写入 `src/octop/zbs_version.txt`，补丁 23 读取）。
+  旧的 zbs1、zbs2 对应 0.1、0.2，已有镜像名不改。
+  **ZBS0.3（2026-10-19，ZT-030、ZT-032）**：
+  新功能（补丁 23）——头像菜单"项目地址"指向本配方库；页面只显示 ZBS 版本号；关掉网页上官方的检查更新和升级
+  （不访问 PyPI，网页升级接口拒绝）；出镜像写版本号、验镜像认可补丁新增文件。
+  修复（补丁 20）——名单里带"/"的模型存不进（400）；选"自动"时名单都不可用会改用全站模型；
+  定时任务、后台记忆整理不看名单；网页对话被拒显示英文原文；批量设置成功提示缺翻译。
+  优化——被拒、停下按场景提示："你没有使用这个模型的权限，请联系管理员。"
+  "你可用的模型当前都无法使用，请联系管理员。"
+  zbs2（0.2）= 2026-10-13 ZT-026：
   （2026-10-13 ZT-026 第 5 轮：补丁 21 改名 user-workspace 并加浏览器 file: 按用户分；
   补丁 60 加 0003 浏览器本体——序号 zbs1 → zbs2。本轮未构建镜像，待云端构建）。
   历史段：zbs1 = 2026-10-10 ZT-018（镜像加装本地向量/OCR 依赖 + 用户工具），经本机构建
