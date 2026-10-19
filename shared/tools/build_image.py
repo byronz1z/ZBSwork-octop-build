@@ -35,12 +35,8 @@ import recipe_rev  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-BUILD_ARGS = [
-    "PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple",
-    "PIP_TRUSTED_HOST=mirrors.cloud.tencent.com",
-    "NPM_REGISTRY=https://mirrors.cloud.tencent.com/npm/",
-    "APT_MIRROR=mirrors.cloud.tencent.com",
-]
+# 只用官方源（指挥部规范 §5，2026-10-19 ZT-033）：不给 docker build 传任何镜像源参数，
+# 官方 Dockerfile 的 PIP_INDEX_URL / NPM_REGISTRY / APT_MIRROR 留空即走 PyPI、npm、Debian 官方源。
 
 
 def run(cmd, cwd=None, check=True, capture=False, **kw):
@@ -117,7 +113,6 @@ def main() -> int:
     ap.add_argument("--no-build", action="store_true", help="只生成 context.tar，不构建镜像")
     ap.add_argument("--platform", default=None, help="如 linux/amd64")
     ap.add_argument("--build-arg", action="append", default=[], help="额外 docker build --build-arg KEY=VAL")
-    ap.add_argument("--no-mirror", action="store_true", help="不带国内镜像源构建参数（默认带腾讯云镜像源）")
     ap.add_argument("--builder", default="docker", choices=["docker", "podman"],
                     help="构建引擎（podman 时经由其 Windows 命名管道 npipe）")
     args = ap.parse_args()
@@ -185,7 +180,7 @@ def main() -> int:
     cmd[0] = engine
     if args.platform:
         cmd += ["--platform", args.platform]
-    for kv in ([] if args.no_mirror else BUILD_ARGS) + args.build_arg:
+    for kv in args.build_arg:
         cmd += ["--build-arg", kv]
     for k, v in {
         "org.opencontainers.image.version": f"{tag.lstrip('v')}-{version}",
