@@ -25,13 +25,6 @@ jobs:
         # 只用官方源（指挥部规范 §5）：出镜像工具不传任何镜像源参数
         run: uv run --no-project --with pyyaml shared/tools/build_image.py --platform linux/amd64
 
-      - name: 构建失败时的诊断（打印磁盘、docker 占用、构建日志末尾）
-        if: failure()
-        run: |
-          echo '== 磁盘'; df -h
-          echo '== docker 占用'; docker system df || true
-          echo '== 构建日志末尾 120 行'; tail -n 120 .work/build.log || true
-
       - name: 验证镜像
         # 同上，不传 --reference：施工树 .work/src 本身就是官方仓库的克隆（带官方 tag），
         # verify_image.py 不传 --reference 时自动用它做比对来源，不写死任何本机路径
