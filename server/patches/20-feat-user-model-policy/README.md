@@ -57,7 +57,7 @@
 
 ## 模型名单按谁判：现状与决策人要的逻辑（ZT-036，2026-10-20）
 
-决策人原话（日志 10-20 #440）："Agent 应该是跟随主人来定的。比如说这个 Agent 是 A 用户的，那它就能用 A 用户相应权限下的所有模型，应该是按这个逻辑在走的。……如果说 B 用户用了 A 用户的 Agent，他在使用时可以用这些模型；但是 B 用户用自己的 Agent 时，就只能用他自己的模型。应该是按这个逻辑在走的。"
+决策人原话（日志 10-20 #440）："Agent 应该是跟随主人来定的。比如说这个 Agent 是 A 用户的，那它就能用 A 用户相应权限下的所有模型，应该是按这个逻辑在走的。你确定当前是按照这个逻辑在走吗？如果说 B 用户用了 A 用户的 Agent，他在使用时可以用这些模型；但是 B 用户用自己的 Agent 时，就只能用他自己的模型。应该是按这个逻辑在走的。"
 
 一句话概括：**Agent 能用哪些模型，跟着 Agent 主人的名单走；谁在用它不影响。**
 
@@ -76,11 +76,11 @@
 | 同上：发消息时指定模型的校验 | 主人的名单 | 当前登录用户 | **不一致** | `api/routers/chat/turn.py:277-285`（`assert_model_allowed_for_user(…, user.id, …)`） |
 | 同上：设置偏好模型的校验 | 主人的名单 | 当前登录用户 | **不一致**（性质见注） | `api/routers/preferences.py:181-191`（同样按 `user.id`） |
 | IM 渠道消息发到 Agent | 主人的名单 | Agent 主人（会话归属主人） | 一致 | `infra/gateway/process/message_keys.py:106-108`（外部 IM 渠道返回 `agent_owner_id`）、调用点 `processor.py:696-699` |
-| 定时任务 | 主人的名单 | 任务会话主人——现有权限下**就是 Agent 主人**：只有主人能管理该 Agent 的定时任务（`api/routers/cron.py:66-67` 的 `user_owns_agent` 限定），任务创建人即主人；执行期按 `session.user_id` 判名单 | 一致（由入口权限间接保证，不是名单逻辑本身保证） | `infra/cron/delivery.py:252-253`（`allowed_models_for_user_id(…, session.user_id)`）；创建/更新校验按当前用户（`api/routers/cron.py:148-153, 221-226`） |
+| 定时任务（分入口） | 主人的名单 | 执行期一律按任务会话主人（`session.user_id`）判。**网页 / Agent 工具创建**：入口要求主人本人——网页 `api/routers/cron.py:66-67`（`_user_may_manage_agent_cron` = `user_owns_agent`，严格 `row.user_id == user.id`、**无管理员豁免**，管理员替别人建会被 FORBIDDEN 拦下）；Agent 工具 `infra/cron/tools.py:74-81`（同样只认 owner）→ 会话主人就是 Agent 主人，**一致**。**命令行创建**：`infra/users/acting.py:17-42`（`resolve_acting_user_id`，优先级 `--user` → CLI 固定 `default_user` → Agent 主人）、`cli/support/offline_ops.py:196-239`（按该用户建会话和任务，**不校验是否主人**）→ 可指定任意账号，会话主人可能不是 Agent 主人，**不一致**（只有能登进服务器的人能用命令行） | 网页/工具：一致；命令行：**不一致** | 执行期 `infra/cron/delivery.py:252-253`（`allowed_models_for_user_id(…, session.user_id)`）；网页创建校验按当前用户（`api/routers/cron.py:148-153, 221-226`）；命令行创建 `cli/commands/cron.py:68-73` → `offline_ops.py:196-239`（`model=None`，无名单校验） |
 | 后台记忆整理 | 主人的名单 | Agent 主人 | 一致 | `infra/agents/manager.py:4049-4053`（`allowed_models_for_agent_owner(…, row.user_id)`） |
-| 主人是管理员 | 名单不限制管理员 | 名单取到 `None`，不过滤（全部开放） | 一致 | `infra/users/resource_policy.py:291-304`（`allowed_models_for_user_id` 对 admin 恒返回 None） |
-| 主人没设名单 | 全部开放 | `None`，不过滤 | 一致 | 同上（`resource_policy.py:304`，无策略即 None） |
-| 共享 Agent 没有主人（`user_id` 为空） | 无主人可跟 | `allowed_models_for_agent_owner` 对 `user_id=None` 返回 `None`，不过滤（全部开放） | —（无主人，不在"跟主人走"的讨论内） | `infra/users/resource_policy.py:406-414` |
+| 主人是管理员 | 名单不限制管理员 | **按主人取名单的环节**（健康切换、记忆整理）：名单取到 `None`，不过滤（全部开放）——与决策人要的逻辑一致。**按使用者取名单的环节**（回合开始挑模型、输入栏列表、发消息指定模型校验）：仍按使用者的名单判，主人是管理员不使受限的使用者放开——那几行本就不一致，与主人是否管理员无关 | 按主人取名单的环节：一致 | `infra/users/resource_policy.py:291-304`（`allowed_models_for_user_id` 对 admin 恒返回 None） |
+| 主人没设名单 | 全部开放 | **按主人取名单的环节**：`None`，不过滤（全部开放）——一致。**按使用者取名单的环节**：仍按使用者的名单判，主人没设名单不使受限的使用者放开 | 按主人取名单的环节：一致 | 同上（`resource_policy.py:304`，无策略即 None） |
+| 共享 Agent 没有主人（`user_id` 为空） | 无主人可跟 | **按主人取名单的环节**：`allowed_models_for_agent_owner` 对 `user_id=None` 返回 `None`，不过滤（全部开放）。**按使用者取名单的环节**：仍按使用者的名单判（受限使用者照样受限）。无主人，不在"跟主人走"的讨论内 | —（无主人可跟） | `infra/users/resource_policy.py:406-414` |
 
 注（偏好模型那行的性质）：偏好模型（`preferred_model`）是**使用者自己**的设置项，存在使用者自己的 `users.preferences_json` 里，作用是自己发起的回合的第三优先级（`processor.py:591-600`）。校验"你的偏好在你自己的名单内"本身自洽；但它也参与共享 Agent 的回合挑模型（按使用者偏好 + 使用者名单过滤），那一层与"跟主人走"不一致，和"回合开始挑模型"那一行同源。校验本身是否要改成跟主人，**拿不准**——偏好是使用者的属性，不是 Agent 的属性。
 
@@ -102,7 +102,7 @@
 
 ### 以后要改时
 
-改成"跟主人走"需要改上表里"不一致"的每一行：把取名单用的用户从"当前登录用户"换成"这个 Agent 的主人"（补丁 20 已有 `allowed_models_for_agent_owner`，`resource_policy.py:406-414`）。输入栏要按当前选中的 Agent 列出模型，会动前端。改之前先按本节的表重新核对一遍行号，以当时的真实代码为准。
+改成"跟主人走"需要改上表里"不一致"的每一行：把取名单用的用户从"当前登录用户"换成"这个 Agent 的主人"（补丁 20 已有 `allowed_models_for_agent_owner`，`resource_policy.py:406-414`）。定时任务的命令行入口也在要改的范围内（`cli/commands/cron.py:68-73` → `offline_ops.py:196-239` 建会话时可指定任意账号，且 `model=None` 不经名单校验，`acting.py:17-42` 是换用户的源头）。输入栏要按当前选中的 Agent 列出模型，会动前端。改之前先按本节的表重新核对一遍行号，以当时的真实代码为准。
 
 ## 问题（源码事实，上游 v1.0.2b6）
 
