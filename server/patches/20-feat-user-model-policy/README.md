@@ -41,6 +41,18 @@
 
 **怎么算做对**：见指挥部 `任务\ZT-030-model-policy-fixes\任务单.md` §一.7。
 
+## ZT-036：健康切换只在名单内换（2026-10-20）
+
+决策人原话（日志 10-20 #436）："按照正确的逻辑，是用户授权使用的模型才能自动切换去用，这是核心。"
+
+改了哪一处：`src/octop/infra/agents/manager.py` 的 `_build_harness_config` 里给官方 `SafeModelFailoverMiddleware` 装配 `candidates` 的 lambda——先按 Agent 主人的可用模型名单（`allowed_models_for_agent_owner`）过滤候选用 `model_ref_passes_allowlist`，规则与补丁 20 其它场景一致。
+
+三种主人的行为：
+
+- 主人是管理员 → 不过滤，与官方相同；
+- 主人没设名单 → 不过滤（全部开放），与官方相同；
+- 主人设了名单 → 候选只留名单内的；名单里没有可换的，候选为空，官方逻辑只在原模型上重试、再失败按现有流程报错。
+
 ## 问题（源码事实，上游 v1.0.2b6）
 
 1. **任何人都能用所有启用的模型，管理员无法按角色/用户限制**：官方只有
