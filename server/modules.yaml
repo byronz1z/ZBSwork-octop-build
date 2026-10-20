@@ -84,8 +84,8 @@ patches:
     status: enabled
     order: 21
     upstream_pr: no           # ZBS 自有权限收紧策略，上游无意向；设计见 patches/21-*/README.md
-    verified: {v1.0.2b6: strict}
-    in_production: no         # 2026-10-12 新增（ZT-026 第 2 步）；2026-10-13 第 3 轮 A 改为本地 Shell + 按用户 root_dir 方案；第 4 轮按审核意见整改；第 5 轮加 F11（浏览器 file: 按用户分）/F13（边界说明）并改名 user-workspace（原 user-sandbox）。本机单元/临时环境 zt026 实测（见 step6 报告），未部署
+    verified: {v1.0.2b6: strict, v1.0.2: strict}
+    in_production: yes         # 生产 zbs0.3 里在用（2026-10-14 随 1.0.2b6-zbs2 上线，含本补丁）；全站开关 2026-10-14 起开着；v1.0.2 适配版（ZT-036b）待随 zbs0.4 上生产
 
   - id: 23-feat-own-update-source
     name_zh: 更新：项目地址指向配方库、页面只显示我们的版本号（如 ZBS0.3）、关掉网页上官方的检查更新和升级（ZT-032）
