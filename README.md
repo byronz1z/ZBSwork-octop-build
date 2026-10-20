@@ -3,9 +3,10 @@
 ZBSwork 的**配方库**：上游 [TencentCloud/Octop](https://github.com/TencentCloud/Octop) 的某个版本 + 少量补丁 + 品牌包 = ZBSwork。
 
 - 上游镜像：[byronz1z/ZBSwork-octop](https://github.com/byronz1z/ZBSwork-octop)（纯镜像，不含自有改动）
-- 当前锁定上游：`v1.0.2b6`（见 `server/UPSTREAM.lock`；ZT-025 官方升级，2026-10-12 本机适配验证：
-  check_ownership、brand_check --self、build_image --no-build 均退出码 0，版本锁核对/补丁/品牌通过）；
-  `next_target` 暂空（无下一目标，不虚构）
+- 当前锁定上游：`v1.0.2`（见 `server/UPSTREAM.lock`；ZT-036 官方升级）；
+  `next_target` 暂空（无下一目标，不虚构）；补丁 10 自 ZT-036 起作废（官方已修，目录只留 README）
+- 此前（ZT-025，v1.0.2b6）：ZT-025 官方升级，2026-10-12 本机适配验证：
+  check_ownership、brand_check --self、build_image --no-build 均退出码 0，版本锁核对/补丁/品牌通过
 
 ## 快速开始
 
@@ -21,13 +22,13 @@ uv run --no-project --with pyyaml shared/tools/check_ownership.py         # 模�
 
 ```bash
 python shared/tools/build_image.py --reference <本机官方克隆>   # 一条龙：施工树 → context.tar → docker build
-python shared/tools/verify_image.py octop:1.0.2b6-zbs0.3 --reference <本机官方克隆>
+python shared/tools/verify_image.py octop:1.0.2-zbs0.4 --reference <本机官方克隆>
 ```
 
 两个脚本都可不传 `--reference`：施工树 `.work/src` 本身就是官方仓库的克隆（带官方 tag），
 不传时 verify 直接用它做比对来源，不写死任何本机路径（云端流程即如此运行）。
 
-- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2b6-zbs0.3`。
+- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2-zbs0.4`。
   版本号（2026-10-16 决策人定）：全称 = 官方版本 + 我们的版本（如 `1.0.2b6-zbs0.3`），用于镜像名；
   我们的版本按"大改.加功能.修 bug"三段走（0.3 → 0.3.1 → 0.4），不随官方升级归零；
   网页上只显示我们这段（`ZBS0.3`，由出镜像工具写入 `src/octop/zbs_version.txt`，补丁 23 读取）。
@@ -85,10 +86,11 @@ python shared/tools/verify_image.py octop:1.0.2b6-zbs0.3 --reference <本机官�
 | 编号 | 中文名 | 状态 |
 |---|---|---|
 | brand | 品牌包（方形/横版/竖版 logo + 产品名；网页端 + 桌面端） | 启用（第一期扩充中，见 Issue） |
-| 10 | PostgreSQL 模式重启死循环修复 | 启用（生产在用） |
-| 20 | 按角色/用户的可用模型名单；接口对非管理员不返回模型密钥 | 启用（未部署） |
-| 21 | 按用户文件夹：活动范围 {username}、浏览器 file: 按用户分 | 启用（未部署） |
-| 60 | 镜像加装本地向量/OCR 依赖 + 用户工具 + 浏览器本体 | 启用（0001 生产在用；0002/0003 未部署） |
+| 10 | PostgreSQL 模式重启死循环修复 | 已作废（官方 v1.0.2b9 起已修，#1866；目录只留 README）；生产 zbs0.3 及以前的镜像含此补丁 |
+| 20 | 按角色/用户的可用模型名单；接口对非管理员不返回模型密钥 | 启用；生产在用（zbs0.3）；v1.0.2 上的重新适配由 ZT-036 支线 36a 做 |
+| 21 | 按用户文件夹：活动范围 {username}、浏览器 file: 按用户分 | 启用；生产在用（zbs0.3）；v1.0.2 上的重新适配由 ZT-036 支线 36b 做 |
+| 23 | 更新：项目地址指向配方库、页面只显示我们的版本号、关掉网页上官方的检查更新和升级 | 启用；生产在用（zbs0.3）；v1.0.2 上的重新适配由 ZT-036 支线 36c 做 |
+| 60 | 镜像加装本地向量/OCR 依赖 + 用户工具 + 浏览器本体 | 启用；生产在用（zbs0.3，0001–0003）；zbs0.4 起 0001 作废（官方 v1.0.2 已实现，PR #2082），只含 0002、0003 |
 
 桌面端是单独一条线 `desk/`（与 `server/` 并列），尚未建立；按全景，不再叫 50 号。
 旧 AI 线产物未经用户确认，不占编号；代码只留在归档 tag `archive/2026-10/build-init` 供追溯，不作参考。

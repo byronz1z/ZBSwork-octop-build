@@ -1,5 +1,5 @@
 diff --git a/docker/Dockerfile b/docker/Dockerfile
-index ad9bed4c..1c447960 100644
+index 9fc78a969c68e57d6bf9f96991dc60c0addd26f1..1c0e72df06074003fe55d754ab9571bc6c015c68 100644
 --- a/docker/Dockerfile
 +++ b/docker/Dockerfile
 @@ -92,6 +92,40 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -40,10 +40,10 @@ index ad9bed4c..1c447960 100644
 +        fonts-wqy-zenhei \
 +        fonts-tlwg-loma-otf \
 +        fonts-freefont-ttf \
+         libgl1 \
+         libglib2.0-0 \
          curl \
-         git \
-     && rm -rf /var/lib/apt/lists/*
-@@ -129,6 +163,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
+@@ -135,6 +169,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
      && apt-get purge -y --auto-remove build-essential \
      && rm -rf /var/lib/apt/lists/* /tmp/*
  

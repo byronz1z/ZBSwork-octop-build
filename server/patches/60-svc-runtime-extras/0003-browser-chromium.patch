@@ -1,16 +1,16 @@
 diff --git a/docker/Dockerfile b/docker/Dockerfile
-index 285d40f4d51dcbe2e116976121801e1bbba5a03f..c4ef4273229b535bae4ac4176c91b4af6188deeb 100644
+index 1c0e72df06074003fe55d754ab9571bc6c015c68..c523f9db566ef1ba17192cf5690198897b0afdca 100644
 --- a/docker/Dockerfile
 +++ b/docker/Dockerfile
-@@ -131,6 +131,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
+@@ -187,6 +187,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
  
  RUN mkdir -p /data/.octop
  
 +# --- ZT-026 / 60-svc-runtime-extras 0003: browser binary into the image ---
-+# Official installs the browser *libraries* (uv sync --extra browser brings
-+# the playwright package; the apt layer carries the shared libs + CJK fonts)
-+# but never the Chromium binary itself — browser_use then fails with
-+# "Chrome/Chromium not found". octop_browser.cdp.launcher.find_chrome()
++# Official installs the browser *libraries* (the official `browser` dependency
++# group brings the playwright package; the apt layer carries the shared libs
++# + CJK fonts) but never the Chromium binary itself — browser_use then fails
++# with "Chrome/Chromium not found". octop_browser.cdp.launcher.find_chrome()
 +# discovers Playwright's download cache, and this Dockerfile already exports
 +# PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright, so the official
 +# installer command (`playwright install chromium`; headless mode needs no

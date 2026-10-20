@@ -1,5 +1,5 @@
 diff --git a/dashboard/src/api/modules/userRoles.ts b/dashboard/src/api/modules/userRoles.ts
-index 463b6335b681302f9520c6d9e3ef9d168db67886..7618b8ad045bb3fbf04393f46cd79f1c7ea1c069 100644
+index 456144d0d8bdf6d3a888848f18a58c9fb71ce493..fd04fb52b3f043ecee11127a65a24c1a44150ba1 100644
 --- a/dashboard/src/api/modules/userRoles.ts
 +++ b/dashboard/src/api/modules/userRoles.ts
 @@ -18,6 +18,7 @@ export interface UserRole {
@@ -10,7 +10,7 @@ index 463b6335b681302f9520c6d9e3ef9d168db67886..7618b8ad045bb3fbf04393f46cd79f1c
    created_at: number;
    updated_at: number;
    avatar_url?: string | null;
-@@ -127,6 +128,7 @@ export function userRoleDrift(
+@@ -128,6 +129,7 @@ export function userRoleDrift(
      workspace_root_dir?: string | null;
      token_quota?: number | null;
      max_agents?: number | null;
@@ -18,7 +18,7 @@ index 463b6335b681302f9520c6d9e3ef9d168db67886..7618b8ad045bb3fbf04393f46cd79f1c
    },
    roles: UserRole[],
  ): UserRoleDrift | null {
-@@ -155,5 +157,8 @@ export function userRoleDrift(
+@@ -156,5 +158,8 @@ export function userRoleDrift(
    if ((row.token_quota ?? null) !== (role.token_quota ?? null))
      return "changed";
    if ((row.max_agents ?? null) !== (role.max_agents ?? null)) return "changed";
@@ -28,10 +28,10 @@ index 463b6335b681302f9520c6d9e3ef9d168db67886..7618b8ad045bb3fbf04393f46cd79f1c
    return null;
  }
 diff --git a/dashboard/src/locales/en.json b/dashboard/src/locales/en.json
-index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..a56dfb813348ecedf440928928ce074e23651633 100644
+index f80a7e99f31f421c99aef11381b99737b02d0cf6..6445459fef12fbdb54d28b60154b3f54beb93bc6 100644
 --- a/dashboard/src/locales/en.json
 +++ b/dashboard/src/locales/en.json
-@@ -185,6 +185,8 @@
+@@ -196,6 +196,8 @@
      "KNOWLEDGE_UNSUPPORTED_TYPE": "This document type is not supported for knowledge bases.",
      "KNOWLEDGE_NAME_TAKEN": "You already have a knowledge base with this name.",
      "KNOWLEDGE_NAME_INVALID": "Invalid name.",
@@ -40,7 +40,7 @@ index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..a56dfb813348ecedf440928928ce074e
      "AVATAR_INVALID": "Avatar must be a PNG, JPEG, WebP, or GIF image.",
      "AVATAR_TOO_LARGE": "Avatar exceeds the 5 MB size limit.",
      "INVITE_INVALID": "This invite code is invalid.",
-@@ -5425,6 +5427,13 @@
+@@ -5915,6 +5917,13 @@
      "policyMaxAgentsHint": "How many experts this user may create (teams excluded). Off means no limit.",
      "policyMaxAgentsRequired": "Enter an expert limit",
      "policyMaxAgentsPlaceholder": "e.g. 5",
@@ -54,7 +54,7 @@ index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..a56dfb813348ecedf440928928ce074e
      "modalEditTitle": "Edit user {{username}}",
      "batchSelected": "{{count}} selected",
      "batchSelectAll": "Select all",
-@@ -5453,7 +5462,8 @@
+@@ -5943,7 +5952,8 @@
        "disable": "Disable",
        "delete": "Delete",
        "set_token_quota": "Set token limit",
@@ -65,10 +65,10 @@ index 0fe2cbc2ca5eceee07a9a2884ff1320ea5ec042b..a56dfb813348ecedf440928928ce074e
    },
    "adminSso": {
 diff --git a/dashboard/src/locales/zh.json b/dashboard/src/locales/zh.json
-index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..e20d5086b802c52626d712b58b90752930d04bd3 100644
+index 623bd21f1aadc5ced1061fd96c1025d49bf17492..e031eceb73836da397dd8e18bf1db9313d2b0470 100644
 --- a/dashboard/src/locales/zh.json
 +++ b/dashboard/src/locales/zh.json
-@@ -185,6 +185,8 @@
+@@ -196,6 +196,8 @@
      "KNOWLEDGE_UNSUPPORTED_TYPE": "知识库不支持此文档类型。",
      "KNOWLEDGE_NAME_TAKEN": "您已有同名知识库。",
      "KNOWLEDGE_NAME_INVALID": "名称无效。",
@@ -77,7 +77,7 @@ index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..e20d5086b802c52626d712b58b907529
      "AVATAR_INVALID": "头像须为 PNG、JPEG、WebP 或 GIF 图片。",
      "AVATAR_TOO_LARGE": "头像超过 5 MB 大小限制。",
      "INVITE_INVALID": "邀请码无效。",
-@@ -5425,6 +5427,13 @@
+@@ -5915,6 +5917,13 @@
      "policyMaxAgentsHint": "该用户可创建的专家数量（不含团队）。关闭表示不限制。",
      "policyMaxAgentsRequired": "请输入专家数量上限",
      "policyMaxAgentsPlaceholder": "例如 5",
@@ -91,7 +91,7 @@ index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..e20d5086b802c52626d712b58b907529
      "modalEditTitle": "编辑用户 {{username}}",
      "batchSelected": "已选 {{count}} 人",
      "batchSelectAll": "全选",
-@@ -5453,7 +5462,8 @@
+@@ -5943,7 +5952,8 @@
        "disable": "禁用",
        "delete": "删除",
        "set_token_quota": "设置 Token 上限",
@@ -102,7 +102,7 @@ index fa44507b9889153e9a37ff4d11cbbfe5983adfa1..e20d5086b802c52626d712b58b907529
    },
    "adminSso": {
 diff --git a/dashboard/src/pages/Admin/Users/RolesPanel.tsx b/dashboard/src/pages/Admin/Users/RolesPanel.tsx
-index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb99776646a 100644
+index 4620a23ec77fa8a06219a10a3725a2e0cc44f08d..266f243103511703e1ff60c8a76339ae4537bed1 100644
 --- a/dashboard/src/pages/Admin/Users/RolesPanel.tsx
 +++ b/dashboard/src/pages/Admin/Users/RolesPanel.tsx
 @@ -39,6 +39,7 @@ import {
@@ -113,7 +113,7 @@ index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb9
  import { apiErrorMessage } from "../../../utils/apiError";
  import { useCardTableView } from "../../../hooks/useCardTableView";
  import { fetchFilesystemDefaults } from "../../Experts/components/agentBackendForm";
-@@ -66,6 +67,9 @@ export default function RolesPanel() {
+@@ -79,6 +80,9 @@ export default function RolesPanel() {
    const [permCatalog, setPermCatalog] = useState<PermissionCatalogItem[]>([]);
    const [fsTreeRoots, setFsTreeRoots] = useState<string[]>([HOST_FS_ROOT]);
    const [workspaceRootAllowed, setWorkspaceRootAllowed] = useState(true);
@@ -123,7 +123,7 @@ index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb9
    const [editor, setEditor] = useState<UserRole | "new" | null>(null);
    const [submitting, setSubmitting] = useState(false);
    const [form] = Form.useForm<RoleFormValues>();
-@@ -110,6 +114,18 @@ export default function RolesPanel() {
+@@ -125,6 +129,18 @@ export default function RolesPanel() {
          setFsTreeRoots([HOST_FS_ROOT]);
          setWorkspaceRootAllowed(true);
        });
@@ -142,7 +142,7 @@ index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb9
    }, [refresh]);
  
    const descriptionForForm = useCallback(
-@@ -145,6 +161,7 @@ export default function RolesPanel() {
+@@ -161,6 +177,7 @@ export default function RolesPanel() {
            limit_workspace_root: false,
            limit_token_quota: false,
            limit_max_agents: false,
@@ -150,7 +150,7 @@ index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb9
          }
        : {
            name: editor.user_role_name,
-@@ -161,6 +178,8 @@ export default function RolesPanel() {
+@@ -177,6 +194,8 @@ export default function RolesPanel() {
            token_quota: editor.token_quota ?? undefined,
            limit_max_agents: editor.max_agents != null,
            max_agents: editor.max_agents ?? undefined,
@@ -159,7 +159,7 @@ index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb9
          };
    const formKey =
      editor === "new" ? "new" : editor ? editor.user_role_id : "closed";
-@@ -307,7 +326,8 @@ export default function RolesPanel() {
+@@ -324,7 +343,8 @@ export default function RolesPanel() {
                const limited =
                  Boolean(row.workspace_root_dir) ||
                  row.token_quota != null ||
@@ -169,7 +169,7 @@ index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb9
                return (
                  <article key={row.user_role_id} className={styles.roleCard}>
                    <div className={styles.roleCardBody}>
-@@ -446,7 +466,8 @@ export default function RolesPanel() {
+@@ -463,7 +483,8 @@ export default function RolesPanel() {
                  const limited =
                    Boolean(row.workspace_root_dir) ||
                    row.token_quota != null ||
@@ -179,7 +179,7 @@ index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb9
                  return limited
                    ? t("adminUsers.rolePolicyLimited")
                    : t("adminUsers.rolePolicyUnlimited");
-@@ -659,6 +680,7 @@ export default function RolesPanel() {
+@@ -705,6 +726,7 @@ export default function RolesPanel() {
                <ResourcePolicyFields
                  fsTreeRoots={fsTreeRoots}
                  workspaceRootAllowed={workspaceRootAllowed}
@@ -188,7 +188,7 @@ index 96dd96d14b483e680112729d20046f48b2de2d44..daa82f8d962691bc9e90853b8f13cdb9
              </>
            )}
 diff --git a/dashboard/src/pages/Admin/Users/UsersListPanel.tsx b/dashboard/src/pages/Admin/Users/UsersListPanel.tsx
-index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a6d87f362 100644
+index 280d27bf73d40f8c7966e419712409a42fa8b7d6..7329fbe728f93b53518571430e8c7b11466c9d3a 100644
 --- a/dashboard/src/pages/Admin/Users/UsersListPanel.tsx
 +++ b/dashboard/src/pages/Admin/Users/UsersListPanel.tsx
 @@ -65,6 +65,7 @@ import {
@@ -199,7 +199,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
  import {
    userRolesApi,
    snapshotRoleLabel,
-@@ -120,6 +121,7 @@ interface UserRow {
+@@ -123,6 +124,7 @@ interface UserRow {
    workspace_root_dir?: string | null;
    token_quota?: number | null;
    max_agents?: number | null;
@@ -207,7 +207,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
  }
  
  export interface PermissionCatalogItem {
-@@ -142,6 +144,8 @@ export interface PolicyFormValues {
+@@ -145,6 +147,8 @@ export interface PolicyFormValues {
    token_quota?: number | null;
    limit_max_agents?: boolean;
    max_agents?: number | null;
@@ -216,7 +216,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
  }
  
  interface CreateValues extends PolicyFormValues {
-@@ -180,6 +184,8 @@ function policyFieldsFromRole(
+@@ -183,6 +187,8 @@ function policyFieldsFromRole(
      token_quota: role.token_quota ?? undefined,
      limit_max_agents: role.max_agents != null,
      max_agents: role.max_agents ?? undefined,
@@ -225,7 +225,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
    };
  }
  
-@@ -422,7 +428,8 @@ type BatchAction =
+@@ -425,7 +431,8 @@ type BatchAction =
    | "disable"
    | "delete"
    | "set_token_quota"
@@ -235,7 +235,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
  
  interface BatchResponse {
    action: BatchAction;
-@@ -446,6 +453,11 @@ interface BatchMaxAgentsFormValues {
+@@ -449,6 +456,11 @@ interface BatchMaxAgentsFormValues {
    max_agents?: number | null;
  }
  
@@ -247,7 +247,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
  const FIELD_ICON_PROPS = {
    size: 16 as const,
    style: { color: "var(--fn-text-tertiary)" },
-@@ -458,6 +470,7 @@ export function policyPayload(
+@@ -461,6 +473,7 @@ export function policyPayload(
    workspace_root_dir: string | null;
    token_quota: number | null;
    max_agents: number | null;
@@ -255,7 +255,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
  } {
    return {
      workspace_root_dir:
-@@ -466,6 +479,9 @@ export function policyPayload(
+@@ -469,6 +482,9 @@ export function policyPayload(
          : null,
      token_quota: values.limit_token_quota ? values.token_quota ?? null : null,
      max_agents: values.limit_max_agents ? values.max_agents ?? null : null,
@@ -265,7 +265,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
    };
  }
  
-@@ -487,6 +503,12 @@ export function rolePoliciesFromForm(
+@@ -490,6 +506,12 @@ export function rolePoliciesFromForm(
    if (flat.max_agents != null) {
      policies.push({ name: "max_agents", value: String(flat.max_agents) });
    }
@@ -278,7 +278,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
    return policies;
  }
  
-@@ -616,9 +638,11 @@ function MaxAgentsInput({ value, onChange }: MaxAgentsInputProps) {
+@@ -619,9 +641,11 @@ function MaxAgentsInput({ value, onChange }: MaxAgentsInputProps) {
  export function ResourcePolicyFields({
    fsTreeRoots,
    workspaceRootAllowed,
@@ -290,7 +290,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
  }) {
    const { t } = useTranslation();
    return (
-@@ -725,6 +749,42 @@ export function ResourcePolicyFields({
+@@ -728,6 +752,42 @@ export function ResourcePolicyFields({
            ) : null
          }
        </Form.Item>
@@ -333,7 +333,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
      </div>
    );
  }
-@@ -1254,11 +1314,16 @@ export default function UsersListPanel() {
+@@ -1275,11 +1335,16 @@ export default function UsersListPanel() {
    const [batchTokenForm] = Form.useForm<BatchTokenFormValues>();
    const [batchMaxAgentsOpen, setBatchMaxAgentsOpen] = useState(false);
    const [batchMaxAgentsForm] = Form.useForm<BatchMaxAgentsFormValues>();
@@ -350,7 +350,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
  
    const permLabelByKey = useMemo(() => {
      const map = new Map<string, string>();
-@@ -1421,6 +1486,7 @@ export default function UsersListPanel() {
+@@ -1444,6 +1509,7 @@ export default function UsersListPanel() {
        options?: {
          token_quota?: number | null;
          max_agents?: number | null;
@@ -358,7 +358,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
        },
      ) => {
        if (selectedIds.length === 0) return;
-@@ -1437,6 +1503,9 @@ export default function UsersListPanel() {
+@@ -1460,6 +1526,9 @@ export default function UsersListPanel() {
              ...(action === "set_max_agents"
                ? { max_agents: options?.max_agents ?? null }
                : {}),
@@ -368,7 +368,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
            }),
          });
          reportBatchResult(body);
-@@ -1445,6 +1514,8 @@ export default function UsersListPanel() {
+@@ -1468,6 +1537,8 @@ export default function UsersListPanel() {
          batchTokenForm.resetFields();
          setBatchMaxAgentsOpen(false);
          batchMaxAgentsForm.resetFields();
@@ -377,7 +377,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
          void refreshUsers();
        } catch (err) {
          message.error(
-@@ -1460,6 +1531,7 @@ export default function UsersListPanel() {
+@@ -1483,6 +1554,7 @@ export default function UsersListPanel() {
        clearSelection,
        batchTokenForm,
        batchMaxAgentsForm,
@@ -385,7 +385,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
        refreshUsers,
        t,
      ],
-@@ -1521,6 +1593,24 @@ export default function UsersListPanel() {
+@@ -1544,6 +1616,24 @@ export default function UsersListPanel() {
        max_agents: values.limit_max_agents ? values.max_agents ?? null : null,
      });
    };
@@ -410,7 +410,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
    useEffect(() => {
      if (!hasLockedUser) return;
      const anyExpired = rows.some(
-@@ -1609,6 +1699,18 @@ export default function UsersListPanel() {
+@@ -1632,6 +1722,18 @@ export default function UsersListPanel() {
        .list()
        .then(setUserRoles)
        .catch(() => setUserRoles([]));
@@ -429,7 +429,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
      fetchFilesystemDefaults()
        .then((defaults) => {
          setFsTreeRoots(
-@@ -1696,6 +1798,8 @@ export default function UsersListPanel() {
+@@ -1719,6 +1821,8 @@ export default function UsersListPanel() {
        token_quota: undefined,
        limit_max_agents: false,
        max_agents: undefined,
@@ -438,7 +438,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
        ...(userRole ? policyFieldsFromRole(userRole, workspaceRootAllowed) : {}),
      });
      setPendingUserAvatar(null);
-@@ -1726,6 +1830,8 @@ export default function UsersListPanel() {
+@@ -1749,6 +1853,8 @@ export default function UsersListPanel() {
        token_quota: row.token_quota ?? undefined,
        limit_max_agents: row.max_agents != null,
        max_agents: row.max_agents ?? undefined,
@@ -447,7 +447,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
      });
    };
  
-@@ -1945,6 +2051,13 @@ export default function UsersListPanel() {
+@@ -1968,6 +2074,13 @@ export default function UsersListPanel() {
              >
                {t("adminUsers.batchSetMaxAgents")}
              </Button>
@@ -461,7 +461,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
              <Button
                size="small"
                danger
-@@ -2299,6 +2412,7 @@ export default function UsersListPanel() {
+@@ -2322,6 +2435,7 @@ export default function UsersListPanel() {
              limit_workspace_root: false,
              limit_token_quota: false,
              limit_max_agents: false,
@@ -469,7 +469,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
            }}
            className={styles.createUserForm}
          >
-@@ -2438,6 +2552,7 @@ export default function UsersListPanel() {
+@@ -2461,6 +2575,7 @@ export default function UsersListPanel() {
            <ResourcePolicyFields
              fsTreeRoots={fsTreeRoots}
              workspaceRootAllowed={workspaceRootAllowed}
@@ -477,7 +477,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
            />
          </Form>
        </Drawer>
-@@ -2646,6 +2761,7 @@ export default function UsersListPanel() {
+@@ -2669,6 +2784,7 @@ export default function UsersListPanel() {
            <ResourcePolicyFields
              fsTreeRoots={fsTreeRoots}
              workspaceRootAllowed={workspaceRootAllowed}
@@ -485,7 +485,7 @@ index aca931d7967c6adb262e12da5ba40a13d3fed2ff..0f614de4810640d0b81d2b2acd0d5c5a
            />
          </Form>
        </Drawer>
-@@ -2832,6 +2948,74 @@ export default function UsersListPanel() {
+@@ -2855,6 +2971,74 @@ export default function UsersListPanel() {
            </Form.Item>
          </Form>
        </Modal>
