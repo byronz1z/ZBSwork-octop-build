@@ -488,7 +488,7 @@ index 0b18fc4817a2b9af6a02665100137b1df783df43..cf4e7230bf40b9d22f7c55592b968cfe
      "AVATAR_TOO_LARGE": "头像超过 5 MB 大小限制。",
      "INVITE_INVALID": "邀请码无效。",
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
-index 87a2b2524578ab6f4a882ac087a5741ee0abc93d..d76f57dc8a4e466811a6948c2eb181fe11d54223 100644
+index 87a2b2524578ab6f4a882ac087a5741ee0abc93d..d608e3fce8c02dbc13c0456af42d524e1fa79182 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
 @@ -28,6 +28,7 @@ from octop.infra.agents.memory.backend import memory_backend_from_agent_config
@@ -597,6 +597,35 @@ index 87a2b2524578ab6f4a882ac087a5741ee0abc93d..d76f57dc8a4e466811a6948c2eb181fe
              **_resolve_memory_backend_kwargs(cfg, workspace_dir=workspace_dir, config=self._config),
          )
          if "tools_disabled" in _HARNESS_AGENT_CONFIG_FIELDS:
+@@ -4075,13 +4114,25 @@ class AgentManager:
+                     SafeModelFailoverMiddleware,
+                 )
+ 
++                # ZBS patch 20 (decision log 10-20 #436): health-aware model
++                # failover may only switch to models the agent owner has
++                # authorized. ``allowed_models_for_agent_owner`` returns
++                # ``None`` for admins and owners without a whitelist — those
++                # keep the official site-wide candidate list unchanged. When
++                # the whitelist admits no candidate, the list is empty and the
++                # official middleware just retries on the current model.
++                failover_allowed_models = allowed_models_for_agent_owner(
++                    self._repos.user_policy_repo, self._repos.user_repo, row.user_id
++                )
+                 retry_middleware: Any = SafeModelFailoverMiddleware(
+                     health=self._model_health,
+-                    candidates=lambda _current_ref, needs_multimodal: (
+-                        self._providers.list_auto_route_candidates(
++                    candidates=lambda _current_ref, needs_multimodal: [
++                        candidate
++                        for candidate in self._providers.list_auto_route_candidates(
+                             needs_multimodal=needs_multimodal
+                         )
+-                    ),
++                        if model_ref_passes_allowlist(candidate.ref, failover_allowed_models)
++                    ],
+                     model_for_ref=get_chat_model,
+                     max_retries=applied.model_retry_max_retries,
+                     initial_delay=applied.model_retry_initial_delay,
 diff --git a/src/octop/infra/agents/providers/store.py b/src/octop/infra/agents/providers/store.py
 index a18eb88dda41e296d9bde8343ce8183b0c110bc3..44b1b37b63775fec77317328dd29b734eeb33264 100644
 --- a/src/octop/infra/agents/providers/store.py
@@ -1843,10 +1872,10 @@ index 0000000000000000000000000000000000000000..4e70e2cb3d71569cc7c59d691bef755b
 +    assert "你可用的模型当前都无法使用" in (row.get("last_error") or ""), row
 diff --git a/tests/unit/agents/test_memory_model_policy.py b/tests/unit/agents/test_memory_model_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ee41b7f93188e175c287655c36733b815df4d69
+index 0000000000000000000000000000000000000000..801327dcd935205098e5171f2870a68475f119ba
 --- /dev/null
 +++ b/tests/unit/agents/test_memory_model_policy.py
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,238 @@
 +"""ZBS patch 20 (feature 4): memory distillation respects the owner's model whitelist.
 +
 +Covers ``AgentManager._build_harness_config``:
@@ -1866,6 +1895,7 @@ index 0000000000000000000000000000000000000000..4ee41b7f93188e175c287655c36733b8
 +
 +import json
 +from pathlib import Path
++from typing import Any
 +
 +import pytest
 +
@@ -2023,6 +2053,67 @@ index 0000000000000000000000000000000000000000..4ee41b7f93188e175c287655c36733b8
 +
 +    assert cfg.default_model == "b/m3"
 +    assert cfg.memory_aux_model_enabled is True
++
++
++# --- ZT-036: health-aware model failover only switches inside the whitelist ---
++# Decision log 10-20 #436: only models the agent owner has authorized may be
++# used for the automatic failover switch. The candidates callback installed by
++# ``_build_harness_config`` must therefore filter ``SafeModelFailoverMiddleware``
++# candidates by the owner's ``allowed_models``; admins and owners without a
++# whitelist keep the official site-wide candidate list.
++
++
++async def _boot_failover_config(manager: AgentManager, row: AgentRow) -> Any:
++    """Boot (wires ``shared_factory`` → ``SafeModelFailoverMiddleware``) and build."""
++    await manager.boot()
++    cfg = manager._build_harness_config(row)
++    middleware = next(
++        m for m in (cfg.middleware or []) if type(m).__name__ == "SafeModelFailoverMiddleware"
++    )
++    return middleware
++
++
++def _failover_refs(middleware: Any) -> list[str]:
++    return [c.ref for c in middleware._candidates("a/m1", needs_multimodal=False)]
++
++
++async def test_whitelisted_owner_failover_candidates_inside_whitelist(
++    manager: AgentManager,
++) -> None:
++    _add_provider(manager, "a", ["m1", "m2"])
++    _add_provider(manager, "b", ["m3"])
++    uid = _seed_user(manager, role="user")
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m2"]))
++
++    middleware = await _boot_failover_config(manager, _row(uid))
++
++    assert _failover_refs(middleware) == ["a/m2"]  # b/m3 filtered out
++
++
++async def test_no_whitelist_owner_failover_candidates_unchanged(
++    manager: AgentManager,
++) -> None:
++    _add_provider(manager, "a", ["m1"])
++    _add_provider(manager, "b", ["m3"])
++    uid = _seed_user(manager, role="user")
++
++    middleware = await _boot_failover_config(manager, _row(uid))
++
++    assert _failover_refs(middleware) == ["a/m1", "b/m3"]  # official order
++
++
++async def test_admin_owner_failover_candidates_unchanged_even_with_whitelist(
++    manager: AgentManager,
++) -> None:
++    _add_provider(manager, "a", ["m1"])
++    _add_provider(manager, "b", ["m3"])
++    uid = _seed_user(manager, role="admin")
++    # Admins are never restricted; a stale policy row must not apply.
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1"]))
++
++    middleware = await _boot_failover_config(manager, _row(uid))
++
++    assert _failover_refs(middleware) == ["a/m1", "b/m3"]  # official order
 diff --git a/tests/unit/agents/test_model_policy_store.py b/tests/unit/agents/test_model_policy_store.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..7db7ee1896351cdff5699a5cc4706f41d90f6074
