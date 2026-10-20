@@ -117,7 +117,7 @@ patches:
 # 并改 src/octop/api/routers/chat/ws.py；这几个文件只有补丁 20 改，不需 shared_files 登记。
 shared_files:
   src/octop/infra/users/resource_policy.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 加开关读取/管理员判定函数，20 加 allowed_models 策略函数，不同位置"}
-  src/octop/infra/agents/manager.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加后端覆写、_prepare_docker_backend 加 {username} 展开、_build_harness_config 加浏览器判定回调，20 改 resolve_fallback_model_ref、在 _build_harness_config 末段（21 所有改动之后）调用补丁 20 的记忆模型挑选（ZT-030），不同位置"}
+  src/octop/infra/agents/manager.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加后端覆写、_prepare_docker_backend 加 {username} 展开、_build_harness_config 加浏览器判定回调，20 改 resolve_fallback_model_ref、在 _build_harness_config 末段（21 所有改动之后）调用补丁 20 的记忆模型挑选（ZT-030），不同位置；ZT-036 在同一函数健康切换装配处按主人名单过滤候选"}
   dashboard/src/locales/zh.json: {owner: brand, also: [20-feat-user-model-policy, 23-feat-own-update-source], reason: "品牌只替换值不动 key；20 新增 adminUsers 段与 apiErrors 两个键，23 新增顶层 zbsUpdate 段（先套补丁再套品牌，均严格 apply）"}
   dashboard/src/locales/en.json: {owner: brand, also: [20-feat-user-model-policy, 23-feat-own-update-source], reason: "同 zh.json"}
   dashboard/src/layouts/Sidebar.tsx: {owner: brand, also: [23-feat-own-update-source], reason: "品牌只替换显示文字；23 把版本标记换成 ZbsVersionBadge、去掉更新红点（先套 23 再套品牌，均严格 apply）"}
