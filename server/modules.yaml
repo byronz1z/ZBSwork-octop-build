@@ -94,7 +94,7 @@ patches:
     status: enabled
     order: 23
     upstream_pr: no           # ZBS 自有发布方式（我们出镜像、部署运维库换镜像），上游无意向
-    verified: {v1.0.2b6: strict}
+    verified: {v1.0.2b6: strict, v1.0.2: strict}   # 2026-10-20 ZT-036c 在官方 v1.0.2 裸树上重新适配（施工树 0 个补丁基线，补丁 20、21 由其他支线重做，合并时按 R7 复验）
     in_production: no         # 2026-10-16 新增（ZT-032）；版本号文件由出镜像工具写入施工树（shared/tools/build_image.py），验镜像工具认可补丁新增文件（verify_image.py）
 
   - id: 60-svc-runtime-extras

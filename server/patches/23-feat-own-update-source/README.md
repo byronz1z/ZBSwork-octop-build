@@ -4,7 +4,7 @@
 |---|---|
 | 层级 | L3 核心补丁（补丁文件共 13 个文件：新文件 5 个 + 官方文件挂载点 8 个，其中 2 个文案文件、1 个官方测试） |
 | 状态 | enabled |
-| 实测 | v1.0.2b6：10 → 20 → 21 → 23 → 60 + 品牌包 严格套上（2026-10-16 prepare.py 全量建树 + brand_check 通过）；更新相关测试 68 passed |
+| 实测 | v1.0.2：裸树严格套上（2026-10-20 ZT-036c，施工树 v1.0.2 + 0 补丁基线，git apply --check 通过）；补丁自带测试 + tests/unit/api 全过（30 + 330 passed）。v1.0.2b6：10 → 20 → 21 → 23 → 60 + 品牌包 严格套上（2026-10-16 prepare.py 全量建树 + brand_check 通过）；更新相关测试 68 passed |
 | 上游 PR | 否——ZBS 自有发布方式 |
 | 依据 | 指挥部任务 ZT-032（日志 10-16 #342 #343 #349 #353 #355 #362） |
 
@@ -27,7 +27,7 @@
 - `dashboard/src/components/zbs/`：`constants.ts`（项目地址）、`ZbsVersionBadge.tsx`（版本标记）、`ZbsUpdateConfig.tsx`（更新页）。
 - `tests/unit/infra/setup/test_zbs_version.py`。
 
-官方文件挂载点：`AvatarDropdown.tsx`（地址常量引用、去掉菜单里的"检查更新"）、`Header.tsx`、`Sidebar.tsx`（换成 `ZbsVersionBadge`、去掉更新红点）、`UpdateConfig.tsx`（入口改为渲染 `ZbsUpdateConfig`，官方原实现保留）、`src/octop/api/routers/update.py`（`/status`、`/check`、`/upgrade` 三个入口交给新文件，官方辅助函数、升级工作函数、重启逻辑保留）、`tests/unit/api/test_update_router.py`（官方 20 个用例：12 个原样、8 个改为验证新行为）、中英文案新增 `zbsUpdate` 段。
+官方文件挂载点：`AvatarDropdown.tsx`（地址常量引用、去掉菜单里的"检查更新"）、`Header.tsx`、`Sidebar.tsx`（换成 `ZbsVersionBadge`、去掉更新红点）、`UpdateConfig.tsx`（入口改为渲染 `ZbsUpdateConfig`，官方原实现保留）、`src/octop/api/routers/update.py`（`/status`、`/check`、`/upgrade` 三个入口交给新文件，官方辅助函数、升级工作函数、重启逻辑保留）、`tests/unit/api/test_update_router.py`（v1.0.2 官方 21 个测试函数，套补丁后仍 21 个：12 个原样，9 个改为验证新行为——3 个原地改写、6 个换成新函数；逐函数清单见指挥部 ZT-036 原始输出 09。改后本文件 21 个函数 + 补丁自带 test_zbs_version.py 合计 30 passed，2026-10-20 实测）、中英文案新增 `zbsUpdate` 段。
 
 版本号从哪来：出镜像工具 `shared/tools/build_image.py` 在打源码包前写 `src/octop/zbs_version.txt`（一行，`<官方版本>-<server/VERSION>`，如 `1.0.2b6-zbs0.3`）；验镜像工具 `shared/tools/verify_image.py` 认可"官方没有、但与施工树逐字节相同"的补丁新增文件（ZT-032，决策人 #362）。
 
