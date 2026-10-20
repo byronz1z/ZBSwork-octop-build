@@ -44,8 +44,9 @@ text:
     - ['无法连接到 Octop 服务端', '无法连接到 ZBSwork 服务端']
   dashboard/src/components/PwaInstallPrompt/index.tsx:
     - ['将 Octop 安装为 App', '将 ZBSwork 安装为 App']
-    - ['"安装"} Octop」', '"安装"} ZBSwork」']
-    - ['Install Octop', 'Install ZBSwork']
+    # 2026-10-20（ZT-036d）：上游 v1.0.2 #1799 把本文件硬编码文案改为 t() + locales 词条，
+    # 原规则 ['"安装"} Octop」'] 与 ['Install Octop'] 对应的原文已不存在，规则删除；
+    # 新文案（pwa.* 词条）不含 Octop，其值由 locales 规则整体替换覆盖。
   dashboard/src/layouts/Sidebar.tsx:
     - ['alt="Octop"', 'alt="ZBSwork"']
   dashboard/src/pages/Login/index.tsx:

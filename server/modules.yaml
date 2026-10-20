@@ -104,7 +104,7 @@ patches:
     status: enabled
     order: 60
     upstream_pr: no           # 体积取舍属部署偏好
-    verified: {v1.0.2b4: strict, v1.0.2b6: strict}
+    verified: {v1.0.2b4: strict, v1.0.2b6: strict, v1.0.2: "0002/0003 strict；0001 官方已实现（PR #2082）套不上，文件保留待决策人"}
     in_production: partially  # 0001（fastembed/rapidocr 等）已在生产（2026-10-08 实测）；0002 2026-10-10 新增，经本机镜像 octop:1.0.2b4-zbs1 验证，尚未部署到生产；0003 2026-10-13 新增（ZT-026 第 5 轮），安装命令在 zt026-octop2 容器实测（含中文渲染），整镜像构建由总调度做，未部署
     legacy_ids: [SRV-2]
 
