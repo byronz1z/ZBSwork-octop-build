@@ -74,8 +74,8 @@ patches:
     status: enabled
     order: 20
     upstream_pr: no           # ZBS 自有权限收紧策略，上游无意向；设计见 patches/20-*/README.md
-    verified: {v1.0.2b6: strict}
-    in_production: partially  # ZT-026 版随 1.0.2b6-zbs2 于 2026-10-14 上生产；2026-10-16 ZT-030 修正版（存得进、守得住、按场景提示）未部署
+    verified: {v1.0.2b6: strict, v1.0.2: strict}  # v1.0.2 适配：ZT-036a（2026-10-20），施工树 0310250f/6cf7e44c，严格套上
+    in_production: yes        # 生产 2026-10-20 00:48 起跑 1.0.2b6-zbs0.3，含 ZT-030 修正版（此前 10-14 起 zbs2 含 ZT-026 版）；v1.0.2 适配版（ZT-036a）随 zbs0.4 上线后生效
 
   - id: 21-feat-user-workspace
     name_zh: "按用户文件夹：活动范围支持 {username}（默认进开关指定的后端、普通用户不能改运行方式、浏览器 file 地址按用户分）（现行 F1–F3/F11/F15；旧稿 F3/F4/F5，对照见 README）"
