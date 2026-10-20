@@ -27,7 +27,7 @@
 - `dashboard/src/components/zbs/`：`constants.ts`（项目地址）、`ZbsVersionBadge.tsx`（版本标记）、`ZbsUpdateConfig.tsx`（更新页）。
 - `tests/unit/infra/setup/test_zbs_version.py`。
 
-官方文件挂载点：`AvatarDropdown.tsx`（地址常量引用、去掉菜单里的"检查更新"）、`Header.tsx`、`Sidebar.tsx`（换成 `ZbsVersionBadge`、去掉更新红点）、`UpdateConfig.tsx`（入口改为渲染 `ZbsUpdateConfig`，官方原实现保留）、`src/octop/api/routers/update.py`（`/status`、`/check`、`/upgrade` 三个入口交给新文件，官方辅助函数、升级工作函数、重启逻辑保留）、`tests/unit/api/test_update_router.py`（v1.0.2 官方 21 个测试函数、实跑 23 个用例（1 个 3 组参数化）：14 个函数原样、7 个改为验证新行为——3 个 `trigger_upgrade` 改为 FORBIDDEN 断言（参数化那个去掉参数化）、`/status`、`/check`、stable_only 两个、`/settings` 共 4 个改为"无更新、不查 PyPI"；改后 21 个用例 + 补丁自带 `test_zbs_version.py` 9 个 = 30 passed，与 2026-10-20 实测一致）、中英文案新增 `zbsUpdate` 段。
+官方文件挂载点：`AvatarDropdown.tsx`（地址常量引用、去掉菜单里的"检查更新"）、`Header.tsx`、`Sidebar.tsx`（换成 `ZbsVersionBadge`、去掉更新红点）、`UpdateConfig.tsx`（入口改为渲染 `ZbsUpdateConfig`，官方原实现保留）、`src/octop/api/routers/update.py`（`/status`、`/check`、`/upgrade` 三个入口交给新文件，官方辅助函数、升级工作函数、重启逻辑保留）、`tests/unit/api/test_update_router.py`（v1.0.2 官方 21 个测试函数，套补丁后仍 21 个：12 个原样，9 个改为验证新行为——3 个原地改写、6 个换成新函数；逐函数清单见指挥部 ZT-036 原始输出 09。改后本文件 21 个函数 + 补丁自带 test_zbs_version.py 合计 30 passed，2026-10-20 实测）、中英文案新增 `zbsUpdate` 段。
 
 版本号从哪来：出镜像工具 `shared/tools/build_image.py` 在打源码包前写 `src/octop/zbs_version.txt`（一行，`<官方版本>-<server/VERSION>`，如 `1.0.2b6-zbs0.3`）；验镜像工具 `shared/tools/verify_image.py` 认可"官方没有、但与施工树逐字节相同"的补丁新增文件（ZT-032，决策人 #362）。
 
