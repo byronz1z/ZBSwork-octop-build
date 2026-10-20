@@ -31,13 +31,15 @@
 
 这推翻了 10-13 #224"被拒显示官方原样'没有权限'"的决定，依据是 10-16 #355。网页对话（WebSocket）只对这两个错误码给本地化的话，其他错误照官方原样显示。
 
-**这次新改到的官方文件**（都只归补丁 20，没有别的补丁碰）：`src/octop/infra/errors.py`（两个错误码和状态码，各 2 行）、`src/octop/i18n/zh.json`、`en.json`（各 2 句）、`src/octop/api/routers/chat/ws.py`（两处 `except` 各加一次调用）。策略本身写在本补丁自己的函数里（`resource_policy.py` 末尾的 `model_policy_error_text`、`memory_model_settings_for_agent`、`allowed_models_for_agent_owner`）；`agents/manager.py` 的 `_build_harness_config` 只加调用，位置在补丁 21 所有改动之后（已在补丁 21 说明末尾记录，决策人 #353）。
+**这次新改到的官方文件**（都只归补丁 20，没有别的补丁碰）：`src/octop/infra/errors.py`（两个错误码和状态码，各 2 行）、`src/octop/i18n/zh.json`、`en.json`（各 2 句）、`src/octop/api/routers/chat/ws.py`（两处 `except` 各加一次调用）。策略本身写在本补丁自己的函数里（`resource_policy.py` 末尾的 `model_policy_error_text`、`memory_model_settings_for_agent`、`allowed_models_for_agent_owner`）；`agents/manager.py` 的 `_build_harness_config` 只加调用，位置在补丁 21 所有改动之后（已在补丁 21 说明末尾记录，决策人 #353）；ZT-036 起还在健康切换的候选上加了名单过滤。
 
 **边界（如实写明）**：
 - 记忆整理按名单挑模型发生在 Agent 启动（建执行配置）时：管理员改了名单，正在运行的 Agent 不重新加载，**下次启动时**才按新名单生效（决策人 #366 定）。对话和定时任务每一次都按当时的名单判，改完立即生效。
 - 定时任务的挑法比对话少一层"用户常用模型"：官方定时任务本来就不看用户偏好，这里照官方，不另加。
 - 被拦下的定时任务，会话列表里可能留一个空会话：官方在同一位置（加载工具失败时）本来就是这样，非本补丁引入。
 - IM 渠道（飞书、钉钉等）走官方 `MessageEvent.error_event`，代码与网页同一套挑选；本机测试环境接不了真实 IM 渠道，未实测。
+- 健康切换用的名单是 Agent 启动（建执行配置）时取的，管理员改名单后，下次启动才生效（与记忆整理同一条边界，`manager.py:4124` 的 `failover_allowed_models` 在 `_build_harness_config` 装配时取定）。
+- 名单里没有可换的、而原模型自己也在冷却时，用户看到的是官方的英文报错 `no healthy AUTO model is available`（`infra/agents/middleware/model_failover.py:155,195`），不是补丁 20 的中文提示；本次不改代码。
 
 **怎么算做对**：见指挥部 `任务\ZT-030-model-policy-fixes\任务单.md` §一.7。
 
@@ -52,6 +54,55 @@
 - 主人是管理员 → 不过滤，与官方相同；
 - 主人没设名单 → 不过滤（全部开放），与官方相同；
 - 主人设了名单 → 候选只留名单内的；名单里没有可换的，候选为空，官方逻辑只在原模型上重试、再失败按现有流程报错。
+
+## 模型名单按谁判：现状与决策人要的逻辑（ZT-036，2026-10-20）
+
+决策人原话（日志 10-20 #440）："Agent 应该是跟随主人来定的。比如说这个 Agent 是 A 用户的，那它就能用 A 用户相应权限下的所有模型，应该是按这个逻辑在走的。你确定当前是按照这个逻辑在走吗？如果说 B 用户用了 A 用户的 Agent，他在使用时可以用这些模型；但是 B 用户用自己的 Agent 时，就只能用他自己的模型。应该是按这个逻辑在走的。"
+
+一句话概括：**Agent 能用哪些模型，跟着 Agent 主人的名单走；谁在用它不影响。**
+
+决策人原话（日志 10-20 #441）："这次不中，但是要把相关的逻辑写清楚，放到模块里边，要求清晰。后期如果要改，需要参照这个模块真实的情况来改"——本次升级不改代码；本节把现状和要的逻辑写清楚，以后改时以本节为准。
+
+### 现状对照表
+
+行号按 v1.0.2 套上补丁 20 + ZT-036 的施工树（`.work/src`）核对（2026-10-20）：
+
+| 场景 | 决策人要的 | 现在实际看谁的名单 | 是否一致 | 代码位置 |
+|---|---|---|---|---|
+| 用户用自己的 Agent（所有环节） | 主人的名单 | 当前登录用户（此时就是主人） | 一致 | 全链同下各行 |
+| 别人在网页上用共享 Agent：回合开始挑模型 | 主人的名单 | 当前登录用户 | **不一致** | `infra/gateway/process/processor.py:568`（`_resolve_harness_model_route` 里 `_allowed_models_for_user(user_id)`，定义在 `processor.py:626-639`）；user_id 来自网页渠道的登录用户（`infra/gateway/process/message_keys.py:94-105`，dashboard/CLI/MCP 渠道返回使用者自己的 id） |
+| 同上：模型出错时健康切换 | 主人的名单 | Agent 主人 | 一致 | `infra/agents/manager.py:4124-4134`（`_build_harness_config` 的 `failover_allowed_models`，ZT-036 #436） |
+| 同上：输入栏可选模型列表 | 主人的名单 | 当前登录用户 | **不一致** | `api/routers/providers.py:234-246`（`GET /api/providers/resolved` 用 `_user_allowed_models(user, server)`，定义在 `providers.py:195-208`） |
+| 同上：发消息时指定模型的校验 | 主人的名单 | 当前登录用户 | **不一致** | `api/routers/chat/turn.py:277-285`（`assert_model_allowed_for_user(…, user.id, …)`） |
+| 同上：设置偏好模型的校验 | 主人的名单 | 当前登录用户 | **不一致**（性质见注） | `api/routers/preferences.py:181-191`（同样按 `user.id`） |
+| IM 渠道消息发到 Agent | 主人的名单 | Agent 主人（会话归属主人） | 一致 | `infra/gateway/process/message_keys.py:106-108`（外部 IM 渠道返回 `agent_owner_id`）、调用点 `processor.py:696-699` |
+| 定时任务（分入口） | 主人的名单 | 执行期一律按任务会话主人（`session.user_id`）判。**网页 / Agent 工具创建**：入口要求主人本人——网页 `api/routers/cron.py:66-67`（`_user_may_manage_agent_cron` = `user_owns_agent`，严格 `row.user_id == user.id`、**无管理员豁免**，管理员替别人建会被 FORBIDDEN 拦下）；Agent 工具 `infra/cron/tools.py:74-81`（同样只认 owner）→ 会话主人就是 Agent 主人，**一致**。**命令行创建**：`infra/users/acting.py:17-42`（`resolve_acting_user_id`，优先级 `--user` → CLI 固定 `default_user` → Agent 主人）、`cli/support/offline_ops.py:196-239`（按该用户建会话和任务，**不校验是否主人**）→ 可指定任意账号，会话主人可能不是 Agent 主人，**不一致**（只有能登进服务器的人能用命令行） | 网页/工具：一致；命令行：**不一致** | 执行期 `infra/cron/delivery.py:252-253`（`allowed_models_for_user_id(…, session.user_id)`）；网页创建校验按当前用户（`api/routers/cron.py:148-153, 221-226`）；命令行创建 `cli/commands/cron.py:68-73` → `offline_ops.py:196-239`（`model=None`，无名单校验） |
+| 后台记忆整理 | 主人的名单 | Agent 主人 | 一致 | `infra/agents/manager.py:4049-4053`（`allowed_models_for_agent_owner(…, row.user_id)`） |
+| 主人是管理员 | 名单不限制管理员 | **按主人取名单的环节**（健康切换、记忆整理）：名单取到 `None`，不过滤（全部开放）——与决策人要的逻辑一致。**按使用者取名单的环节**（回合开始挑模型、输入栏列表、发消息指定模型校验）：仍按使用者的名单判，主人是管理员不使受限的使用者放开——那几行本就不一致，与主人是否管理员无关 | 按主人取名单的环节：一致 | `infra/users/resource_policy.py:291-304`（`allowed_models_for_user_id` 对 admin 恒返回 None） |
+| 主人没设名单 | 全部开放 | **按主人取名单的环节**：`None`，不过滤（全部开放）——一致。**按使用者取名单的环节**：仍按使用者的名单判，主人没设名单不使受限的使用者放开 | 按主人取名单的环节：一致 | 同上（`resource_policy.py:304`，无策略即 None） |
+| 共享 Agent 没有主人（`user_id` 为空） | 无主人可跟 | **按主人取名单的环节**：`allowed_models_for_agent_owner` 对 `user_id=None` 返回 `None`，不过滤（全部开放）。**按使用者取名单的环节**：仍按使用者的名单判（受限使用者照样受限）。无主人，不在"跟主人走"的讨论内 | —（无主人可跟） | `infra/users/resource_policy.py:406-414` |
+
+注（偏好模型那行的性质）：偏好模型（`preferred_model`）是**使用者自己**的设置项，存在使用者自己的 `users.preferences_json` 里，作用是自己发起的回合的第三优先级（`processor.py:591-600`）。校验"你的偏好在你自己的名单内"本身自洽；但它也参与共享 Agent 的回合挑模型（按使用者偏好 + 使用者名单过滤），那一层与"跟主人走"不一致，和"回合开始挑模型"那一行同源。校验本身是否要改成跟主人，**拿不准**——偏好是使用者的属性，不是 Agent 的属性。
+
+### 共享 Agent 在官方（v1.0.2）里是怎么回事
+
+- **怎么设为共享**：`agents` 表的 `is_shared` 列；主人（或管理员）通过 `PATCH /api/agents/{agent_id}` 传 `is_shared: true`（`api/routers/agents.py:378-436`，入口 `_assert_agent_owner` 校验主人，管理员可越过）→ `AgentManager.set_shared`（`infra/agents/manager.py:1034-1047`）。团队 Agent 不能共享（`TEAM_NOT_SHAREABLE`，`manager.py:1041-1042`）。
+- **别的用户在哪里能看到**：`GET /api/agents`（默认 `scope=mine`）返回自己的 + 别人共享的（`api/routers/agents.py:253-255` 的 `agent_repo.list_shared(exclude_user_id=user.id)`），共享的带主人用户名（`agents.py:256-262`）。
+- **网页能否直接对话**：能。发消息入口 `require_agent_row` → `assert_agent_access_row` → `_user_may_access` 接受 `agent_is_shared(row)`（`api/common/agent.py:26-36`，`require_agent_row` 在 `agent.py:39-61`）。HTTP 层已核实放行；前端界面上的具体操作流程未实测。
+- **团队能否拉入**：能。`wire_shared_member_peers`（`infra/agents/teams/team_manager.py:2114-2207`，装配点 `infra/agents/manager.py:622-626`）让团队 host 的 `team_peers` 配置（或成员请求范围内的名单）能拉入别的账号的共享专家；判定函数 `_user_may_use_member` 接受 `is_shared`（`infra/agents/teams/service.py:71-76`）。
+- **未核实**：前端共享开关的界面位置与文案；共享 Agent 会话在别人网页上的实际展示（代码上 `resolve_thread_id` 按使用者建线程，未实测）。
+
+### 今天的影响
+
+演练库（10-19 生产副本）共享 Agent 0 个、设了名单的用户 3 个；10-14 生产核查时也没有共享 Agent。眼下没有人碰到不一致的那几行。
+
+### 要提醒的
+
+按"跟主人走"，管理员不受名单限制，管理员把自己的 Agent 共享出去，任何人用它都能用全部模型；且管理员的 Agent 不在补丁 21 的隔离范围里（10-14 #235），共享出去别人能通过它读到整台服务器。
+
+### 以后要改时
+
+改成"跟主人走"需要改上表里"不一致"的每一行：把取名单用的用户从"当前登录用户"换成"这个 Agent 的主人"（补丁 20 已有 `allowed_models_for_agent_owner`，`resource_policy.py:406-414`）。定时任务的命令行入口也在要改的范围内（`cli/commands/cron.py:68-73` → `offline_ops.py:196-239` 建会话时可指定任意账号，且 `model=None` 不经名单校验，`acting.py:17-42` 是换用户的源头）。输入栏要按当前选中的 Agent 列出模型，会动前端。改之前先按本节的表重新核对一遍行号，以当时的真实代码为准。
 
 ## 问题（源码事实，上游 v1.0.2b6）
 
