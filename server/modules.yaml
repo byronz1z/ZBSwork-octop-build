@@ -6,7 +6,7 @@
 # 编号 = 一块改动区域，终身不变；重做不换号；只有需求取消或官方已实现才作废（作废号不再使用）
 # 编号段：10–19 修复(fix) · 20–49 功能(feat，一个功能领域一个号) · 60 镜像打包(svc，仅此一个)；桌面端是单独一条线 desk/，不占编号段
 # 层级：L0 配置 · L1 插件 · L2 外部服务 · L3 核心补丁（本表 patches 全部是 L3）
-# 状态：enabled 启用 / candidate 候选（不参与构建）
+# 状态：enabled 启用 / candidate 候选（不参与构建）/ retired 已作废（官方已实现或需求取消；目录只留 README，不参与构建，编号不再使用）
 
 # 2026-10-12 ZT-025 官方升级（task/ZT-025-official-upgrade）：上游锁定升至 v1.0.2b6（eb28011249c0）。
 # 本机适配实测（build 任务克隆）：check_ownership.py、brand_check.py --self、build_image.py --no-build
@@ -40,6 +40,9 @@
 # prepare.py --check-only 退出码 0；check_ownership.py 退出码 0（72 文件）。
 # 2026-10-16 ZT-030（task/ZT-030-model-policy-fixes，执行方 glm-5.3 三个小任务并行，总调度集成）：补丁 20 修正（带"/"的模型能存；对话、定时任务、记忆整理越不过名单；按场景两个错误码）；in_production 改实情。
 # 2026-10-16 ZT-032（task/ZT-032-update-from-own-repo，执行方 glm-5.3，总调度集成）：新增补丁 23（更新），order 23 排在 21 后、60 前；中英文案共用登记加 23。
+# 2026-10-20 ZT-036（task/ZT-036-official-v102，执行方 glm-5.3）：上游锁定升至 v1.0.2（dd9dce470844）；
+# 补丁 10 作废（官方 v1.0.2b9 起等价修复，#1866；目录只留 README，编号不再使用）；
+# 各补丁在 v1.0.2 上的重新适配由 ZT-036 各支线分别更新自己的条目。
 upstream_lock: UPSTREAM.lock
 
 brand:
@@ -56,12 +59,13 @@ patches:
     name_zh: PostgreSQL 模式重启死循环修复
     layer: L3
     scope: [docker]
-    status: enabled
+    status: retired
     order: 10
-    upstream_pr: yes          # 上游 b6/main 仍未修，应提 PR；上游合并等价修复后删除本模块（编号作废）
-    verified: {v1.0.2b4: strict, v1.0.2b6: strict}
-    in_production: yes        # 生产镜像 octop:pg-1.0.2b4-r2 含此逻辑（2026-10-08 实测）
+    upstream_pr: no           # 上游 v1.0.2b9 已等价修复（#1866），本模块作废
+    verified: {v1.0.2b4: strict, v1.0.2b6: strict}   # 生产 zbs0.3 及以前含此补丁；zbs0.4 起不含，由官方修复替代
+    in_production: yes        # 生产 zbs0.3 及以前含此补丁；zbs0.4 起不含，由官方修复替代
     legacy_ids: [SRV-1]
+    retired: {date: 2026-10-20, task: ZT-036, reason: "官方 v1.0.2b9 起等价修复（#1866）"}
 
   - id: 20-feat-user-model-policy
     name_zh: 按角色/用户的可用模型名单；接口对非管理员不返回模型密钥（现行 F8–F10；旧稿 F7–F11，对照见 README）
