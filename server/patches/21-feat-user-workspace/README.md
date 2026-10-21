@@ -233,6 +233,25 @@ zt026-octop2，镜像内 chromium-1228，CDP `Page.navigate` 原生链路）：
   `bwrap` 建 namespace 会 `Operation not permitted`；见 `原始输出\28` C 段）。
 - 关掉开关后一切行为与官方完全一致：覆写和校验函数开头都先读开关，未设置直接返回。
 
+## 修正（zbs0.4.1，ZT-036 36j，2026-10-22）
+
+- **现象**（日志 10-21 #491）：用户级别的用户在"专家"设置页把默认模型从"自动"切到"特定模型"
+  点保存，被提示没有权限（403 FORBIDDEN）——保存任何改动都被拦。
+- **根因**：`assert_user_may_change_backend` 把请求 `config.backend` 和库里存的整个字典逐字
+  比较。库里的 backend 是本补丁建 Agent 时写的 `{type, root_dir, virtual_mode, inherit_env,
+  env}`；官方设置页保存时按表单重拼 backend（dashboard `agentBackendForm.ts` 的
+  `backendRefToSpec`），只有 `{type, virtual_mode, root_dir}`，丢了 `inherit_env`/`env` →
+  不相等 → 403。而且管理员保存时围栏的 env 也会被页面悄悄丢掉。
+- **改了什么**：
+  1. 校验只比"运行方式"本身——`type`、`root_dir`（`type` 为 `composite` 时再比 `default`
+     和 `routes`）；`virtual_mode`/`inherit_env`/`env` 不参与比较（围栏/运行细节，页面不
+     回传）。stored 缺 backend 而请求有、或请求缺 backend 键，仍按"判为改动"拒绝；管理员
+     照旧不检查。
+  2. 新增 `merge_enforced_backend_keys`（validators.py）：写库前把库里的
+     `virtual_mode`/`inherit_env`/`env`（请求里没有的键）合回新 backend，请求里有的键以
+     请求为准；`patch_agent` 对**所有用户**都合并——管理员用设置页保存同样会丢键，不合并
+     围栏就没了。
+
 ## 补丁 20 在本模块文件里的改动记录
 
 补丁 20 在 `manager.py` 的 `_build_harness_config` 里改了默认模型的挑法（按 Agent 主人的可用模型名单），位置在补丁 21 所有改动之后，不重叠。同次还在 `resource_policy.py`（本模块是主人）文件末尾加了补丁 20 自己的三个函数、文件开头加了一行 `import collections.abc`，都不碰本模块改过的行（总调度集成时补记，2026-10-16）。

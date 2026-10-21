@@ -1,5 +1,5 @@
 diff --git a/src/octop/api/common/validators.py b/src/octop/api/common/validators.py
-index e41ea4d38474acb22ed451d8a832c3a794eb9206..2c65cc809cf6ad872ec60e33c9dadb9b65eb45e3 100644
+index e41ea4d38474acb22ed451d8a832c3a794eb9206..ba9ea49e8ef0f94fb1903c4f3544bf4d3f1d552c 100644
 --- a/src/octop/api/common/validators.py
 +++ b/src/octop/api/common/validators.py
 @@ -2,10 +2,14 @@
@@ -18,10 +18,46 @@ index e41ea4d38474acb22ed451d8a832c3a794eb9206..2c65cc809cf6ad872ec60e33c9dadb9b
  from octop.infra.utils.host_dirs import assert_backend_root_dirs_allowed
  
  
-@@ -33,6 +37,44 @@ def assert_user_backend_root_dirs(
+@@ -33,6 +37,87 @@ def assert_user_backend_root_dirs(
          raise OctopError(ErrorCode.WORKSPACE_OP_UNSUPPORTED, str(exc)) from exc
  
  
++_BACKEND_RUNTIME_KEYS = ("virtual_mode", "inherit_env", "env")
++
++
++def merge_enforced_backend_keys(stored_backend: Any, new_backend: Any) -> Any:
++    """把库里 backend 的围栏/运行细节键合回新 backend（ZT-036 36j）。
++
++    官方“专家”设置页保存时按表单重拼 backend（dashboard 的
++    `backendRefToSpec` 只产出 type/virtual_mode/root_dir），会丢掉
++    `inherit_env`/`env`——它们是围栏必需的运行细节（不继承进程环境、
++    证书路径）。若请求的新 backend 里没有这些键而库里有，就从库里合回；
++    请求里带了就以请求为准。stored/new 不是 dict 时原样返回 new。
++    """
++    if not isinstance(stored_backend, dict) or not isinstance(new_backend, dict):
++        return new_backend
++    merged = dict(new_backend)
++    for key in _BACKEND_RUNTIME_KEYS:
++        if key not in merged and key in stored_backend:
++            merged[key] = stored_backend[key]
++    return merged
++
++
++def _backend_run_signature(backend: Any) -> Any:
++    """运行方式签名：type/root_dir（composite 再加 default/routes）。
++
++    `virtual_mode`/`inherit_env`/`env` 是围栏/运行细节，设置页不回传，
++    不参与“是否改了运行方式”的比较。
++    """
++    if not isinstance(backend, dict):
++        return backend
++    signature = {key: backend.get(key) for key in ("type", "root_dir")}
++    if signature["type"] == "composite":
++        signature["default"] = backend.get("default")
++        signature["routes"] = backend.get("routes")
++    return signature
++
++
 +def assert_user_may_change_backend(
 +    user: Any,
 +    *,
@@ -37,6 +73,11 @@ index e41ea4d38474acb22ed451d8a832c3a794eb9206..2c65cc809cf6ad872ec60e33c9dadb9b
 +    revert the agent to the official default backend). Admins pass through.
 +    The switch itself is the settings key ``agent_enforced_backend``; when it
 +    is unset everything behaves exactly like official Octop.
++
++    ZT-036 36j: only the *run mode* proper is compared — ``type`` and
++    ``root_dir`` (plus ``default``/``routes`` for composite backends).
++    ``virtual_mode``/``inherit_env``/``env`` are fence/runtime details the
++    settings page never echoes back, so they no longer count as a change.
 +    """
 +    if user is None or getattr(user, "is_admin", False):
 +        return
@@ -51,7 +92,9 @@ index e41ea4d38474acb22ed451d8a832c3a794eb9206..2c65cc809cf6ad872ec60e33c9dadb9b
 +    if not isinstance(stored, dict):
 +        stored = {}
 +    stored_backend = stored.get("backend")
-+    if "backend" in new_config and new_config["backend"] == stored_backend:
++    if "backend" in new_config and _backend_run_signature(
++        new_config["backend"]
++    ) == _backend_run_signature(stored_backend):
 +        return
 +    raise OctopError(
 +        ErrorCode.FORBIDDEN,
@@ -64,10 +107,10 @@ index e41ea4d38474acb22ed451d8a832c3a794eb9206..2c65cc809cf6ad872ec60e33c9dadb9b
      server: Any,
      *,
 diff --git a/src/octop/api/routers/agents.py b/src/octop/api/routers/agents.py
-index 2ea02c901bb80e0f1b93926dd5548259163853a9..49956ec1442e0f3a07aa974fa17fdfcc01b38bc1 100644
+index 2ea02c901bb80e0f1b93926dd5548259163853a9..9bbcf8117adbcd5a9fce1d5b5106334fa8605e17 100644
 --- a/src/octop/api/routers/agents.py
 +++ b/src/octop/api/routers/agents.py
-@@ -11,7 +11,10 @@ from fastapi.responses import Response
+@@ -11,7 +11,11 @@ from fastapi.responses import Response
  
  from octop.api.common.agent import assert_agent_access_row, assert_agent_owner
  from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
@@ -75,11 +118,12 @@ index 2ea02c901bb80e0f1b93926dd5548259163853a9..49956ec1442e0f3a07aa974fa17fdfcc
 +from octop.api.common.validators import (
 +    assert_user_backend_root_dirs,
 +    assert_user_may_change_backend,
++    merge_enforced_backend_keys,
 +)
  from octop.api.common.workspace import require_agent_workspace
  from octop.api.deps import current_user, get_server
  from octop.infra.agents.experts.avatar import (
-@@ -389,6 +392,12 @@ async def patch_agent(
+@@ -389,11 +393,25 @@ async def patch_agent(
          raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
      _assert_agent_owner(row, user)
      if body.config is not None and isinstance(body.config, dict):
@@ -92,6 +136,19 @@ index 2ea02c901bb80e0f1b93926dd5548259163853a9..49956ec1442e0f3a07aa974fa17fdfcc
          assert_user_backend_root_dirs(
              user,
              body.config.get("backend"),
+             policy_repo=server.services.user_policy_repo,
+         )
++        # ZT-036 36j: the settings page re-spins backend without the fence
++        # keys (inherit_env/env); merge them back for every user before save.
++        if "backend" in body.config:
++            stored_config = parse_config_json(row.config_json)
++            if "backend" in stored_config:
++                body.config["backend"] = merge_enforced_backend_keys(
++                    stored_config["backend"], body.config["backend"]
++                )
+     updates = {
+         key: value
+         for key, value in body.model_dump(exclude_unset=True).items()
 diff --git a/src/octop/api/routers/settings.py b/src/octop/api/routers/settings.py
 index 2b08ade1a9c177c352a725de8e0f700241ec3da9..e3bcaf819831d3efa8752b7544d3eb16081b391d 100644
 --- a/src/octop/api/routers/settings.py
@@ -180,7 +237,7 @@ index 2b08ade1a9c177c352a725de8e0f700241ec3da9..e3bcaf819831d3efa8752b7544d3eb16
 +        name=enforced_workspace_backend_name(server.services.settings_repo),
 +    )
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
-index d76f57dc8a4e466811a6948c2eb181fe11d54223..10d4f8c59eb4582ce95aaf478c6e978e0f386944 100644
+index d608e3fce8c02dbc13c0456af42d524e1fa79182..c126d8c7be9c2f4e9c1872e7e16a3c15291b1524 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
 @@ -155,6 +155,18 @@ def _memory_namespace(agent_id: str) -> str:
@@ -1062,10 +1119,10 @@ index 0000000000000000000000000000000000000000..f65dcc83ccbcc10b9e7564c144590746
 +    assert "替代" in str(result.content) or "请" in str(result.content)
 diff --git a/tests/unit/agents/test_user_workspace_policy.py b/tests/unit/agents/test_user_workspace_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813ebf6c8c53b
+index 0000000000000000000000000000000000000000..fda43531d44ae7b9c5b3a6cff9d204da97ab74b3
 --- /dev/null
 +++ b/tests/unit/agents/test_user_workspace_policy.py
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,549 @@
 +"""Unit tests for the ZBS enforced per-user workspace policy (settings switch).
 +
 +Covers:
@@ -1081,7 +1138,7 @@ index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813eb
 +
 +import pytest
 +
-+from octop.api.common.validators import assert_user_may_change_backend
++from octop.api.common.validators import assert_user_may_change_backend, merge_enforced_backend_keys
 +from octop.config import OctopConfig
 +from octop.infra.agents.manager import AgentCreateSpec, AgentManager
 +from octop.infra.db.migrate import run_migrations
@@ -1352,7 +1409,9 @@ index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813eb
 +    assert cfg["backend"] == requested
 +
 +
-+async def test_prepare_docker_backend_expands_username_in_named_shell(manager: AgentManager) -> None:
++async def test_prepare_docker_backend_expands_username_in_named_shell(
++    manager: AgentManager,
++) -> None:
 +    """ZBS: a named shell backend's ``{username}`` resolves to the agent owner."""
 +    uid = _seed_user(manager, role="user", name="alice")
 +    _switch_on(manager)
@@ -1493,7 +1552,11 @@ index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813eb
 +            _user(False),
 +            current_config_json=_STORED,
 +            new_config={
-+                "backend": {"type": "local_shell", "root_dir": "/data/.octop/users/ta", "inherit_env": True}
++                "backend": {
++                    "type": "local_shell",
++                    "root_dir": "/data/.octop/users/ta",
++                    "inherit_env": True,
++                }
 +            },
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
@@ -1509,6 +1572,106 @@ index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813eb
 +            settings_repo=_settings_repo("per-user-home"),
 +        )
 +    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++# ---------------------------------------------------------------------------
++# ZT-036 36j — the settings page re-spins backend without fence keys; the
++# guard must only compare the run mode proper (type/root_dir), and the fence
++# keys (virtual_mode/inherit_env/env) must be merged back before saving.
++# ---------------------------------------------------------------------------
++
++_STORED_LOCAL = json.dumps(
++    {
++        "backend": {
++            "type": "local_shell",
++            "root_dir": "/data/.octop/users/ta",
++            "virtual_mode": True,
++            "inherit_env": False,
++            "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++        }
++    }
++)
++
++
++def test_patch_allows_page_respun_backend_without_fence_keys() -> None:
++    # The expert settings page saves {type, virtual_mode, root_dir} only —
++    # same run mode as stored, so it must pass even though inherit_env/env
++    # are absent from the request.
++    assert_user_may_change_backend(
++        _user(False),
++        current_config_json=_STORED_LOCAL,
++        new_config={
++            "backend": {
++                "type": "local_shell",
++                "root_dir": "/data/.octop/users/ta",
++                "virtual_mode": True,
++            }
++        },
++        settings_repo=_settings_repo("per-user-home"),
++    )
++
++
++def test_patch_blocks_page_respun_backend_with_different_root_dir() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED_LOCAL,
++            new_config={
++                "backend": {
++                    "type": "local_shell",
++                    "root_dir": "/data/.octop/users/tb",
++                    "virtual_mode": True,
++                }
++            },
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_page_respun_backend_with_different_type() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED_LOCAL,
++            new_config={"backend": {"type": "filesystem", "root_dir": "/data/.octop/users/ta"}},
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_merge_enforced_backend_keys_restores_missing_keys() -> None:
++    merged = merge_enforced_backend_keys(
++        {
++            "type": "local_shell",
++            "root_dir": "/d",
++            "virtual_mode": True,
++            "inherit_env": False,
++            "env": {"A": "1"},
++        },
++        {"type": "local_shell", "root_dir": "/d", "virtual_mode": True},
++    )
++    assert merged == {
++        "type": "local_shell",
++        "root_dir": "/d",
++        "virtual_mode": True,
++        "inherit_env": False,
++        "env": {"A": "1"},
++    }
++
++
++def test_merge_enforced_backend_keys_request_wins_when_present() -> None:
++    merged = merge_enforced_backend_keys(
++        {"type": "local_shell", "root_dir": "/d", "inherit_env": False, "env": {"A": "1"}},
++        {"type": "local_shell", "root_dir": "/d", "inherit_env": True, "env": {"B": "2"}},
++    )
++    assert merged["inherit_env"] is True
++    assert merged["env"] == {"B": "2"}
++
++
++def test_merge_enforced_backend_keys_non_dict_passthrough() -> None:
++    assert merge_enforced_backend_keys(None, {"type": "local_shell"}) == {"type": "local_shell"}
++    assert merge_enforced_backend_keys({"inherit_env": False}, None) is None
++    assert merge_enforced_backend_keys(None, None) is None
 diff --git a/tests/unit/test_storage_spec.py b/tests/unit/test_storage_spec.py
 index 4d800e19e3bbe2c4bcc16401669bcd625341012f..d4322c4428737f06cd3ff03fb20b15ecef99e23d 100644
 --- a/tests/unit/test_storage_spec.py
