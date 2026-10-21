@@ -54,9 +54,9 @@
 
 **为什么**：决策人（日志 10-21 #449 原话）——"在镜像里加 pg_dump，不是改 octop 的程序，不碰它一行代码。只是在镜像的制作清单（Dockerfile）里多一行'装 postgresql-client-16'……配方库里缺乏 pg_dump，导致备份无法正常进行。需要在镜像包构建的时候把 pg_dump 加进去"。官方备份/恢复代码 `src/octop/infra/backup/pg_dump.py`（`_require_tool("pg_dump")` / `_require_tool("pg_restore")`，系统备份 `infra/backup/system_archive.py` 调用）要求这两个工具在 PATH 上；官方 v1.0.2 镜像不带，演练环境点"备份"返回 500，日志报 `pg_dump not found on PATH; required for PostgreSQL backup/restore`。
 
-**用哪个源和版本**：镜像底包是 Debian 13（trixie，`python:3.12-slim`）。Debian 自带源里只有 17 版客户端，没有 16 版；生产数据库是 pgvector/pg16（16.15）。PostgreSQL 官方 apt 源的 `trixie-pgdg` 仓库提供 `postgresql-client-16`（16.15-1.pgdg13+2），与生产数据库版本一致。
+**用哪个源和版本**：镜像底包是 Debian 13（trixie，`python:3.12-slim`）。Debian 自带源里只有 17 版客户端，没有 16 版；生产数据库是 pgvector/pg16（16.15）。PostgreSQL 官方 apt 源的 `trixie-pgdg` 仓库提供 `postgresql-client-16`（当时为 16.15-1.pgdg13+2）。安装约束是 PostgreSQL **16 主版本**——没有锁定 16.15 小版本，装的是官方源当时提供的 16.x 最新版（Dockerfile 里的校验只断言主版本是 16）。
 
-**为什么是 16 不是 Debian 自带的 17**：备份/恢复工具应与数据库服务端同（大）版本——17 版 `pg_dump` 导出的备份可能带 16 不认识的设置，恢复到 16 可能出问题；同版本的 16 客户端没有这个风险。故宁可多导一个官方源也要 16 版。
+**为什么是 16 不是 Debian 自带的 17**：备份/恢复工具应与数据库服务端同主版本——避免跨主版本（17 导出、16 恢复）的兼容性风险（17 版 `pg_dump` 导出的备份可能带 16 不认识的设置，恢复可能出问题）。同主版本不等于保证恢复一定成功，只是消除这一已知的跨主版本风险来源。故宁可多导一个官方源也要 16 版。
 
 **版本号不升**：决策人 #449 明确"合并到本版本中，版本号不用升"，本补丁并入 zbs0.4（`server/VERSION` 仍 zbs0.4），随下一轮镜像构建生效。
 
