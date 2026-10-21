@@ -21,10 +21,10 @@ index d4de095f4291da5957983ef7ec410a8cb3a177b0..ea89003688f6cc390829ec7b92896037
      if model_ref is not None:
          composer_updates["model_ref"] = model_ref
 diff --git a/src/octop/api/routers/chat/ws.py b/src/octop/api/routers/chat/ws.py
-index d59c49fb6643aa8e6b9626202e7136518f762c1a..1bed602fcc65f30839577441e2d797006182aeab 100644
+index 4b72b7a61709c67a64a7d0688c8a1e18c26d88f7..eb48ecbdd783228fcf91604d2ce5e49322fc088d 100644
 --- a/src/octop/api/routers/chat/ws.py
 +++ b/src/octop/api/routers/chat/ws.py
-@@ -158,7 +158,13 @@ async def dashboard_chat_ws(
+@@ -208,7 +208,13 @@ async def dashboard_chat_ws(
                      turn=turn,
                  )
              except OctopError as exc:
@@ -39,21 +39,21 @@ index d59c49fb6643aa8e6b9626202e7136518f762c1a..1bed602fcc65f30839577441e2d79700
                  await send_frame({"type": "done"})
                  continue
  
-@@ -270,7 +276,13 @@ async def _bridge_chat_ws(
-                     on_frame=send_frame,
-                 )
-             except OctopError as exc:
--                await send_frame({"type": "error", "message": str(exc)})
-+                # ZBS: whitelist errors get the localized per-scenario sentence;
-+                # every other OctopError keeps the official str(exc) display.
-+                from octop.infra.users.resource_policy import (  # noqa: PLC0415
-+                    model_policy_error_text,
-+                )
+@@ -375,7 +381,13 @@ async def _bridge_chat_ws(
+         except asyncio.CancelledError:
+             raise
+         except OctopError as exc:
+-            await send_frame({"type": "error", "message": str(exc)})
++            # ZBS: whitelist errors get the localized per-scenario sentence;
++            # every other OctopError keeps the official str(exc) display.
++            from octop.infra.users.resource_policy import (  # noqa: PLC0415
++                model_policy_error_text,
++            )
 +
-+                await send_frame({"type": "error", "message": model_policy_error_text(exc, user)})
-                 await send_frame({"type": "done"})
-             except Exception:
-                 logger.exception("bridge chat relay failed")
++            await send_frame({"type": "error", "message": model_policy_error_text(exc, user)})
+             await send_frame({"type": "done"})
+         except Exception:
+             logger.exception("bridge chat relay failed")
 diff --git a/src/octop/api/routers/cron.py b/src/octop/api/routers/cron.py
 index 6e7bc2c29999760287b7baa5176f2dbc50f32c39..1658a1c431cfd94c8f6bea19150feb7475a72f85 100644
 --- a/src/octop/api/routers/cron.py
@@ -135,10 +135,10 @@ index e5e551016dda29f4348c673debb18cce8b3b4963..d1db62f353cd9c52c31c0b07c59b375a
          if body.model_reasoning is not None:
              reasoning = {
 diff --git a/src/octop/api/routers/providers.py b/src/octop/api/routers/providers.py
-index c9d01285b4c94174d11b807b99bfef17f2c1f64f..b74d6358c717e6b1587b2169ade65667734e79f9 100644
+index 639069a3915781f18d1565b2b0db9b64cc92eaf9..fe5e65e29826d13568e182bf645d51597f7a0f14 100644
 --- a/src/octop/api/routers/providers.py
 +++ b/src/octop/api/routers/providers.py
-@@ -117,7 +117,7 @@ async def _maybe_refresh_codex_row(server: Any, row: Any) -> Any:
+@@ -169,7 +169,7 @@ async def _maybe_refresh_codex_row(server: Any, row: Any) -> Any:
      return row
  
  
@@ -147,7 +147,7 @@ index c9d01285b4c94174d11b807b99bfef17f2c1f64f..b74d6358c717e6b1587b2169ade65667
      models: list[dict[str, Any]] = []
      for stored in r.get_models():
          model = dict(stored)
-@@ -131,13 +131,44 @@ def _row_to_dict(r: Any) -> dict[str, Any]:
+@@ -184,7 +184,7 @@ def _row_to_dict(r: Any) -> dict[str, Any]:
          "name": r.name,
          "kind": r.kind,
          "base_url": r.base_url,
@@ -156,6 +156,7 @@ index c9d01285b4c94174d11b807b99bfef17f2c1f64f..b74d6358c717e6b1587b2169ade65667
          "models": models,
          "note": r.note,
          "enabled": bool(r.enabled),
+@@ -192,6 +192,37 @@ def _row_to_dict(r: Any) -> dict[str, Any]:
      }
  
  
@@ -193,7 +194,7 @@ index c9d01285b4c94174d11b807b99bfef17f2c1f64f..b74d6358c717e6b1587b2169ade65667
  @router.get("/presets")
  async def list_provider_presets(
      _: Any = Depends(current_user),
-@@ -148,14 +179,17 @@ async def list_provider_presets(
+@@ -202,14 +233,17 @@ async def list_provider_presets(
  
  @router.get("/resolved")
  async def list_resolved_models(
@@ -213,7 +214,7 @@ index c9d01285b4c94174d11b807b99bfef17f2c1f64f..b74d6358c717e6b1587b2169ade65667
  
  
  class ActiveModelBody(BaseModel):
-@@ -188,11 +222,21 @@ async def set_active_model(
+@@ -242,11 +276,21 @@ async def set_active_model(
  
  @router.get("")
  async def list_providers(
@@ -239,10 +240,10 @@ index c9d01285b4c94174d11b807b99bfef17f2c1f64f..b74d6358c717e6b1587b2169ade65667
  
  # ── Admin endpoints ─────────────────────────────────────────────────────────
 diff --git a/src/octop/api/routers/user_roles.py b/src/octop/api/routers/user_roles.py
-index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46d728faf4 100644
+index 10b6d0febfd314b7ccdfed41f4956d5fe1740d2c..188cc798b9466744d4951391fe825abf39d68dd5 100644
 --- a/src/octop/api/routers/user_roles.py
 +++ b/src/octop/api/routers/user_roles.py
-@@ -23,10 +23,14 @@ from octop.infra.errors import ErrorCode, OctopError
+@@ -24,10 +24,14 @@ from octop.infra.errors import ErrorCode, OctopError
  from octop.infra.users.identity import User
  from octop.infra.users.permissions import ALL_PERMISSION_KEYS, validate_permission_keys
  from octop.infra.users.resource_policy import (
@@ -257,7 +258,7 @@ index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46
      normalize_max_agents,
      normalize_token_quota,
      normalize_workspace_root_dir,
-@@ -40,6 +44,7 @@ _KNOWN_POLICIES = {
+@@ -41,6 +45,7 @@ _KNOWN_POLICIES = {
      POLICY_WORKSPACE_ROOT_DIR,
      POLICY_TOKEN_QUOTA,
      POLICY_MAX_AGENTS,
@@ -265,7 +266,7 @@ index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46
  }
  
  
-@@ -98,6 +103,7 @@ def _policies_from_fields(
+@@ -131,6 +136,7 @@ def _policies_from_fields(
      workspace_root_dir: str | None,
      token_quota: int | None,
      max_agents: int | None,
@@ -273,7 +274,7 @@ index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46
  ) -> list[tuple[str, str]]:
      items: list[tuple[str, str]] = []
      root = normalize_workspace_root_dir(workspace_root_dir)
-@@ -109,6 +115,11 @@ def _policies_from_fields(
+@@ -142,6 +148,11 @@ def _policies_from_fields(
      agents = normalize_max_agents(max_agents)
      if agents is not None:
          items.append((POLICY_MAX_AGENTS, str(agents)))
@@ -285,7 +286,7 @@ index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46
      return items
  
  
-@@ -125,6 +136,7 @@ def _policies_from_items(items: list[PolicyItem]) -> list[tuple[str, str]]:
+@@ -158,6 +169,7 @@ def _policies_from_items(items: list[PolicyItem]) -> list[tuple[str, str]]:
          workspace_root_dir=by_name.get(POLICY_WORKSPACE_ROOT_DIR),
          token_quota=token_quota_of(by_name.get(POLICY_TOKEN_QUOTA)),
          max_agents=max_agents_of(by_name.get(POLICY_MAX_AGENTS)),
@@ -293,7 +294,7 @@ index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46
      )
  
  
-@@ -148,6 +160,7 @@ def public_role(row: UserRoleRow, *, avatar_url: str | None = None) -> dict[str,
+@@ -181,6 +193,7 @@ def public_role(row: UserRoleRow, *, avatar_url: str | None = None) -> dict[str,
          workspace_root_dir = None
          token_quota = None
          max_agents = None
@@ -301,7 +302,7 @@ index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46
      else:
          permissions = list(row.permissions)
          system_role = "user"
-@@ -155,6 +168,7 @@ def public_role(row: UserRoleRow, *, avatar_url: str | None = None) -> dict[str,
+@@ -188,6 +201,7 @@ def public_role(row: UserRoleRow, *, avatar_url: str | None = None) -> dict[str,
          workspace_root_dir = workspace_root_dir_of(row.policy_value(POLICY_WORKSPACE_ROOT_DIR))
          token_quota = token_quota_of(row.policy_value(POLICY_TOKEN_QUOTA))
          max_agents = max_agents_of(row.policy_value(POLICY_MAX_AGENTS))
@@ -309,7 +310,7 @@ index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46
      return {
          "user_role_id": row.user_role_id,
          "user_role_name": row.user_role_name,
-@@ -167,6 +181,7 @@ def public_role(row: UserRoleRow, *, avatar_url: str | None = None) -> dict[str,
+@@ -200,6 +214,7 @@ def public_role(row: UserRoleRow, *, avatar_url: str | None = None) -> dict[str,
          "workspace_root_dir": workspace_root_dir,
          "token_quota": token_quota,
          "max_agents": max_agents,
@@ -318,7 +319,7 @@ index d48daf2913f9bd1b6dc8af04e05c07bdef4a765d..47c321e7453ffb86c990c166a70e6f46
          "updated_at": row.updated_at,
          "avatar_icon": row.avatar_icon,
 diff --git a/src/octop/api/routers/users.py b/src/octop/api/routers/users.py
-index 864597079ff5a9b88bc9d89bd49af236e45d4a2d..0d8d23da7f35b6d52c675c0b9837f0559e42ab5b 100644
+index 65688dc1459fd55710503730e9432298d19cd37b..bde3f3c449c604a18949ca97dd309fa67782f01d 100644
 --- a/src/octop/api/routers/users.py
 +++ b/src/octop/api/routers/users.py
 @@ -22,7 +22,14 @@ from octop.infra.utils.locale import resolve_request_locale
@@ -418,7 +419,7 @@ index 864597079ff5a9b88bc9d89bd49af236e45d4a2d..0d8d23da7f35b6d52c675c0b9837f055
  ) -> UserBatchItemResult:
      if action in ("disable", "delete") and user_id == actor.id:
          return _batch_fail(
-@@ -363,6 +392,11 @@ async def _batch_apply_one(
+@@ -364,6 +393,11 @@ async def _batch_apply_one(
                  row.username,
                  max_agents=max_agents,
              )
@@ -430,7 +431,7 @@ index 864597079ff5a9b88bc9d89bd49af236e45d4a2d..0d8d23da7f35b6d52c675c0b9837f055
          else:
              return _batch_fail(
                  user_id,
-@@ -383,8 +417,8 @@ async def _batch_apply_one(
+@@ -384,8 +418,8 @@ async def _batch_apply_one(
      summary="Batch enable, disable, delete, or set resource policies",
      description=(
          "Apply one action to many users. Per-user failures do not abort the batch. "
@@ -441,7 +442,7 @@ index 864597079ff5a9b88bc9d89bd49af236e45d4a2d..0d8d23da7f35b6d52c675c0b9837f055
      ),
      response_model=UserBatchResponse,
  )
-@@ -397,6 +431,10 @@ async def batch_users(
+@@ -398,6 +432,10 @@ async def batch_users(
          normalize_token_quota(body.token_quota)
      if body.action == "set_max_agents":
          normalize_max_agents(body.max_agents)
@@ -452,7 +453,7 @@ index 864597079ff5a9b88bc9d89bd49af236e45d4a2d..0d8d23da7f35b6d52c675c0b9837f055
  
      # Preserve order while dropping duplicates.
      seen: set[int] = set()
-@@ -417,6 +455,7 @@ async def batch_users(
+@@ -418,6 +456,7 @@ async def batch_users(
                  action=body.action,
                  token_quota=body.token_quota,
                  max_agents=body.max_agents,
@@ -461,10 +462,10 @@ index 864597079ff5a9b88bc9d89bd49af236e45d4a2d..0d8d23da7f35b6d52c675c0b9837f055
          )
      succeeded = sum(1 for item in results if item.ok)
 diff --git a/src/octop/i18n/en.json b/src/octop/i18n/en.json
-index 7e77c41023eafe02c3a65ac29e5ee00e2b2f5265..c91c3c2edd5babe3e236240c255033612f3db028 100644
+index fb334833718985f6e49791400f8833b5872a44c5..2c10cf39aa609d1d1bef40fa9eab48ee88e1b6b9 100644
 --- a/src/octop/i18n/en.json
 +++ b/src/octop/i18n/en.json
-@@ -474,6 +474,8 @@
+@@ -499,6 +499,8 @@
      "KNOWLEDGE_UNSUPPORTED_TYPE": "This document type is not supported for knowledge bases.",
      "KNOWLEDGE_NAME_TAKEN": "You already have a knowledge base with this name.",
      "KNOWLEDGE_NAME_INVALID": "Invalid name.",
@@ -474,10 +475,10 @@ index 7e77c41023eafe02c3a65ac29e5ee00e2b2f5265..c91c3c2edd5babe3e236240c25503361
      "AVATAR_TOO_LARGE": "Avatar exceeds the 5 MB size limit.",
      "INVITE_INVALID": "This invite code is invalid.",
 diff --git a/src/octop/i18n/zh.json b/src/octop/i18n/zh.json
-index 4921fd92fac9432ae53506c9474668a490e59e58..59886490d15cb6f95a3766ca58a0af61ce229fe4 100644
+index 0b18fc4817a2b9af6a02665100137b1df783df43..cf4e7230bf40b9d22f7c55592b968cfe8927d726 100644
 --- a/src/octop/i18n/zh.json
 +++ b/src/octop/i18n/zh.json
-@@ -474,6 +474,8 @@
+@@ -499,6 +499,8 @@
      "KNOWLEDGE_UNSUPPORTED_TYPE": "知识库不支持此文档类型。",
      "KNOWLEDGE_NAME_TAKEN": "您已有同名知识库。",
      "KNOWLEDGE_NAME_INVALID": "名称无效。",
@@ -487,17 +488,27 @@ index 4921fd92fac9432ae53506c9474668a490e59e58..59886490d15cb6f95a3766ca58a0af61
      "AVATAR_TOO_LARGE": "头像超过 5 MB 大小限制。",
      "INVITE_INVALID": "邀请码无效。",
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
-index 46384d85676044d9c6886fad29b6e43dce44b20a..91b5ea976ceff6da59f0d3d2bd07cf6325ffa21a 100644
+index 87a2b2524578ab6f4a882ac087a5741ee0abc93d..d608e3fce8c02dbc13c0456af42d524e1fa79182 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
-@@ -1360,14 +1360,22 @@ class AgentManager:
+@@ -28,6 +28,7 @@ from octop.infra.agents.memory.backend import memory_backend_from_agent_config
+ from octop.infra.agents.memory.slim import MemorySlimCoordinator
+ from octop.infra.agents.providers import ProviderStore, sync_providers_to_harness
+ from octop.infra.agents.providers.health import ModelHealthRegistry
++from octop.infra.agents.providers.store import model_ref_passes_allowlist
+ from octop.infra.agents.security import SecuritySettingsStore, ToolGuardRulesStore
+ from octop.infra.agents.security.hitl_session import (
+     HitlSessionPolicyStore,
+@@ -1931,21 +1932,38 @@ class AgentManager:
          if self._harness_manager is not None:
              self._harness_manager.clear_thread_model(agent_id, thread_id)
  
--    def resolve_fallback_model_ref(self) -> str | None:
--        """Settings active model when usable, else the first enabled catalog model."""
-+    def resolve_fallback_model_ref(self, allowed_models: Any | None = None) -> str | None:
-+        """Settings active model when usable, else the first enabled catalog model.
+-    def _resolve_configured_fallback_model_ref(self) -> str | None:
+-        """Return the configured fallback without applying runtime health."""
++    def _resolve_configured_fallback_model_ref(
++        self, allowed_models: Any | None = None
++    ) -> str | None:
++        """Return the configured fallback without applying runtime health.
 +
 +        ZBS: when *allowed_models* is set, the fallback must come from the
 +        whitelist — active model first (if listed), else the first usable
@@ -514,12 +525,29 @@ index 46384d85676044d9c6886fad29b6e43dce44b20a..91b5ea976ceff6da59f0d3d2bd07cf63
                  return ref
 -        return self._providers.resolve_first_model_ref()
 +        return self._providers.resolve_first_model_ref(allowed_models)
++
++    def resolve_fallback_model_ref(self, allowed_models: Any | None = None) -> str | None:
++        """Return the first healthy model for an automatic route.
  
-     # ------------------------------------------------------------------
-     # Hot-reload — rebuild harness agents after config / provider changes
-@@ -3357,6 +3365,30 @@ class AgentManager:
-             else backend
-         )
+-    def resolve_fallback_model_ref(self) -> str | None:
+-        """Return the first healthy model for an automatic route."""
+-        configured = self._resolve_configured_fallback_model_ref()
++        ZBS: when *allowed_models* is set, only whitelisted candidates are
++        eligible at both levels (configured active model and the auto-route
++        candidate walk).
++        """
++        configured = self._resolve_configured_fallback_model_ref(allowed_models)
+         if configured and self._model_health.is_routable(configured):
+             return configured
+         for candidate in self._providers.list_auto_route_candidates(needs_multimodal=False):
++            if not model_ref_passes_allowlist(candidate.ref, allowed_models):
++                continue
+             if self._model_health.is_routable(candidate.ref):
+                 return candidate.ref
+         return None
+@@ -4015,6 +4033,30 @@ class AgentManager:
+         if "decision" in _HARNESS_AGENT_CONFIG_FIELDS:
+             harness_fields["decision"] = self._decision.harness_config()
  
 +        # ZBS patch 20 (feature 4): memory distillation must respect the agent
 +        # owner's model whitelist; policy lives in resource_policy, here only
@@ -540,7 +568,7 @@ index 46384d85676044d9c6886fad29b6e43dce44b20a..91b5ea976ceff6da59f0d3d2bd07cf63
 +                self._repos.user_policy_repo, self._repos.user_repo, row.user_id
 +            ),
 +            explicit_default_model=lambda: self._providers.resolve_explicit_default_model(row, cfg),
-+            fallback_model_ref=self.resolve_fallback_model_ref,
++            fallback_model_ref=self._resolve_configured_fallback_model_ref,
 +            memory_kwargs=memory_kwargs,
 +            log_warning=logger.warning,
 +        )
@@ -548,29 +576,58 @@ index 46384d85676044d9c6886fad29b6e43dce44b20a..91b5ea976ceff6da59f0d3d2bd07cf63
          harness_cfg = HarnessAgentConfig(
              name=_memory_namespace(row.agent_id),
              workspace_dir=harness_workspace,
-@@ -3366,10 +3398,8 @@ class AgentManager:
+@@ -4024,10 +4066,8 @@ class AgentManager:
              # first, else first usable) — so promotion works whenever chat does.
              # Per-turn AUTO routing is unaffected: the gateway resolves models via
              # ``resolve_explicit_default_model`` directly.
 -            default_model=(
 -                self._providers.resolve_explicit_default_model(row, cfg)
--                or self.resolve_fallback_model_ref()
+-                or self._resolve_configured_fallback_model_ref()
 -            ),
 +            default_model=default_model,
 +            **memory_kwargs,
              system_prompt=system_prompt,
              memory=memory,
              backend=harness_backend,  # spec, or live OpenSandbox instance
-@@ -3384,7 +3414,6 @@ class AgentManager:
+@@ -4042,7 +4082,6 @@ class AgentManager:
              default_timezone=self._config.default_timezone,
-             log_dir=str(self.paths.logs_dir),
              media_generation=self._media_generation.harness_config(),
+             **harness_fields,
 -            **_memory_extract_settings(cfg, is_ref_usable=self._providers.is_model_ref_usable),
              **_resolve_memory_backend_kwargs(cfg, workspace_dir=workspace_dir, config=self._config),
          )
          if "tools_disabled" in _HARNESS_AGENT_CONFIG_FIELDS:
+@@ -4075,13 +4114,25 @@ class AgentManager:
+                     SafeModelFailoverMiddleware,
+                 )
+ 
++                # ZBS patch 20 (decision log 10-20 #436): health-aware model
++                # failover may only switch to models the agent owner has
++                # authorized. ``allowed_models_for_agent_owner`` returns
++                # ``None`` for admins and owners without a whitelist — those
++                # keep the official site-wide candidate list unchanged. When
++                # the whitelist admits no candidate, the list is empty and the
++                # official middleware just retries on the current model.
++                failover_allowed_models = allowed_models_for_agent_owner(
++                    self._repos.user_policy_repo, self._repos.user_repo, row.user_id
++                )
+                 retry_middleware: Any = SafeModelFailoverMiddleware(
+                     health=self._model_health,
+-                    candidates=lambda _current_ref, needs_multimodal: (
+-                        self._providers.list_auto_route_candidates(
++                    candidates=lambda _current_ref, needs_multimodal: [
++                        candidate
++                        for candidate in self._providers.list_auto_route_candidates(
+                             needs_multimodal=needs_multimodal
+                         )
+-                    ),
++                        if model_ref_passes_allowlist(candidate.ref, failover_allowed_models)
++                    ],
+                     model_for_ref=get_chat_model,
+                     max_retries=applied.model_retry_max_retries,
+                     initial_delay=applied.model_retry_initial_delay,
 diff --git a/src/octop/infra/agents/providers/store.py b/src/octop/infra/agents/providers/store.py
-index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e93d46fa1 100644
+index a18eb88dda41e296d9bde8343ce8183b0c110bc3..44b1b37b63775fec77317328dd29b734eeb33264 100644
 --- a/src/octop/infra/agents/providers/store.py
 +++ b/src/octop/infra/agents/providers/store.py
 @@ -3,7 +3,7 @@
@@ -579,10 +636,10 @@ index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e
  import json
 -from collections.abc import Callable, Iterator
 +from collections.abc import Callable, Iterator, Sequence
+ from dataclasses import dataclass
  from typing import TYPE_CHECKING, Any
  
- from octop_harness.config import ModelConfig, ProviderConfig
-@@ -99,6 +99,16 @@ def clear_stale_pins_for_provider(
+@@ -173,6 +173,16 @@ def clear_stale_pins_for_provider(
      return cleared
  
  
@@ -599,7 +656,7 @@ index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e
  class ProviderStore:
      """Maps persisted provider rows to harness runtime provider configs."""
  
-@@ -189,16 +199,25 @@ class ProviderStore:
+@@ -266,16 +276,25 @@ class ProviderStore:
                  return _model_dict_supports_image(model)
          return False
  
@@ -629,7 +686,7 @@ index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e
          return None
  
      def resolve_model_for_multimodal_turn(
-@@ -206,18 +225,46 @@ class ProviderStore:
+@@ -283,18 +302,46 @@ class ProviderStore:
          model_ref: str | None,
          *,
          needs_multimodal: bool,
@@ -672,18 +729,18 @@ index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e
 -        return upgraded or ref
 +        upgraded = self.resolve_multimodal_model_ref(allowed_models)
 +        return upgraded or None
++
++    def resolve_first_model_ref(self, allowed_models: Sequence[str] | None = None) -> str | None:
++        """First chat-eligible enabled model across usable providers.
  
 -    def resolve_first_model_ref(self) -> str | None:
 -        """First chat-eligible enabled model across usable providers."""
-+    def resolve_first_model_ref(self, allowed_models: Sequence[str] | None = None) -> str | None:
-+        """First chat-eligible enabled model across usable providers.
-+
 +        ZBS: when *allowed_models* is set, only whitelisted refs are eligible.
 +        """
          for row in self.iter_usable_rows():
              for model in row.get_models():
                  if not is_chat_eligible_model(
-@@ -225,8 +272,12 @@ class ProviderStore:
+@@ -302,8 +349,12 @@ class ProviderStore:
                  ):
                      continue
                  model_id = str(model.get("id") or "").strip()
@@ -697,12 +754,12 @@ index 552f96c11bbcee8f3c8b82dc45da555850f2cab2..49481378242c1dcd136c7e3147a70a7e
 +                return ref
          return None
  
-     def is_model_ref_usable(self, ref: str) -> bool:
+     def list_auto_route_candidates(
 diff --git a/src/octop/infra/cron/delivery.py b/src/octop/infra/cron/delivery.py
-index a0017279889bf47d539afbeb36b2b93eda32df04..3439d25867a2a755b7b16f5042fde37d95c4d447 100644
+index 2e171567767a98e742ada09f47c7356319945b51..8ec35a63371c33a793fc30a2d15db4918d455b5d 100644
 --- a/src/octop/infra/cron/delivery.py
 +++ b/src/octop/infra/cron/delivery.py
-@@ -218,11 +218,60 @@ class CronDeliveryService:
+@@ -234,11 +234,60 @@ class CronDeliveryService:
  
          row = self._agent_manager.get_row(command.agent_id)
          default_model = (row.default_model if row is not None else None) or None
@@ -764,7 +821,7 @@ index a0017279889bf47d539afbeb36b2b93eda32df04..3439d25867a2a755b7b16f5042fde37d
              default_model=default_model,
          )
          message_kwargs = {COMPOSER_CTX_KEY: composer} if composer else None
-@@ -233,7 +282,7 @@ class CronDeliveryService:
+@@ -249,7 +298,7 @@ class CronDeliveryService:
              session_key=command.session_key,
              source=session.channel_type,
              text=command.prompt,
@@ -774,10 +831,10 @@ index a0017279889bf47d539afbeb36b2b93eda32df04..3439d25867a2a755b7b16f5042fde37d
          )
          if servers:
 diff --git a/src/octop/infra/errors.py b/src/octop/infra/errors.py
-index 3db15702e07c19c97c813134e707df63b9891101..73e379714578e0a216647f6b9cbfdeeba13eaef1 100644
+index c0be64eaf513af1d7de4b40cc95a05c0ff76f24a..eb1bec23b8503401f70b100e9f3facd7ada0fb83 100644
 --- a/src/octop/infra/errors.py
 +++ b/src/octop/infra/errors.py
-@@ -117,6 +117,8 @@ class ErrorCode(StrEnum):
+@@ -125,6 +125,8 @@ class ErrorCode(StrEnum):
      KNOWLEDGE_UNSUPPORTED_TYPE = "KNOWLEDGE_UNSUPPORTED_TYPE"
      KNOWLEDGE_NAME_TAKEN = "KNOWLEDGE_NAME_TAKEN"
      KNOWLEDGE_NAME_INVALID = "KNOWLEDGE_NAME_INVALID"
@@ -786,7 +843,7 @@ index 3db15702e07c19c97c813134e707df63b9891101..73e379714578e0a216647f6b9cbfdeeb
      AVATAR_INVALID = "AVATAR_INVALID"
      AVATAR_TOO_LARGE = "AVATAR_TOO_LARGE"
      INVITE_INVALID = "INVITE_INVALID"
-@@ -247,6 +249,8 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
+@@ -268,6 +270,8 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
      ErrorCode.KNOWLEDGE_UNSUPPORTED_TYPE: 400,
      ErrorCode.KNOWLEDGE_NAME_TAKEN: 409,
      ErrorCode.KNOWLEDGE_NAME_INVALID: 400,
@@ -796,10 +853,10 @@ index 3db15702e07c19c97c813134e707df63b9891101..73e379714578e0a216647f6b9cbfdeeb
      ErrorCode.AVATAR_TOO_LARGE: 413,
      ErrorCode.INVITE_INVALID: 400,
 diff --git a/src/octop/infra/gateway/process/processor.py b/src/octop/infra/gateway/process/processor.py
-index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d8d520eba 100644
+index 71efc3fac27d2fad9892e3d40521e91da740db29..f5c0edbff1410de3257994da79443f599676e5dd 100644
 --- a/src/octop/infra/gateway/process/processor.py
 +++ b/src/octop/infra/gateway/process/processor.py
-@@ -22,6 +22,7 @@ from octop_harness.teams.util import PeerCall, PeerSession
+@@ -23,6 +23,7 @@ from octop_harness.teams.util import PeerCall, PeerSession
  
  from octop.i18n.domains.stream import format_stream_error
  from octop.infra.agents.providers.reasoning import reasoning_request_parameters
@@ -807,7 +864,7 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d
  from octop.infra.agents.settings.profile import parse_config_json
  from octop.infra.agents.teams import is_team_agent
  from octop.infra.agents.teams.team_manager import (
-@@ -30,7 +31,7 @@ from octop.infra.agents.teams.team_manager import (
+@@ -31,7 +32,7 @@ from octop.infra.agents.teams.team_manager import (
  from octop.infra.agents.teams.team_manager import (
      stamp_team_host_chunk as _maybe_stamp_team_host,
  )
@@ -816,7 +873,7 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d
  from octop.infra.gateway.cli.events import message_event_to_cli_chunks
  from octop.infra.gateway.hitl.coordinator import (
      HitlAnswerOutcome,
-@@ -528,8 +529,17 @@ class GlobalProcessor:
+@@ -555,8 +556,17 @@ class GlobalProcessor:
          - Stale overrides (deleted / disabled catalog refs) are dropped so routing
            falls through to a usable expert default or harness AUTO.
          - When a model is passed and the turn needs vision, upgrade to a vision ref.
@@ -834,8 +891,8 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d
          thread_model = self._agent_manager.get_thread_model(agent_id, thread_id)
          thread_row = self._thread_registry.get_thread(thread_id)
          model_ref = self._model_ref_from_meta(
-@@ -539,6 +549,8 @@ class GlobalProcessor:
-         )
+@@ -567,6 +577,8 @@ class GlobalProcessor:
+         automatic = False
          if model_ref and not providers.is_model_ref_usable(model_ref):
              model_ref = None
 +        if model_ref and not allowlist(model_ref, allowed_models):
@@ -843,7 +900,7 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d
          if not model_ref:
              row = self._agent_repo.get(agent_id)
              if row is not None:
-@@ -546,6 +558,8 @@ class GlobalProcessor:
+@@ -574,6 +586,8 @@ class GlobalProcessor:
                      row,
                      self._agent_manager.get_config(agent_id),
                  )
@@ -852,25 +909,25 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d
          if not model_ref:
              user_row = self._user_repo.get(user_id)
              preferred = get_preferred_model_from_json(
-@@ -553,15 +567,44 @@ class GlobalProcessor:
-             )
-             if preferred and self._agent_manager.providers.is_model_ref_usable(preferred):
+@@ -582,20 +596,48 @@ class GlobalProcessor:
+             if preferred and self._agent_manager.is_auto_route_model_available(preferred):
                  model_ref = preferred
+                 automatic = True
 +                if not allowlist(model_ref, allowed_models):
 +                    model_ref = None
          if not model_ref:
 -            fallback = self._agent_manager.resolve_fallback_model_ref()
 +            fallback = self._agent_manager.resolve_fallback_model_ref(allowed_models)
              model_ref = fallback.strip() if isinstance(fallback, str) and fallback.strip() else None
+             automatic = model_ref is not None
          if not model_ref:
 +            if allowed_models is not None:
 +                raise OctopError(
 +                    ErrorCode.NO_ALLOWED_MODEL_AVAILABLE,
 +                    "no usable model in the user's allowed_models whitelist",
 +                )
-             return None
--        return providers.resolve_model_for_multimodal_turn(
-+        resolved = providers.resolve_model_for_multimodal_turn(
+             return _ResolvedModelRoute(None, automatic=True)
+         resolved = providers.resolve_model_for_multimodal_turn(
              model_ref,
              needs_multimodal=needs_multimodal,
 +            allowed_models=allowed_models,
@@ -880,8 +937,10 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d
 +                ErrorCode.NO_ALLOWED_MODEL_AVAILABLE,
 +                "no usable model in the user's allowed_models whitelist",
 +            )
-+        return resolved
-+
+         if resolved != model_ref:
+             automatic = True
+         return _ResolvedModelRoute(resolved, automatic=automatic)
+ 
 +    def _allowed_models_for_user(self, user_id: int) -> list[str] | None:
 +        """ZBS: the ``allowed_models`` whitelist for *user_id* (None = unrestricted).
 +
@@ -896,14 +955,15 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d
 +        if policy_repo is None:
 +            return None
 +        return allowed_models_for_user_id(policy_repo, self._user_repo, user_id)
- 
++
      def _resolve_reasoning_overrides(
          self,
-@@ -759,13 +802,20 @@ class GlobalProcessor:
+         *,
+@@ -794,13 +836,20 @@ class GlobalProcessor:
              media_backend=media_backend,
              locale=locale,
          )
--        model_ref = self._resolve_harness_model(
+-        model_route = self._resolve_harness_model_route(
 -            agent_id,
 -            thread_id,
 -            None,
@@ -911,7 +971,7 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d
 -            needs_multimodal=content_blocks_need_vision(content),
 -        )
 +        try:
-+            model_ref = self._resolve_harness_model(
++            model_route = self._resolve_harness_model_route(
 +                agent_id,
 +                thread_id,
 +                None,
@@ -924,13 +984,13 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d
 +            yield MessageEvent.error_event(exc.localized_message(locale))
 +            yield MessageEvent.completed()
 +            return
+         model_ref = model_route.model_ref
          mcp_servers = await self._resolve_turn_mcp_servers(
              agent_id=agent_id,
-             user_id=user_id,
-@@ -1088,14 +1138,31 @@ class GlobalProcessor:
-             )
+@@ -1141,14 +1190,31 @@ class GlobalProcessor:
  
          self._hitl.expire_pending_for_thread(thread_id, agent_id=agent_id, user_id=user_id)
+         self.teams.cancel_member_hitl(thread_id)
 -        request = await self._build_dashboard_request(
 -            msg,
 -            agent_id=agent_id,
@@ -968,10 +1028,10 @@ index eb229f88c3511917deaa2caac96dcc156f72e43b..1edaab886f3936ae7505afddf545bf4d
          await self._observe_turn_start_context(
              agent_id=agent_id,
 diff --git a/src/octop/infra/users/manager.py b/src/octop/infra/users/manager.py
-index 23f7343bec564ff2e7664aabe11cf6485915b87a..13fad549019b2d343f668487309f32d0d95ce276 100644
+index 206523ee73b0525b72e6849f0ae03604fd23115f..08323c60755e43349295cfd01cb5882fe3c30496 100644
 --- a/src/octop/infra/users/manager.py
 +++ b/src/octop/infra/users/manager.py
-@@ -566,11 +566,15 @@ class UserManager:
+@@ -567,11 +567,15 @@ class UserManager:
          workspace_root_dir: Any = UNSET,
          token_quota: Any = UNSET,
          max_agents: Any = UNSET,
@@ -987,7 +1047,7 @@ index 23f7343bec564ff2e7664aabe11cf6485915b87a..13fad549019b2d343f668487309f32d0
              normalize_max_agents,
              normalize_token_quota,
              normalize_workspace_root_dir,
-@@ -583,6 +587,7 @@ class UserManager:
+@@ -584,6 +588,7 @@ class UserManager:
          root_arg: Any = UNSET
          quota_arg: Any = UNSET
          max_agents_arg: Any = UNSET
@@ -995,7 +1055,7 @@ index 23f7343bec564ff2e7664aabe11cf6485915b87a..13fad549019b2d343f668487309f32d0
          if workspace_root_dir is not UNSET:
              root_arg = normalize_workspace_root_dir(workspace_root_dir)
              updates[POLICY_WORKSPACE_ROOT_DIR] = root_arg
-@@ -592,6 +597,9 @@ class UserManager:
+@@ -593,6 +598,9 @@ class UserManager:
          if max_agents is not UNSET:
              max_agents_arg = normalize_max_agents(max_agents)
              updates[POLICY_MAX_AGENTS] = None if max_agents_arg is None else str(max_agents_arg)
@@ -1005,7 +1065,7 @@ index 23f7343bec564ff2e7664aabe11cf6485915b87a..13fad549019b2d343f668487309f32d0
          if not updates:
              return
          self._services.user_policy_repo.merge(row.id, updates)
-@@ -616,6 +624,13 @@ class UserManager:
+@@ -617,6 +625,13 @@ class UserManager:
                  target=username,
                  payload=str(max_agents_arg) if max_agents_arg is not None else "",
              )
@@ -1019,7 +1079,7 @@ index 23f7343bec564ff2e7664aabe11cf6485915b87a..13fad549019b2d343f668487309f32d0
  
      async def set_workspace_root_dir(self, username: str, workspace_root_dir: str | None) -> None:
          await self.set_resource_policy(username, workspace_root_dir=workspace_root_dir)
-@@ -626,6 +641,11 @@ class UserManager:
+@@ -627,6 +642,11 @@ class UserManager:
      async def set_max_agents(self, username: str, max_agents: int | None) -> None:
          await self.set_resource_policy(username, max_agents=max_agents)
  
@@ -1269,7 +1329,7 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..193f5587d563033c9c8720331676281e
 +    return allowed_models_for_user_id(policy_repo, user_repo, user_id)
 diff --git a/tests/integration/test_model_policy_api.py b/tests/integration/test_model_policy_api.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f626f2104cfe437c424ecd5edcda647fab5819a5
+index 0000000000000000000000000000000000000000..4e70e2cb3d71569cc7c59d691bef755b4965385c
 --- /dev/null
 +++ b/tests/integration/test_model_policy_api.py
 @@ -0,0 +1,537 @@
@@ -1750,7 +1810,7 @@ index 0000000000000000000000000000000000000000..f626f2104cfe437c424ecd5edcda647f
 +        while True:
 +            frame = await asyncio.wait_for(ws.receive_json(), timeout=10)
 +            frames.append(frame)
-+            if frame.get("type") == "done":
++            if frame.get("type") in ("done", "turn.ended"):
 +                break
 +    errors = [f for f in frames if f.get("type") == "error"]
 +    assert errors, frames
@@ -1812,10 +1872,10 @@ index 0000000000000000000000000000000000000000..f626f2104cfe437c424ecd5edcda647f
 +    assert "你可用的模型当前都无法使用" in (row.get("last_error") or ""), row
 diff --git a/tests/unit/agents/test_memory_model_policy.py b/tests/unit/agents/test_memory_model_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ee41b7f93188e175c287655c36733b815df4d69
+index 0000000000000000000000000000000000000000..801327dcd935205098e5171f2870a68475f119ba
 --- /dev/null
 +++ b/tests/unit/agents/test_memory_model_policy.py
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,238 @@
 +"""ZBS patch 20 (feature 4): memory distillation respects the owner's model whitelist.
 +
 +Covers ``AgentManager._build_harness_config``:
@@ -1835,6 +1895,7 @@ index 0000000000000000000000000000000000000000..4ee41b7f93188e175c287655c36733b8
 +
 +import json
 +from pathlib import Path
++from typing import Any
 +
 +import pytest
 +
@@ -1992,9 +2053,70 @@ index 0000000000000000000000000000000000000000..4ee41b7f93188e175c287655c36733b8
 +
 +    assert cfg.default_model == "b/m3"
 +    assert cfg.memory_aux_model_enabled is True
++
++
++# --- ZT-036: health-aware model failover only switches inside the whitelist ---
++# Decision log 10-20 #436: only models the agent owner has authorized may be
++# used for the automatic failover switch. The candidates callback installed by
++# ``_build_harness_config`` must therefore filter ``SafeModelFailoverMiddleware``
++# candidates by the owner's ``allowed_models``; admins and owners without a
++# whitelist keep the official site-wide candidate list.
++
++
++async def _boot_failover_config(manager: AgentManager, row: AgentRow) -> Any:
++    """Boot (wires ``shared_factory`` → ``SafeModelFailoverMiddleware``) and build."""
++    await manager.boot()
++    cfg = manager._build_harness_config(row)
++    middleware = next(
++        m for m in (cfg.middleware or []) if type(m).__name__ == "SafeModelFailoverMiddleware"
++    )
++    return middleware
++
++
++def _failover_refs(middleware: Any) -> list[str]:
++    return [c.ref for c in middleware._candidates("a/m1", needs_multimodal=False)]
++
++
++async def test_whitelisted_owner_failover_candidates_inside_whitelist(
++    manager: AgentManager,
++) -> None:
++    _add_provider(manager, "a", ["m1", "m2"])
++    _add_provider(manager, "b", ["m3"])
++    uid = _seed_user(manager, role="user")
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m2"]))
++
++    middleware = await _boot_failover_config(manager, _row(uid))
++
++    assert _failover_refs(middleware) == ["a/m2"]  # b/m3 filtered out
++
++
++async def test_no_whitelist_owner_failover_candidates_unchanged(
++    manager: AgentManager,
++) -> None:
++    _add_provider(manager, "a", ["m1"])
++    _add_provider(manager, "b", ["m3"])
++    uid = _seed_user(manager, role="user")
++
++    middleware = await _boot_failover_config(manager, _row(uid))
++
++    assert _failover_refs(middleware) == ["a/m1", "b/m3"]  # official order
++
++
++async def test_admin_owner_failover_candidates_unchanged_even_with_whitelist(
++    manager: AgentManager,
++) -> None:
++    _add_provider(manager, "a", ["m1"])
++    _add_provider(manager, "b", ["m3"])
++    uid = _seed_user(manager, role="admin")
++    # Admins are never restricted; a stale policy row must not apply.
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1"]))
++
++    middleware = await _boot_failover_config(manager, _row(uid))
++
++    assert _failover_refs(middleware) == ["a/m1", "b/m3"]  # official order
 diff --git a/tests/unit/agents/test_model_policy_store.py b/tests/unit/agents/test_model_policy_store.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8f3000232490b7c3b479ab1cf071400cf1237b33
+index 0000000000000000000000000000000000000000..7db7ee1896351cdff5699a5cc4706f41d90f6074
 --- /dev/null
 +++ b/tests/unit/agents/test_model_policy_store.py
 @@ -0,0 +1,141 @@
@@ -2007,10 +2129,10 @@ index 0000000000000000000000000000000000000000..8f3000232490b7c3b479ab1cf071400c
 +import pytest
 +
 +from octop.config import OctopConfig
++from octop.infra.agents.providers.store import ProviderStore
 +from octop.infra.db.migrate import run_migrations
 +from octop.infra.db.pool import SqlitePool
 +from octop.infra.db.services import build_shared_services
-+from octop.infra.agents.providers.store import ProviderStore
 +
 +
 +@pytest.fixture
@@ -2140,10 +2262,10 @@ index 0000000000000000000000000000000000000000..8f3000232490b7c3b479ab1cf071400c
 +        == "a/text-only"
 +    )
 diff --git a/tests/unit/gateway/test_global_processor_team.py b/tests/unit/gateway/test_global_processor_team.py
-index c0428637b77ea13721e0f968d740a29073eec639..b2269af6c2acc685beeea055f38440b1e8a00d6a 100644
+index d046fdb99aed5502605dcffc6759b2dc9f08fc85..a14e229533dd2ea68c6344e8757d59254cc187bb 100644
 --- a/tests/unit/gateway/test_global_processor_team.py
 +++ b/tests/unit/gateway/test_global_processor_team.py
-@@ -1675,6 +1675,7 @@ def test_resolve_harness_model_uses_agent_default_and_upgrades_vision() -> None:
+@@ -2172,6 +2172,7 @@ def test_resolve_harness_model_uses_agent_default_and_upgrades_vision() -> None:
      processor._agent_manager.providers.resolve_model_for_multimodal_turn.assert_called_once_with(
          "p/text-only",
          needs_multimodal=True,
@@ -2151,7 +2273,7 @@ index c0428637b77ea13721e0f968d740a29073eec639..b2269af6c2acc685beeea055f38440b1
      )
  
  
-@@ -1705,6 +1706,7 @@ def test_resolve_harness_model_dashboard_override_wins() -> None:
+@@ -2202,6 +2203,7 @@ def test_resolve_harness_model_dashboard_override_wins() -> None:
      processor._agent_manager.providers.resolve_model_for_multimodal_turn.assert_called_once_with(
          "p/picked",
          needs_multimodal=False,

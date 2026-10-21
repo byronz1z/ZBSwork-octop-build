@@ -6,7 +6,7 @@
 # 编号 = 一块改动区域，终身不变；重做不换号；只有需求取消或官方已实现才作废（作废号不再使用）
 # 编号段：10–19 修复(fix) · 20–49 功能(feat，一个功能领域一个号) · 60 镜像打包(svc，仅此一个)；桌面端是单独一条线 desk/，不占编号段
 # 层级：L0 配置 · L1 插件 · L2 外部服务 · L3 核心补丁（本表 patches 全部是 L3）
-# 状态：enabled 启用 / candidate 候选（不参与构建）
+# 状态：enabled 启用 / candidate 候选（不参与构建）/ retired 已作废（官方已实现或需求取消；目录只留 README，不参与构建，编号不再使用）
 
 # 2026-10-12 ZT-025 官方升级（task/ZT-025-official-upgrade）：上游锁定升至 v1.0.2b6（eb28011249c0）。
 # 本机适配实测（build 任务克隆）：check_ownership.py、brand_check.py --self、build_image.py --no-build
@@ -40,6 +40,9 @@
 # prepare.py --check-only 退出码 0；check_ownership.py 退出码 0（72 文件）。
 # 2026-10-16 ZT-030（task/ZT-030-model-policy-fixes，执行方 glm-5.3 三个小任务并行，总调度集成）：补丁 20 修正（带"/"的模型能存；对话、定时任务、记忆整理越不过名单；按场景两个错误码）；in_production 改实情。
 # 2026-10-16 ZT-032（task/ZT-032-update-from-own-repo，执行方 glm-5.3，总调度集成）：新增补丁 23（更新），order 23 排在 21 后、60 前；中英文案共用登记加 23。
+# 2026-10-20 ZT-036（task/ZT-036-official-v102，执行方 glm-5.3）：上游锁定升至 v1.0.2（dd9dce470844）；
+# 补丁 10 作废（官方 v1.0.2b9 起等价修复，#1866；目录只留 README，编号不再使用）；
+# 各补丁在 v1.0.2 上的重新适配由 ZT-036 各支线分别更新自己的条目。
 upstream_lock: UPSTREAM.lock
 
 brand:
@@ -56,12 +59,13 @@ patches:
     name_zh: PostgreSQL 模式重启死循环修复
     layer: L3
     scope: [docker]
-    status: enabled
+    status: retired
     order: 10
-    upstream_pr: yes          # 上游 b6/main 仍未修，应提 PR；上游合并等价修复后删除本模块（编号作废）
-    verified: {v1.0.2b4: strict, v1.0.2b6: strict}
-    in_production: yes        # 生产镜像 octop:pg-1.0.2b4-r2 含此逻辑（2026-10-08 实测）
+    upstream_pr: no           # 上游 v1.0.2b9 已等价修复（#1866），本模块作废
+    verified: {v1.0.2b4: strict, v1.0.2b6: strict}   # 生产 zbs0.3 及以前含此补丁；zbs0.4 起不含，由官方修复替代
+    in_production: yes        # 生产 zbs0.3 及以前含此补丁；zbs0.4 起不含，由官方修复替代
     legacy_ids: [SRV-1]
+    retired: {date: 2026-10-20, task: ZT-036, reason: "官方 v1.0.2b9 起等价修复（#1866）"}
 
   - id: 20-feat-user-model-policy
     name_zh: 按角色/用户的可用模型名单；接口对非管理员不返回模型密钥（现行 F8–F10；旧稿 F7–F11，对照见 README）
@@ -70,8 +74,8 @@ patches:
     status: enabled
     order: 20
     upstream_pr: no           # ZBS 自有权限收紧策略，上游无意向；设计见 patches/20-*/README.md
-    verified: {v1.0.2b6: strict}
-    in_production: partially  # ZT-026 版随 1.0.2b6-zbs2 于 2026-10-14 上生产；2026-10-16 ZT-030 修正版（存得进、守得住、按场景提示）未部署
+    verified: {v1.0.2b6: strict, v1.0.2: strict}  # v1.0.2 适配：ZT-036a（2026-10-20），施工树 0310250f/6cf7e44c，严格套上
+    in_production: yes        # 生产 2026-10-20 00:48 起跑 1.0.2b6-zbs0.3，含 ZT-030 修正版（此前 10-14 起 zbs2 含 ZT-026 版）；v1.0.2 适配版（ZT-036a）随 zbs0.4 上线后生效
 
   - id: 21-feat-user-workspace
     name_zh: "按用户文件夹：活动范围支持 {username}（默认进开关指定的后端、普通用户不能改运行方式、浏览器 file 地址按用户分）（现行 F1–F3/F11/F15；旧稿 F3/F4/F5，对照见 README）"
@@ -80,8 +84,8 @@ patches:
     status: enabled
     order: 21
     upstream_pr: no           # ZBS 自有权限收紧策略，上游无意向；设计见 patches/21-*/README.md
-    verified: {v1.0.2b6: strict}
-    in_production: no         # 2026-10-12 新增（ZT-026 第 2 步）；2026-10-13 第 3 轮 A 改为本地 Shell + 按用户 root_dir 方案；第 4 轮按审核意见整改；第 5 轮加 F11（浏览器 file: 按用户分）/F13（边界说明）并改名 user-workspace（原 user-sandbox）。本机单元/临时环境 zt026 实测（见 step6 报告），未部署
+    verified: {v1.0.2b6: strict, v1.0.2: strict}
+    in_production: yes         # 生产 zbs0.3 里在用（2026-10-14 随 1.0.2b6-zbs2 上线，含本补丁）；全站开关 2026-10-14 起开着；v1.0.2 适配版（ZT-036b）待随 zbs0.4 上生产
 
   - id: 23-feat-own-update-source
     name_zh: 更新：项目地址指向配方库、页面只显示我们的版本号（如 ZBS0.3）、关掉网页上官方的检查更新和升级（ZT-032）
@@ -90,18 +94,18 @@ patches:
     status: enabled
     order: 23
     upstream_pr: no           # ZBS 自有发布方式（我们出镜像、部署运维库换镜像），上游无意向
-    verified: {v1.0.2b6: strict}
+    verified: {v1.0.2b6: strict, v1.0.2: strict}   # 2026-10-20 ZT-036c 在官方 v1.0.2 裸树上重新适配（施工树 0 个补丁基线，补丁 20、21 由其他支线重做，合并时按 R7 复验）
     in_production: no         # 2026-10-16 新增（ZT-032）；版本号文件由出镜像工具写入施工树（shared/tools/build_image.py），验镜像工具认可补丁新增文件（verify_image.py）
 
   - id: 60-svc-runtime-extras
-    name_zh: 镜像加装本地向量/OCR 依赖（uv extras）+ 用户实际用到的工具（0002，ZT-018）+ 浏览器本体（0003，ZT-026）
+    name_zh: 镜像加装用户实际用到的工具（0002，ZT-018）+ 浏览器本体（0003，ZT-026）+ PostgreSQL 16 客户端（0004，ZT-036 36f）；0001（uv extras 本地向量/OCR 依赖）已作废——官方 v1.0.2 已实现（PR #2082）
     layer: L3
     scope: [docker]
     status: enabled
     order: 60
     upstream_pr: no           # 体积取舍属部署偏好
-    verified: {v1.0.2b4: strict, v1.0.2b6: strict}
-    in_production: partially  # 0001（fastembed/rapidocr 等）已在生产（2026-10-08 实测）；0002 2026-10-10 新增，经本机镜像 octop:1.0.2b4-zbs1 验证，尚未部署到生产；0003 2026-10-13 新增（ZT-026 第 5 轮），安装命令在 zt026-octop2 容器实测（含中文渲染），整镜像构建由总调度做，未部署
+    verified: {v1.0.2b4: strict, v1.0.2b6: strict, v1.0.2: "strict（指 0002、0003；0004 于 2026-10-21 ZT-036 36f 新增；0001 已作废，官方 PR #2082 原样实现）"}
+    in_production: yes         # zbs0.3 含 0001–0003（2026-10-20 生产只读实测 0002、0003 在镜像里，ZT-036 原始输出 08；0001 2026-10-08 实测）；zbs0.4 起含 0002、0003、0004（0004 于 2026-10-21 新增），0001 的 uv extras 由官方 v1.0.2 提供（PR #2082）
     legacy_ids: [SRV-2]
 
 # 同一上游文件被多个模块修改时，必须在此登记主人（owner）与允许共改的模块（also），否则 CI 失败。
@@ -113,7 +117,7 @@ patches:
 # 并改 src/octop/api/routers/chat/ws.py；这几个文件只有补丁 20 改，不需 shared_files 登记。
 shared_files:
   src/octop/infra/users/resource_policy.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 加开关读取/管理员判定函数，20 加 allowed_models 策略函数，不同位置"}
-  src/octop/infra/agents/manager.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加后端覆写、_prepare_docker_backend 加 {username} 展开、_build_harness_config 加浏览器判定回调，20 改 resolve_fallback_model_ref、在 _build_harness_config 末段（21 所有改动之后）调用补丁 20 的记忆模型挑选（ZT-030），不同位置"}
+  src/octop/infra/agents/manager.py: {owner: 21-feat-user-workspace, also: [20-feat-user-model-policy], reason: "21 改 AgentManager.create/加后端覆写、_prepare_docker_backend 加 {username} 展开、_build_harness_config 加浏览器判定回调，20 改 resolve_fallback_model_ref、在 _build_harness_config 末段（21 所有改动之后）调用补丁 20 的记忆模型挑选（ZT-030），不同位置；ZT-036 在同一函数健康切换装配处按主人名单过滤候选"}
   dashboard/src/locales/zh.json: {owner: brand, also: [20-feat-user-model-policy, 23-feat-own-update-source], reason: "品牌只替换值不动 key；20 新增 adminUsers 段与 apiErrors 两个键，23 新增顶层 zbsUpdate 段（先套补丁再套品牌，均严格 apply）"}
   dashboard/src/locales/en.json: {owner: brand, also: [20-feat-user-model-policy, 23-feat-own-update-source], reason: "同 zh.json"}
   dashboard/src/layouts/Sidebar.tsx: {owner: brand, also: [23-feat-own-update-source], reason: "品牌只替换显示文字；23 把版本标记换成 ZbsVersionBadge、去掉更新红点（先套 23 再套品牌，均严格 apply）"}

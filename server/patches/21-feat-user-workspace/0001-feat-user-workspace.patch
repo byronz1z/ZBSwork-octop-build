@@ -1,5 +1,5 @@
 diff --git a/src/octop/api/common/validators.py b/src/octop/api/common/validators.py
-index e41ea4d3..55433d04 100644
+index e41ea4d38474acb22ed451d8a832c3a794eb9206..2c65cc809cf6ad872ec60e33c9dadb9b65eb45e3 100644
 --- a/src/octop/api/common/validators.py
 +++ b/src/octop/api/common/validators.py
 @@ -2,10 +2,14 @@
@@ -64,7 +64,7 @@ index e41ea4d3..55433d04 100644
      server: Any,
      *,
 diff --git a/src/octop/api/routers/agents.py b/src/octop/api/routers/agents.py
-index 2ea02c90..49956ec1 100644
+index 2ea02c901bb80e0f1b93926dd5548259163853a9..49956ec1442e0f3a07aa974fa17fdfcc01b38bc1 100644
 --- a/src/octop/api/routers/agents.py
 +++ b/src/octop/api/routers/agents.py
 @@ -11,7 +11,10 @@ from fastapi.responses import Response
@@ -93,18 +93,10 @@ index 2ea02c90..49956ec1 100644
              user,
              body.config.get("backend"),
 diff --git a/src/octop/api/routers/settings.py b/src/octop/api/routers/settings.py
-index c8b368d1..86b16974 100644
+index 2b08ade1a9c177c352a725de8e0f700241ec3da9..e3bcaf819831d3efa8752b7544d3eb16081b391d 100644
 --- a/src/octop/api/routers/settings.py
 +++ b/src/octop/api/routers/settings.py
-@@ -11,6 +11,7 @@ from octop.api.deps import current_user, get_server, require_permission
- from octop.config import OctopConfig
- from octop.infra.agents.security import tool_execution_may_pause
- from octop.infra.auth.captcha import current_env, load_view, save_settings
-+from octop.infra.errors import ErrorCode, OctopError
- from octop.infra.users.identity import User
- 
- router = APIRouter()
-@@ -183,3 +184,82 @@ async def put_captcha_settings(
+@@ -282,3 +282,82 @@ async def put_captcha_settings(
          payload=f"source={view['source']}",
      )
      return CaptchaSettingsResponse.model_validate(view)
@@ -188,10 +180,10 @@ index c8b368d1..86b16974 100644
 +        name=enforced_workspace_backend_name(server.services.settings_repo),
 +    )
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
-index 34f88197..5bb7774d 100644
+index d76f57dc8a4e466811a6948c2eb181fe11d54223..10d4f8c59eb4582ce95aaf478c6e978e0f386944 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
-@@ -123,6 +123,18 @@ def _memory_namespace(agent_id: str) -> str:
+@@ -155,6 +155,18 @@ def _memory_namespace(agent_id: str) -> str:
      return f"{_MEMORY_NS_PREFIX}{agent_id}"
  
  
@@ -210,7 +202,7 @@ index 34f88197..5bb7774d 100644
  def skills_disabled_set(cfg: dict[str, Any]) -> set[str]:
      """Return the set of disabled skill slugs from agent config."""
      raw = cfg.get("skills_disabled")
-@@ -641,6 +690,12 @@ class AgentManager:
+@@ -773,6 +785,12 @@ class AgentManager:
                          self._repos.agent_repo,
                          spec.user_id,
                      )
@@ -223,7 +215,7 @@ index 34f88197..5bb7774d 100644
                  raise_if_backend_outside_user_root(
                      self._repos.user_policy_repo,
                      spec.user_id,
-@@ -2529,6 +2584,89 @@ class AgentManager:
+@@ -3171,6 +3189,89 @@ class AgentManager:
      # Internal — validation
      # ------------------------------------------------------------------
  
@@ -313,7 +305,7 @@ index 34f88197..5bb7774d 100644
      def _assert_agent_name_available(
          self,
          user_id: int | None,
-@@ -2764,17 +2902,36 @@ class AgentManager:
+@@ -3408,17 +3509,38 @@ class AgentManager:
          return isinstance(spec, dict) and str(spec.get("type") or "").lower() == "opensandbox"
  
      def _prepare_docker_backend(self, backend: Any, row: AgentRow) -> Any:
@@ -342,7 +334,9 @@ index 34f88197..5bb7774d 100644
 +        # ``env`` values to the agent owner's username (named shell backends
 +        # rooted at e.g. ``/data/.octop/users/{username}``).
 +        if backend.get("type") in ("local_shell", "filesystem"):
-+            from octop.infra.backend.docker_spec import resolve_username_placeholder  # noqa: PLC0415
++            from octop.infra.backend.docker_spec import (
++                resolve_username_placeholder,  # noqa: PLC0415
++            )
 +
 +            username = self._owner_username(row)
 +            root = backend.get("root_dir")
@@ -359,11 +353,11 @@ index 34f88197..5bb7774d 100644
  
      def _backend_workspace_for_row(
          self,
-@@ -3056,6 +3213,78 @@ class AgentManager:
+@@ -3700,6 +3822,78 @@ class AgentManager:
              return connector_user_id
          return row.user_id
  
-+    def _browser_file_resolver(self, user_raw: Any) -> "Callable[[int, str], tuple[str, bool] | None]":
++    def _browser_file_resolver(self, user_raw: Any) -> Callable[[int, str], tuple[str, bool] | None]:
 +        """Build the per-turn local-file resolver for BrowserProfileMiddleware.
 +
 +        ZBS F11. Returns a closure ``(user_id, agent_spoken_path) ->
@@ -438,7 +432,7 @@ index 34f88197..5bb7774d 100644
      def _prepare_stream_request(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
          from octop_harness.plugins import collect_plugin_tool_configs  # noqa: PLC0415
  
-@@ -3071,7 +3300,20 @@ class AgentManager:
+@@ -3715,7 +3909,20 @@ class AgentManager:
              configurable = dict(req.get("configurable") or {})
              configurable["plugin_tool_configs"] = tool_configs
              req["configurable"] = configurable
@@ -458,10 +452,10 @@ index 34f88197..5bb7774d 100644
 +                out["configurable"] = configurable
 +        return out
  
-     def _build_harness_config(self, row: AgentRow) -> HarnessAgentConfig:
-         """Convert an AgentRow into a HarnessAgentConfig."""
+     def _stream_model_label(self, agent_id: str, request: dict[str, Any], thread_id: str) -> str:
+         raw = request.get("model")
 diff --git a/src/octop/infra/agents/middleware/browser_profile.py b/src/octop/infra/agents/middleware/browser_profile.py
-index ecf3b35b..82e0c649 100644
+index ecf3b35bc81fcb0a44e8bbd0361aff649af87742..5645276252c6e1603fc37bd91083d91e4a032ec1 100644
 --- a/src/octop/infra/agents/middleware/browser_profile.py
 +++ b/src/octop/infra/agents/middleware/browser_profile.py
 @@ -22,6 +22,146 @@ _MISSING_USER = (
@@ -541,7 +535,7 @@ index ecf3b35b..82e0c649 100644
 +
 +def _apply_file_policy(
 +    request: ToolCallRequest,
-+    file_resolver: Callable[[int, str], "tuple[str, bool] | None"],
++    file_resolver: Callable[[int, str], tuple[str, bool] | None],
 +    user_id: int,
 +    args: dict[str, Any],
 +    tool_call: dict[str, Any],
@@ -630,7 +624,7 @@ index ecf3b35b..82e0c649 100644
  
  class BrowserProfileMiddleware(AgentMiddleware[Any, Any]):
 diff --git a/src/octop/infra/backend/adapter.py b/src/octop/infra/backend/adapter.py
-index fc81c3c4..e9e7eb52 100644
+index fc81c3c49cf84a5a3f58a880e3d0492b7231ef37..e9e7eb5238cc93c43772fbe2f8501befd3e0168f 100644
 --- a/src/octop/infra/backend/adapter.py
 +++ b/src/octop/infra/backend/adapter.py
 @@ -119,7 +119,22 @@ def row_to_backend_spec(row: BackendRow) -> dict[str, Any] | None:
@@ -658,7 +652,7 @@ index fc81c3c4..e9e7eb52 100644
      if kind == "postgres":
          from octop.infra.backend.postgres_spec import row_to_postgres_spec
 diff --git a/src/octop/infra/backend/docker_spec.py b/src/octop/infra/backend/docker_spec.py
-index 577ddba1..ebc502a7 100644
+index 577ddba1b39655ee46b8ca69b77b401544c6a3b5..ebc502a7fde07342c07fe330775a61159aa19256 100644
 --- a/src/octop/infra/backend/docker_spec.py
 +++ b/src/octop/infra/backend/docker_spec.py
 @@ -64,6 +64,8 @@ def enrich_docker_backend_spec(
@@ -731,10 +725,10 @@ index 577ddba1..ebc502a7 100644
      spec: dict[str, Any],
      env_file: str | Path | None,
 diff --git a/src/octop/infra/users/resource_policy.py b/src/octop/infra/users/resource_policy.py
-index 46d00f6a..9833b5ae 100644
+index 193f5587d563033c9c8720331676281e72d622c7..31849d2ada1da32d4a3f076e0b9c4003895fdb86 100644
 --- a/src/octop/infra/users/resource_policy.py
 +++ b/src/octop/infra/users/resource_policy.py
-@@ -7,6 +7,7 @@ import os
+@@ -8,6 +8,7 @@ import os
  from collections.abc import Mapping, Sequence
  from typing import Any
  
@@ -742,7 +736,7 @@ index 46d00f6a..9833b5ae 100644
  from octop.infra.errors import ErrorCode, OctopError
  from octop.infra.utils.host_dirs import (
      assert_backend_root_dirs_allowed,
-@@ -20,6 +21,25 @@ POLICY_WORKSPACE_ROOT_DIR = "workspace_root_dir"
+@@ -21,6 +22,25 @@ POLICY_WORKSPACE_ROOT_DIR = "workspace_root_dir"
  POLICY_TOKEN_QUOTA = "token_quota"
  POLICY_MAX_AGENTS = "max_agents"
  
@@ -770,7 +764,7 @@ index 46d00f6a..9833b5ae 100644
      """Return ``value`` when the policy row exists and is enabled."""
 diff --git a/tests/unit/agents/test_browser_file_policy.py b/tests/unit/agents/test_browser_file_policy.py
 new file mode 100644
-index 00000000..f65dcc83
+index 0000000000000000000000000000000000000000..f65dcc83ccbcc10b9e7564c144590746db6924d5
 --- /dev/null
 +++ b/tests/unit/agents/test_browser_file_policy.py
 @@ -0,0 +1,292 @@
@@ -1068,7 +1062,7 @@ index 00000000..f65dcc83
 +    assert "替代" in str(result.content) or "请" in str(result.content)
 diff --git a/tests/unit/agents/test_user_workspace_policy.py b/tests/unit/agents/test_user_workspace_policy.py
 new file mode 100644
-index 00000000..dea52221
+index 0000000000000000000000000000000000000000..5b7c5ae14bdb651194bcc278c2d813ebf6c8c53b
 --- /dev/null
 +++ b/tests/unit/agents/test_user_workspace_policy.py
 @@ -0,0 +1,443 @@
@@ -1516,7 +1510,7 @@ index 00000000..dea52221
 +        )
 +    assert ei.value.code is ErrorCode.FORBIDDEN
 diff --git a/tests/unit/test_storage_spec.py b/tests/unit/test_storage_spec.py
-index 4d800e19..d4322c44 100644
+index 4d800e19e3bbe2c4bcc16401669bcd625341012f..d4322c4428737f06cd3ff03fb20b15ecef99e23d 100644
 --- a/tests/unit/test_storage_spec.py
 +++ b/tests/unit/test_storage_spec.py
 @@ -253,6 +253,134 @@ def test_enrich_docker_backend_spec_defaults() -> None:

@@ -1,0 +1,22 @@
+diff --git a/docker/Dockerfile b/docker/Dockerfile
+index c523f9db566ef1ba17192cf5690198897b0afdca..025a62480ffa68a182ae0fd3d90b4e4815747350 100644
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -201,2 +201,17 @@ RUN /app/.venv/bin/python -m playwright install chromium
+ 
++# --- ZT-036 36f / 60-svc-runtime-extras 0004: PostgreSQL 16 client (pg_dump / pg_restore) ---
++# 官方备份/恢复（src/octop/infra/backup/pg_dump.py 的 _require_tool）要求 PATH 上有
++# pg_dump/pg_restore，官方镜像不带；生产数据库是 PostgreSQL 16（pgvector/pg16），
++# 而 Debian trixie 自带客户端是 17 版，故用 PostgreSQL 官方 apt 源装同版本的 16 客户端。
++RUN install -d /usr/share/postgresql-common/pgdg \
++    && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
++       https://www.postgresql.org/media/keys/ACCC4CF8.asc \
++    && printf 'Types: deb\nURIs: https://apt.postgresql.org/pub/repos/apt\nSuites: trixie-pgdg\nComponents: main\nSigned-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc\n' \
++       > /etc/apt/sources.list.d/pgdg.sources \
++    && apt-get update \
++    && apt-get install -y --no-install-recommends postgresql-client-16 \
++    && rm -rf /var/lib/apt/lists/* \
++    && pg_dump --version | grep -q ' 16\.' \
++    && pg_restore --version | grep -q ' 16\.'
++
+ EXPOSE 8088

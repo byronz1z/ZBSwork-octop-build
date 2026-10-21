@@ -1,8 +1,8 @@
 diff --git a/dashboard/src/components/AvatarDropdown.tsx b/dashboard/src/components/AvatarDropdown.tsx
-index 9a63d3cdbea3f5308d14f288d5b3993ee4d439c3..35be15df2477ecf303a4c26d8ece1bca898f487d 100644
+index c4be017db083e1c4eeabb2c84cdfde29721c4510..3ce7954f641a9ae7fc40a247c10b9dc2edb1c33d 100644
 --- a/dashboard/src/components/AvatarDropdown.tsx
 +++ b/dashboard/src/components/AvatarDropdown.tsx
-@@ -21,7 +21,6 @@ import {
+@@ -20,7 +20,6 @@ import {
    Palette,
    CircleHelp,
    Github,
@@ -10,7 +10,7 @@ index 9a63d3cdbea3f5308d14f288d5b3993ee4d439c3..35be15df2477ecf303a4c26d8ece1bca
    KeyRound,
    Lock,
    LockOpen,
-@@ -46,7 +45,7 @@ import PaletteSwitcher from "./PaletteSwitcher";
+@@ -45,7 +44,7 @@ import PaletteSwitcher from "./PaletteSwitcher";
  import type { OctopUser } from "../api/modules/auth";
  import { useLayoutMode } from "../context/LayoutModeContext";
  import type { LayoutMode } from "../layouts/layoutModeStorage";
@@ -19,7 +19,7 @@ index 9a63d3cdbea3f5308d14f288d5b3993ee4d439c3..35be15df2477ecf303a4c26d8ece1bca
  import feishuIcon from "../assets/channels/feishu.svg";
  import dingtalkIcon from "../assets/channels/dingtalk.svg";
  import wecomIcon from "../assets/channels/wecom.svg";
-@@ -56,7 +55,6 @@ import {
+@@ -55,7 +54,6 @@ import {
  } from "../pages/Admin/Users/ProfileAvatar";
  import styles from "./AvatarDropdown.module.less";
  
@@ -235,7 +235,7 @@ index 3b99b322463cbee300ed6f5fb5e5de967a4b2390..04542f17202f5522c8836ab0b646cacf
        </div>
  
 diff --git a/dashboard/src/layouts/Sidebar.tsx b/dashboard/src/layouts/Sidebar.tsx
-index c4c8efdf95397b799dbef05f0b06ede7dfbdf3ca..4fac6ec1726f235716c9915b5cf77143baafd286 100644
+index 9a805bf0f72e1be5e046a5b0fec2a8d546fab55c..a230aedcabb4c66c75b505b3eaa5a26c28cde82a 100644
 --- a/dashboard/src/layouts/Sidebar.tsx
 +++ b/dashboard/src/layouts/Sidebar.tsx
 @@ -3,8 +3,8 @@ import { useLocation, useNavigate } from "react-router-dom";
@@ -249,7 +249,7 @@ index c4c8efdf95397b799dbef05f0b06ede7dfbdf3ca..4fac6ec1726f235716c9915b5cf77143
  import { ArrowRightLeft, ChevronDown, X } from "lucide-react";
  import { useTheme } from "../context/ThemeContext";
  import { useLayoutMode } from "../context/LayoutModeContext";
-@@ -506,8 +506,7 @@ export default function Sidebar({
+@@ -523,8 +523,7 @@ export default function Sidebar({
        />
        {!isRailCollapsed && !isMobile && (
          <>
@@ -260,10 +260,10 @@ index c4c8efdf95397b799dbef05f0b06ede7dfbdf3ca..4fac6ec1726f235716c9915b5cf77143
        )}
      </>
 diff --git a/dashboard/src/locales/en.json b/dashboard/src/locales/en.json
-index 2960c5269dbbd1e6bf77c697a3911217ab72603d..928a840c8782652a66f149a133c0c8d7eb63f3e7 100644
+index f80a7e99f31f421c99aef11381b99737b02d0cf6..ff3a0effb469fee3aaf5312a5c8d669a556e5331 100644
 --- a/dashboard/src/locales/en.json
 +++ b/dashboard/src/locales/en.json
-@@ -6491,5 +6491,15 @@
+@@ -7008,5 +7008,15 @@
      "step4Desc": "When finished, type \"结束\" (or \"end\") to stop; after confirmation the skill is saved under the task goal. Type the goal keyword later to replay it.",
      "envNotReady": "Browser environment required first",
      "title": "Skill recording guide"
@@ -280,10 +280,10 @@ index 2960c5269dbbd1e6bf77c697a3911217ab72603d..928a840c8782652a66f149a133c0c8d7
    }
  }
 diff --git a/dashboard/src/locales/zh.json b/dashboard/src/locales/zh.json
-index ac757860a4a4a1b5cfc20e76dd768ebd4c045fe9..2b6539af4216c176e79e18cb29fbbe1bae475dfa 100644
+index 623bd21f1aadc5ced1061fd96c1025d49bf17492..db9545103cfbca4c17ba3e75b975516049aa3479 100644
 --- a/dashboard/src/locales/zh.json
 +++ b/dashboard/src/locales/zh.json
-@@ -6491,5 +6491,15 @@
+@@ -7008,5 +7008,15 @@
      "step4Desc": "操作完成后，输入\"结束\"停止录制，确认后技能将以任务目标为名保存。之后只需输入任务目标关键词即可触发回放。",
      "envNotReady": "请先安装浏览器环境",
      "title": "技能录制引导"
@@ -329,7 +329,7 @@ index a03eccebabfc88f2903ff6232b13ea4574b533c2..e70f5b2a8e380e851a89d172e9836466
 +// Official implementation above (UpdateConfig) is kept for reference/upstream sync.
 +export default ZbsUpdateConfig;
 diff --git a/src/octop/api/routers/update.py b/src/octop/api/routers/update.py
-index a7724b11b140ca9b7a582d3fd39c8a3eb86abc78..5e68d605701ed1c51e700e1ebbff15a37bf58606 100644
+index 2dcd587a4737bd97dfe960bacafbdae0bb0861d8..62554d52a49350806f54ce3ff73f9556b7b26f03 100644
 --- a/src/octop/api/routers/update.py
 +++ b/src/octop/api/routers/update.py
 @@ -16,7 +16,6 @@ from octop.api.deps import current_user, get_server, require_permission
@@ -340,22 +340,32 @@ index a7724b11b140ca9b7a582d3fd39c8a3eb86abc78..5e68d605701ed1c51e700e1ebbff15a3
      get_cached_status,
      get_task,
      update_task,
-@@ -41,6 +40,7 @@ from octop.infra.setup.service import (
+@@ -33,7 +32,6 @@ from octop.infra.setup.self_update import (
+     is_prerelease,
+     parse_changelog_for_version,
+     run_upgrade,
+-    validate_upgrade_target,
+ )
+ from octop.infra.setup.service import (
+     ServiceRuntime,
+@@ -42,7 +40,8 @@ from octop.infra.setup.service import (
      is_service_installed,
      restart_service,
  )
+-from octop.infra.utils.locale import DEFAULT_LOCALE, resolve_locale, resolve_request_locale
 +from octop.infra.setup.zbs_version import reject_web_upgrade, zbs_status
++from octop.infra.utils.locale import DEFAULT_LOCALE
  
  logger = logging.getLogger(__name__)
  
-@@ -190,14 +190,14 @@ async def update_status(
+@@ -193,14 +192,14 @@ async def update_status(
      server: Any = Depends(get_server),
  ) -> dict[str, Any]:
      """Return last check result; re-probe PyPI when the server cache TTL expires."""
 -    stable_only = _read_stable_only(server)
 -    cached = get_cached_status()
 -    if cached is not None:
--        return _auto_status(cached, stable_only=stable_only)
+-        return await asyncio.to_thread(_auto_status, cached, stable_only=stable_only)
 -    return await asyncio.to_thread(
 -        _build_status,
 -        stable_only=stable_only,
@@ -371,7 +381,7 @@ index a7724b11b140ca9b7a582d3fd39c8a3eb86abc78..5e68d605701ed1c51e700e1ebbff15a3
      )
  
  
-@@ -206,25 +206,14 @@ async def check_for_updates(
+@@ -209,25 +208,14 @@ async def check_for_updates(
      _: Any = Depends(require_permission("update")),
      server: Any = Depends(get_server),
  ) -> dict[str, Any]:
@@ -404,7 +414,7 @@ index a7724b11b140ca9b7a582d3fd39c8a3eb86abc78..5e68d605701ed1c51e700e1ebbff15a3
      )
  
  
-@@ -319,26 +308,9 @@ async def trigger_upgrade(
+@@ -328,35 +316,9 @@ async def trigger_upgrade(
      server: Any = Depends(get_server),
      _: Any = Depends(require_permission("update")),
  ) -> dict[str, Any]:
@@ -422,14 +432,23 @@ index a7724b11b140ca9b7a582d3fd39c8a3eb86abc78..5e68d605701ed1c51e700e1ebbff15a3
 -        latest_stable=info.latest_stable if info else None,
 -        stable_only=stable_only,
 -    )
+-    validate_upgrade_target(target, await asyncio.to_thread(get_local_version))
 -    allow_prerelease = bool(target and is_prerelease(target))
 -    task = await create_task()
 -    asyncio.create_task(
--        _upgrade_worker(task.task_id, allow_prerelease=allow_prerelease, version=target)
+-        _upgrade_worker(
+-            task.task_id,
+-            allow_prerelease=allow_prerelease,
+-            version=target,
+-            locale=resolve_locale(
+-                user_locale=getattr(_, "locale", None),
+-                explicit=resolve_request_locale(request),
+-            ),
+-        )
 -    )
 -    return {"task_id": task.task_id, "status": "started"}
 +    # [ZBS] patch 23: web upgrade disabled — new images, not PyPI installs.
-+    del body, server
++    del body, server, request, _
 +    reject_web_upgrade()
  
  
@@ -529,10 +548,10 @@ index 0000000000000000000000000000000000000000..ccb40ca6f95a4fd06c061445a5ea8ff9
 +        "this ZBS build updates by deploying a new image, not from PyPI",
 +    )
 diff --git a/tests/unit/api/test_update_router.py b/tests/unit/api/test_update_router.py
-index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d550fe4e5a5 100644
+index c85fdbf09de1e2dc7a0b6f39238010238eb4cfef..ed904cc4fb8b4114110bdeda5575bd3a858a9fc2 100644
 --- a/tests/unit/api/test_update_router.py
 +++ b/tests/unit/api/test_update_router.py
-@@ -12,7 +12,7 @@ from octop.api.routers import update as update_router
+@@ -13,7 +13,7 @@ from octop.api.routers import update as update_router
  from octop.api.routers import update_store
  from octop.api.routers.update_store import UpgradeTaskStatus, create_task, get_task
  from octop.infra.errors import ErrorCode, OctopError
@@ -541,7 +560,7 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
  from octop.infra.setup.self_update import UpgradeResult
  
  
-@@ -24,15 +24,15 @@ def _clear_update_status_cache() -> None:
+@@ -25,15 +25,15 @@ def _clear_update_status_cache() -> None:
  
  
  @pytest.mark.asyncio
@@ -563,7 +582,7 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
              "current_version": "1.0.0",
              "latest_version": "1.0.1",
              "has_update": True,
-@@ -42,25 +42,15 @@ async def test_update_status_reprobes_after_cache_ttl(
+@@ -43,25 +43,15 @@ async def test_update_status_reprobes_after_cache_ttl(
              "last_check_time": "2026-01-01T00:00:00Z",
              "release_notes": None,
          }
@@ -594,7 +613,7 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
  
  
  @pytest.mark.asyncio
-@@ -409,16 +399,19 @@ def test_build_status_failure_via_check_keeps_error_code(
+@@ -411,16 +401,19 @@ def test_build_status_failure_via_check_keeps_error_code(
  
  
  @pytest.mark.asyncio
@@ -618,7 +637,7 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
  
  
  @pytest.mark.asyncio
-@@ -430,31 +423,33 @@ async def test_check_endpoint_success_passes_source(
+@@ -432,31 +425,33 @@ async def test_check_endpoint_success_passes_source(
  
      result = await update_router.check_for_updates(_=None, server=_settings_server())
  
@@ -661,7 +680,7 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
  
  
  @pytest.mark.asyncio
-@@ -468,101 +463,54 @@ async def test_status_includes_prerelease_when_stable_only_off(
+@@ -470,137 +465,69 @@ async def test_status_includes_prerelease_when_stable_only_off(
          description="## [0.9.34b1] - 2026-09-01\n\n- beta notes\n\n## [0.9.33]\n- old\n",
      )
      monkeypatch.setattr(update_router, "fetch_pypi_info", lambda: info)
@@ -712,6 +731,7 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
 -    info = self_update.PyPIInfo(version="0.9.34b1", latest_stable="0.9.33", source="pypi.org")
 -    monkeypatch.setattr(update_router, "fetch_pypi_info", lambda: info)
 -    monkeypatch.setattr(update_router, "get_editable_path", lambda: None)
+-    monkeypatch.setattr(update_router, "get_local_version", lambda: "0.9.32")
 -
 -    captured: dict[str, object] = {}
 -
@@ -720,27 +740,32 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
 -        *,
 -        allow_prerelease: bool = False,
 -        version: str | None = None,
+-        locale: str = "zh",
 -    ) -> None:
 -        captured["task_id"] = task_id
 -        captured["allow_prerelease"] = allow_prerelease
 -        captured["version"] = version
+-        captured["locale"] = locale
 -
 -    monkeypatch.setattr(update_router, "_upgrade_worker", fake_worker)
 -
 -    body = update_router.UpgradeBody(version="0.9.33")
 -    result = await update_router.trigger_upgrade(
+-        request=Request({"type": "http", "headers": [(b"accept-language", b"en")]}),
 -        body=body,
 -        server=_settings_server(True),
--        _=None,
+-        _=type("User", (), {"locale": "zh"})(),
 -    )
 -    await asyncio.sleep(0)
 -    assert result["status"] == "started"
 -    assert captured["version"] == "0.9.33"
 -    assert captured["allow_prerelease"] is False
+-    assert captured["locale"] == "zh"
 +async def test_trigger_upgrade_rejects_pinned_version() -> None:
 +    """[ZBS] patch 23: web upgrade is forbidden regardless of the pinned version."""
 +    with pytest.raises(OctopError) as exc_info:
 +        await update_router.trigger_upgrade(
++            request=Request({"type": "http", "headers": []}),
 +            body=update_router.UpgradeBody(version="0.9.33"),
 +            server=_settings_server(True),
 +            _=None,
@@ -755,6 +780,7 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
 -    info = self_update.PyPIInfo(version="0.9.34b1", latest_stable="0.9.33", source="pypi.org")
 -    monkeypatch.setattr(update_router, "fetch_pypi_info", lambda: info)
 -    monkeypatch.setattr(update_router, "get_editable_path", lambda: None)
+-    monkeypatch.setattr(update_router, "get_local_version", lambda: "0.9.32")
 -
 -    captured: dict[str, object] = {}
 -
@@ -763,13 +789,16 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
 -        *,
 -        allow_prerelease: bool = False,
 -        version: str | None = None,
+-        locale: str = "zh",
 -    ) -> None:
 -        captured["allow_prerelease"] = allow_prerelease
 -        captured["version"] = version
+-        captured["locale"] = locale
 -
 -    monkeypatch.setattr(update_router, "_upgrade_worker", fake_worker)
 -
 -    result = await update_router.trigger_upgrade(
+-        request=Request({"type": "http", "headers": [(b"accept-language", b"en")]}),
 -        body=update_router.UpgradeBody(),
 -        server=_settings_server(True),
 -        _=None,
@@ -778,10 +807,12 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
 -    assert result["status"] == "started"
 -    assert captured["version"] == "0.9.33"
 -    assert captured["allow_prerelease"] is False
+-    assert captured["locale"] == "en"
 +async def test_trigger_upgrade_rejects_default_channel_latest() -> None:
 +    """[ZBS] patch 23: no task is created; the web upgrade endpoint refuses."""
 +    with pytest.raises(OctopError) as exc_info:
 +        await update_router.trigger_upgrade(
++            request=Request({"type": "http", "headers": []}),
 +            body=update_router.UpgradeBody(),
 +            server=_settings_server(True),
 +            _=None,
@@ -790,12 +821,42 @@ index d54b0d941d0aea518e72c6ed45d2ffe73fe0c448..1e2407b73dd7d34e3c6197de23dc0d55
  
  
  @pytest.mark.asyncio
+-@pytest.mark.parametrize("requested", ["1.0.2b4", "1.0.2b3", "1.0.2-beta.4"])
+-async def test_trigger_upgrade_rejects_non_newer_target_without_starting_task(
+-    monkeypatch: pytest.MonkeyPatch, requested: str
+-) -> None:
+-    monkeypatch.setattr(update_router, "get_editable_path", lambda: None)
+-    monkeypatch.setattr(update_router, "fetch_pypi_info", lambda: None)
+-    monkeypatch.setattr(update_router, "get_local_version", lambda: "1.0.2b4")
+-
+-    async def unexpected_task() -> None:
+-        pytest.fail("rejected target must not create an upgrade task")
+-
+-    monkeypatch.setattr(update_router, "create_task", unexpected_task)
++async def test_trigger_upgrade_rejects_non_newer_target_without_starting_task() -> None:
++    """[ZBS] patch 23: web upgrade is forbidden before any target validation."""
+     with pytest.raises(OctopError) as exc_info:
+         await update_router.trigger_upgrade(
+             request=Request({"type": "http", "headers": []}),
+-            body=update_router.UpgradeBody(version=requested),
++            body=update_router.UpgradeBody(version="1.0.2b3"),
+             server=_settings_server(True),
+             _=None,
+         )
+-    error = exc_info.value
+-    assert error.code == ErrorCode.UPDATE_TARGET_NOT_NEWER
+-    assert error.status == 400
+-    assert error.details == {"target": requested, "current": "1.0.2b4"}
++    assert exc_info.value.code == ErrorCode.FORBIDDEN
+ 
+ 
+ @pytest.mark.asyncio
 diff --git a/tests/unit/infra/setup/test_zbs_version.py b/tests/unit/infra/setup/test_zbs_version.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0ddd75e3e302bda4d2910dd042a257d9c678d873
+index 0000000000000000000000000000000000000000..8c94e689d386df5d3b0f40f957d6cfac43487ddc
 --- /dev/null
 +++ b/tests/unit/infra/setup/test_zbs_version.py
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,123 @@
 +"""Patch 23: ZBS version display + official update check disabled."""
 +
 +from __future__ import annotations
@@ -906,8 +967,16 @@ index 0000000000000000000000000000000000000000..0ddd75e3e302bda4d2910dd042a257d9
 +
 +    with pytest.raises(OctopError) as exc_info:
 +        await update_router.trigger_upgrade(
++            request=_dummy_request(),
 +            body=update_router.UpgradeBody(),
 +            server=_settings_server(),
 +            _=None,
 +        )
 +    assert "PyPI" in exc_info.value.message or "image" in exc_info.value.message
++
++
++def _dummy_request():
++    """Minimal ASGI request scope for trigger_upgrade (locale resolution only)."""
++    from fastapi import Request
++
++    return Request({"type": "http", "headers": []})
