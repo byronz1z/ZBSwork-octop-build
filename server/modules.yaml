@@ -84,7 +84,7 @@ patches:
     status: enabled
     order: 21
     upstream_pr: no           # ZBS 自有权限收紧策略，上游无意向；设计见 patches/21-*/README.md
-    verified: {v1.0.2b6: strict, v1.0.2: strict}  # v1.0.2: strict（36j 修正：校验只比 type/root_dir、围栏键合回，zbs0.4.1）
+    verified: {v1.0.2b6: strict, v1.0.2: strict}  # v1.0.2: strict（36j 返工 1：先合回围栏键再整字典比较、type 不同不合并，zbs0.4.1）
     in_production: yes         # 生产 zbs0.3 里在用（2026-10-14 随 1.0.2b6-zbs2 上线，含本补丁）；全站开关 2026-10-14 起开着；v1.0.2 适配版（ZT-036b）待随 zbs0.4 上生产
 
   - id: 23-feat-own-update-source

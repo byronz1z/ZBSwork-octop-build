@@ -1,5 +1,5 @@
 diff --git a/src/octop/api/common/validators.py b/src/octop/api/common/validators.py
-index e41ea4d38474acb22ed451d8a832c3a794eb9206..ba9ea49e8ef0f94fb1903c4f3544bf4d3f1d552c 100644
+index e41ea4d38474acb22ed451d8a832c3a794eb9206..5e7a6f8f4a41bcca51d3366a019fd8869caf4616 100644
 --- a/src/octop/api/common/validators.py
 +++ b/src/octop/api/common/validators.py
 @@ -2,10 +2,14 @@
@@ -18,7 +18,7 @@ index e41ea4d38474acb22ed451d8a832c3a794eb9206..ba9ea49e8ef0f94fb1903c4f3544bf4d
  from octop.infra.utils.host_dirs import assert_backend_root_dirs_allowed
  
  
-@@ -33,6 +37,87 @@ def assert_user_backend_root_dirs(
+@@ -33,6 +37,86 @@ def assert_user_backend_root_dirs(
          raise OctopError(ErrorCode.WORKSPACE_OP_UNSUPPORTED, str(exc)) from exc
  
  
@@ -32,30 +32,21 @@ index e41ea4d38474acb22ed451d8a832c3a794eb9206..ba9ea49e8ef0f94fb1903c4f3544bf4d
 +    `backendRefToSpec` 只产出 type/virtual_mode/root_dir），会丢掉
 +    `inherit_env`/`env`——它们是围栏必需的运行细节（不继承进程环境、
 +    证书路径）。若请求的新 backend 里没有这些键而库里有，就从库里合回；
-+    请求里带了就以请求为准。stored/new 不是 dict 时原样返回 new。
++    请求里带了就以请求为准。**只在 stored/new 的 ``type`` 相同时合回**：
++    type 不同意味着换了一种后端（如 local_shell → filesystem），旧类型的
++    参数对新类型无意义、甚至不被其构造接受（FilesystemBackend 不认
++    ``inherit_env``/``env``），此时返回 new 的副本、不灌旧键。
++    stored/new 不是 dict 时原样返回 new。
 +    """
 +    if not isinstance(stored_backend, dict) or not isinstance(new_backend, dict):
 +        return new_backend
++    if stored_backend.get("type") != new_backend.get("type"):
++        return dict(new_backend)
 +    merged = dict(new_backend)
 +    for key in _BACKEND_RUNTIME_KEYS:
 +        if key not in merged and key in stored_backend:
 +            merged[key] = stored_backend[key]
 +    return merged
-+
-+
-+def _backend_run_signature(backend: Any) -> Any:
-+    """运行方式签名：type/root_dir（composite 再加 default/routes）。
-+
-+    `virtual_mode`/`inherit_env`/`env` 是围栏/运行细节，设置页不回传，
-+    不参与“是否改了运行方式”的比较。
-+    """
-+    if not isinstance(backend, dict):
-+        return backend
-+    signature = {key: backend.get(key) for key in ("type", "root_dir")}
-+    if signature["type"] == "composite":
-+        signature["default"] = backend.get("default")
-+        signature["routes"] = backend.get("routes")
-+    return signature
 +
 +
 +def assert_user_may_change_backend(
@@ -74,10 +65,17 @@ index e41ea4d38474acb22ed451d8a832c3a794eb9206..ba9ea49e8ef0f94fb1903c4f3544bf4d
 +    The switch itself is the settings key ``agent_enforced_backend``; when it
 +    is unset everything behaves exactly like official Octop.
 +
-+    ZT-036 36j: only the *run mode* proper is compared — ``type`` and
-+    ``root_dir`` (plus ``default``/``routes`` for composite backends).
-+    ``virtual_mode``/``inherit_env``/``env`` are fence/runtime details the
-+    settings page never echoes back, so they no longer count as a change.
++    ZT-036 36j rework 1: compare the *whole* backend dict again, but only
++    after merging the fence keys the settings page never echoes back
++    (``virtual_mode``/``inherit_env``/``env``) back into the requested one
++    via :func:`merge_enforced_backend_keys`. A page re-spin that merely
++    dropped those keys merges back to exactly the stored backend and is
++    allowed; any real run-mode change — a different ``type``, ``name``
++    (named backend rename/drop), ``root_dir``, ``default``/``routes``, or
++    an explicit ``inherit_env``/``virtual_mode`` flip — still compares
++    unequal and is refused. Fence keys stay admin-controlled: a normal
++    user cannot flip ``inherit_env`` to ``true`` through the API (that
++    would make fenced commands inherit host environment secrets).
 +    """
 +    if user is None or getattr(user, "is_admin", False):
 +        return
@@ -92,9 +90,10 @@ index e41ea4d38474acb22ed451d8a832c3a794eb9206..ba9ea49e8ef0f94fb1903c4f3544bf4d
 +    if not isinstance(stored, dict):
 +        stored = {}
 +    stored_backend = stored.get("backend")
-+    if "backend" in new_config and _backend_run_signature(
-+        new_config["backend"]
-+    ) == _backend_run_signature(stored_backend):
++    if (
++        "backend" in new_config
++        and merge_enforced_backend_keys(stored_backend, new_config["backend"]) == stored_backend
++    ):
 +        return
 +    raise OctopError(
 +        ErrorCode.FORBIDDEN,
@@ -1119,10 +1118,10 @@ index 0000000000000000000000000000000000000000..f65dcc83ccbcc10b9e7564c144590746
 +    assert "替代" in str(result.content) or "请" in str(result.content)
 diff --git a/tests/unit/agents/test_user_workspace_policy.py b/tests/unit/agents/test_user_workspace_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..fda43531d44ae7b9c5b3a6cff9d204da97ab74b3
+index 0000000000000000000000000000000000000000..ec60f7f9f0a661fbbe220a2c6c4882e0471b62b0
 --- /dev/null
 +++ b/tests/unit/agents/test_user_workspace_policy.py
-@@ -0,0 +1,549 @@
+@@ -0,0 +1,676 @@
 +"""Unit tests for the ZBS enforced per-user workspace policy (settings switch).
 +
 +Covers:
@@ -1547,14 +1546,18 @@ index 0000000000000000000000000000000000000000..fda43531d44ae7b9c5b3a6cff9d204da
 +
 +
 +def test_patch_blocks_flipping_inherit_env() -> None:
++    # 36j rework 1: only inherit_env differs (type/root_dir unchanged) —
++    # an explicit fence-key flip alone is still refused.
 +    with pytest.raises(OctopError) as ei:
 +        assert_user_may_change_backend(
 +            _user(False),
-+            current_config_json=_STORED,
++            current_config_json=_STORED_LOCAL,
 +            new_config={
 +                "backend": {
 +                    "type": "local_shell",
 +                    "root_dir": "/data/.octop/users/ta",
++                    "virtual_mode": True,
++                    "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
 +                    "inherit_env": True,
 +                }
 +            },
@@ -1575,10 +1578,13 @@ index 0000000000000000000000000000000000000000..fda43531d44ae7b9c5b3a6cff9d204da
 +
 +
 +# ---------------------------------------------------------------------------
-+# ZT-036 36j — the settings page re-spins backend without fence keys; the
-+# guard must only compare the run mode proper (type/root_dir), and the fence
-+# keys (virtual_mode/inherit_env/env) must be merged back before saving.
++# ZT-036 36j rework 1 — the settings page re-spins backend without fence
++# keys (virtual_mode/inherit_env/env); the guard merges those back into the
++# requested backend first, then compares the whole dict against stored.
 +# ---------------------------------------------------------------------------
++_STORED_NAMED = json.dumps(
++    {"backend": {"type": "named", "name": "per-user-home", "virtual_mode": True}}
++)
 +
 +_STORED_LOCAL = json.dumps(
 +    {
@@ -1592,11 +1598,21 @@ index 0000000000000000000000000000000000000000..fda43531d44ae7b9c5b3a6cff9d204da
 +    }
 +)
 +
++_STORED_COMPOSITE = json.dumps(
++    {
++        "backend": {
++            "type": "composite",
++            "default": {"type": "named", "name": "per-user-home"},
++            "routes": {"/data": {"type": "local_shell", "root_dir": "/data"}},
++        }
++    }
++)
++
 +
 +def test_patch_allows_page_respun_backend_without_fence_keys() -> None:
 +    # The expert settings page saves {type, virtual_mode, root_dir} only —
-+    # same run mode as stored, so it must pass even though inherit_env/env
-+    # are absent from the request.
++    # merging the fence keys back yields exactly the stored backend, so a
++    # mere page re-spin (e.g. saving a model change) must pass.
 +    assert_user_may_change_backend(
 +        _user(False),
 +        current_config_json=_STORED_LOCAL,
@@ -1639,6 +1655,100 @@ index 0000000000000000000000000000000000000000..fda43531d44ae7b9c5b3a6cff9d204da
 +    assert ei.value.code is ErrorCode.FORBIDDEN
 +
 +
++def test_patch_blocks_named_backend_rename() -> None:
++    # Named backends are resolved by name — renaming one is a real run-mode
++    # change even though type/root_dir-style keys are unchanged.
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED_NAMED,
++            new_config={"backend": {"type": "named", "name": "other-backend"}},
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_named_backend_name_dropped() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED_NAMED,
++            new_config={"backend": {"type": "named"}},
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_allows_named_page_respun_with_fence_keys_missing() -> None:
++    # The settings page re-spins a named backend as {type, name} only, so
++    # stored virtual_mode may be missing from the request — merged back it
++    # equals stored and must pass.
++    assert_user_may_change_backend(
++        _user(False),
++        current_config_json=_STORED_NAMED,
++        new_config={"backend": {"type": "named", "name": "per-user-home"}},
++        settings_repo=_settings_repo("per-user-home"),
++    )
++
++
++def test_patch_blocks_explicit_inherit_env_flip() -> None:
++    # Fence keys are admin-controlled: a normal user explicitly flipping
++    # inherit_env to true would make fenced commands inherit host
++    # environment secrets — refused even though the rest matches.
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED_LOCAL,
++            new_config={
++                "backend": {
++                    "type": "local_shell",
++                    "root_dir": "/data/.octop/users/ta",
++                    "virtual_mode": True,
++                    "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++                    "inherit_env": True,
++                }
++            },
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_explicit_virtual_mode_flip() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED_LOCAL,
++            new_config={
++                "backend": {
++                    "type": "local_shell",
++                    "root_dir": "/data/.octop/users/ta",
++                    "virtual_mode": False,
++                    "inherit_env": False,
++                    "env": {"SSL_CERT_FILE": "/usr/lib/ssl/certs.pem"},
++                }
++            },
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
++def test_patch_blocks_composite_routes_change() -> None:
++    with pytest.raises(OctopError) as ei:
++        assert_user_may_change_backend(
++            _user(False),
++            current_config_json=_STORED_COMPOSITE,
++            new_config={
++                "backend": {
++                    "type": "composite",
++                    "default": {"type": "named", "name": "per-user-home"},
++                    "routes": {"/data": {"type": "local_shell", "root_dir": "/"}},
++                }
++            },
++            settings_repo=_settings_repo("per-user-home"),
++        )
++    assert ei.value.code is ErrorCode.FORBIDDEN
++
++
 +def test_merge_enforced_backend_keys_restores_missing_keys() -> None:
 +    merged = merge_enforced_backend_keys(
 +        {
@@ -1666,6 +1776,22 @@ index 0000000000000000000000000000000000000000..fda43531d44ae7b9c5b3a6cff9d204da
 +    )
 +    assert merged["inherit_env"] is True
 +    assert merged["env"] == {"B": "2"}
++
++
++def test_merge_enforced_backend_keys_different_type_no_merge() -> None:
++    # A different type means a different backend kind — old-type params
++    # (inherit_env/env) must not be carried into it (FilesystemBackend
++    # does not accept them).
++    merged = merge_enforced_backend_keys(
++        {
++            "type": "local_shell",
++            "root_dir": "/d",
++            "inherit_env": False,
++            "env": {"A": "1"},
++        },
++        {"type": "filesystem", "root_dir": "/d"},
++    )
++    assert merged == {"type": "filesystem", "root_dir": "/d"}
 +
 +
 +def test_merge_enforced_backend_keys_non_dict_passthrough() -> None:

@@ -242,15 +242,21 @@ zt026-octop2，镜像内 chromium-1228，CDP `Page.navigate` 原生链路）：
   env}`；官方设置页保存时按表单重拼 backend（dashboard `agentBackendForm.ts` 的
   `backendRefToSpec`），只有 `{type, virtual_mode, root_dir}`，丢了 `inherit_env`/`env` →
   不相等 → 403。而且管理员保存时围栏的 env 也会被页面悄悄丢掉。
-- **改了什么**：
-  1. 校验只比"运行方式"本身——`type`、`root_dir`（`type` 为 `composite` 时再比 `default`
-     和 `routes`）；`virtual_mode`/`inherit_env`/`env` 不参与比较（围栏/运行细节，页面不
-     回传）。stored 缺 backend 而请求有、或请求缺 backend 键，仍按"判为改动"拒绝；管理员
-     照旧不检查。
-  2. 新增 `merge_enforced_backend_keys`（validators.py）：写库前把库里的
-     `virtual_mode`/`inherit_env`/`env`（请求里没有的键）合回新 backend，请求里有的键以
-     请求为准；`patch_agent` 对**所有用户**都合并——管理员用设置页保存同样会丢键，不合并
-     围栏就没了。
+- **改了什么**（返工 1，2026-10-22，Codex 36j 小审两条挡路问题：签名比较放过 named 改名；type 切换时旧键灌进新类型导致 FilesystemBackend 加载 TypeError）：
+  1. `assert_user_may_change_backend`（validators.py）改为**先合回、再整字典比较**：取到请求的
+     `config.backend` 后，先用 `merge_enforced_backend_keys` 把页面不回传的围栏键
+     （`virtual_mode`/`inherit_env`/`env`）合回请求的 backend，再与库中现值**整字典相等**比较。
+     设置页只是漏了围栏键 → 合回后相等 → 放行；named 改名、composite 改 `routes`、显式改
+     `inherit_env`/`virtual_mode`/`root_dir`/`type` → 仍 403。普通用户无法通过接口把
+     `inherit_env` 改成 `true`（否则围栏里会继承宿主环境变量）——这是本改法的目的。
+     上一版"只比 type/root_dir 的运行方式签名"（`_backend_run_signature`）已删除：它会放过
+     named 后端改名、删 `name` 等真正的运行方式变化（resolver 按 name 展开 named 后端）。
+     stored 缺 backend 而请求有、或请求缺 backend 键，仍按"判为改动"拒绝；管理员照旧
+     不检查。
+  2. `merge_enforced_backend_keys`（validators.py）**只在 stored/new 的 `type` 相同时合回**
+     三个围栏键；type 不同时返回 new 的副本——不把旧类型的 `inherit_env`/`env` 灌进新类型
+     （`FilesystemBackend` 构造不接受这两个参数，灌进去加载即 TypeError）。
+     `patch_agent`（agents.py）写库前对所有用户合并（同上版）。
 
 ## 补丁 20 在本模块文件里的改动记录
 
