@@ -98,13 +98,13 @@ patches:
     in_production: no         # 2026-10-16 新增（ZT-032）；版本号文件由出镜像工具写入施工树（shared/tools/build_image.py），验镜像工具认可补丁新增文件（verify_image.py）
 
   - id: 60-svc-runtime-extras
-    name_zh: 镜像加装用户实际用到的工具（0002，ZT-018）+ 浏览器本体（0003，ZT-026）；0001（uv extras 本地向量/OCR 依赖）已作废——官方 v1.0.2 已实现（PR #2082）
+    name_zh: 镜像加装用户实际用到的工具（0002，ZT-018）+ 浏览器本体（0003，ZT-026）+ PostgreSQL 16 客户端（0004，ZT-036 36f）；0001（uv extras 本地向量/OCR 依赖）已作废——官方 v1.0.2 已实现（PR #2082）
     layer: L3
     scope: [docker]
     status: enabled
     order: 60
     upstream_pr: no           # 体积取舍属部署偏好
-    verified: {v1.0.2b4: strict, v1.0.2b6: strict, v1.0.2: "strict（指 0002、0003；0001 已作废，官方 PR #2082 原样实现）"}
+    verified: {v1.0.2b4: strict, v1.0.2b6: strict, v1.0.2: "strict（指 0002、0003；0004 于 2026-10-21 ZT-036 36f 新增；0001 已作废，官方 PR #2082 原样实现）"}
     in_production: yes         # zbs0.3 含 0001–0003（2026-10-20 生产只读实测 0002、0003 在镜像里，ZT-036 原始输出 08；0001 2026-10-08 实测）；zbs0.4 起只含 0002、0003，0001 的 uv extras 由官方 v1.0.2 提供（PR #2082）
     legacy_ids: [SRV-2]
 

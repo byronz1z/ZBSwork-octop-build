@@ -1,10 +1,10 @@
-# 60 · 镜像加装本地向量与知识库 OCR 依赖 + 用户实际用到的工具 + 浏览器本体
+# 60 · 镜像加装本地向量与知识库 OCR 依赖 + 用户实际用到的工具 + 浏览器本体 + PostgreSQL 16 客户端
 
 | 项 | 内容 |
 |---|---|
 | 层级 | L3 核心补丁（仅 `docker/Dockerfile`） |
 | 状态 | enabled |
-| 实测 | 0001：**已作废**（官方 v1.0.2 用 PR #2082 原样实现，干净 v1.0.2 上严格套不上，文件已按决策人 #413 规则删除，见下节）；0002：v1.0.2 上重新适配（官方 apt 列表新增 `libgl1`/`libglib2.0-0`/`ripgrep` 使上下文漂移），2026-10-20 严格 apply 通过；0003：v1.0.2 严格 apply 通过（2026-10-20，未改动）。2026-10-20 返工 1 实测：干净 v1.0.2 上按 0002、0003 顺序逐个严格套上，全部成功；整镜像构建由总调度做 |
+| 实测 | 0001：**已作废**（官方 v1.0.2 用 PR #2082 原样实现，干净 v1.0.2 上严格套不上，文件已按决策人 #413 规则删除，见下节）；0002：v1.0.2 上重新适配（官方 apt 列表新增 `libgl1`/`libglib2.0-0`/`ripgrep` 使上下文漂移），2026-10-20 严格 apply 通过；0003：v1.0.2 严格 apply 通过（2026-10-20，未改动）。2026-10-20 返工 1 实测：干净 v1.0.2 上按 0002、0003 顺序逐个严格套上，全部成功；0004：v1.0.2 上严格 apply 通过（2026-10-21，ZT-036 36f）。整镜像构建由总调度做 |
 | 上游 PR | 否（镜像体积取舍属部署偏好） |
 | 旧编号 | SRV-2 |
 
@@ -47,6 +47,18 @@
 | 其余系统环境后装包（numpy、lxml、opencv_python、onnxruntime、pillow 等，见 `_input/依赖-容器减镜像.txt`） | — | 依赖-容器减镜像.txt | 不进：均为上面 12 个包的传递依赖（dist-info 无 REQUESTED），pip 按钉版自动解析 |
 | bubblewrap（apt） | 2026-09-28 10:07 | apt-history.log | 进镜像。原因：为与生产容器的安装清单保持一致而纳入（生产容器 apt 历史 2026-09-28 10:07:15 有这条安装记录）；没有证据表明用户工具依赖它 |
 | 32 个浏览器图形库/字体（libasound2t64 … fonts-freefont-ttf，apt） | 2026-09-28 14:02 | apt-history.log | 进镜像。其中 `libxcb1`、`libcairo2` 是实测到用户工具（cairosvg、rapidocr_onnxruntime 等）导入时缺的；其余为与生产容器保持一致而一并装入，不构成工具的必要依赖 |
+
+## 0004 · PostgreSQL 16 客户端（2026-10-21 新增，ZT-036 36f）
+
+**做什么**：在镜像运行时阶段（`RUN mkdir -p /data/.octop` 之后、`EXPOSE 8088` 之前，即 0003 的浏览器 RUN 之后）加一层独立的 RUN：导入 PostgreSQL 官方签名密钥（`ACCC4CF8.asc`）、写 deb822 格式的 pgdg apt 源（`trixie-pgdg`）、`apt-get install -y --no-install-recommends postgresql-client-16`、清 apt 缓存，最后校验 `pg_dump --version` 与 `pg_restore --version` 都是 `16.`（不是 16 就让构建失败）。只用官方源 `https://apt.postgresql.org/pub/repos/apt`，不加任何镜像站参数。不碰 0002、0003 改过的行和官方其它行。
+
+**为什么**：决策人（日志 10-21 #449 原话）——"在镜像里加 pg_dump，不是改 octop 的程序，不碰它一行代码。只是在镜像的制作清单（Dockerfile）里多一行'装 postgresql-client-16'……配方库里缺乏 pg_dump，导致备份无法正常进行。需要在镜像包构建的时候把 pg_dump 加进去"。官方备份/恢复代码 `src/octop/infra/backup/pg_dump.py`（`_require_tool("pg_dump")` / `_require_tool("pg_restore")`，系统备份 `infra/backup/system_archive.py` 调用）要求这两个工具在 PATH 上；官方 v1.0.2 镜像不带，演练环境点"备份"返回 500，日志报 `pg_dump not found on PATH; required for PostgreSQL backup/restore`。
+
+**用哪个源和版本**：镜像底包是 Debian 13（trixie，`python:3.12-slim`）。Debian 自带源里只有 17 版客户端，没有 16 版；生产数据库是 pgvector/pg16（16.15）。PostgreSQL 官方 apt 源的 `trixie-pgdg` 仓库提供 `postgresql-client-16`（16.15-1.pgdg13+2），与生产数据库版本一致。
+
+**为什么是 16 不是 Debian 自带的 17**：备份/恢复工具应与数据库服务端同（大）版本——17 版 `pg_dump` 导出的备份可能带 16 不认识的设置，恢复到 16 可能出问题；同版本的 16 客户端没有这个风险。故宁可多导一个官方源也要 16 版。
+
+**版本号不升**：决策人 #449 明确"合并到本版本中，版本号不用升"，本补丁并入 zbs0.4（`server/VERSION` 仍 zbs0.4），随下一轮镜像构建生效。
 
 ## 说明
 旧模块册里的 SRV-3“中文字体”**不存在**：上游 Dockerfile 本来就装 `fonts-noto-cjk`。
