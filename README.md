@@ -28,7 +28,7 @@ python shared/tools/verify_image.py octop:1.0.2-zbs0.4 --reference <本机官方
 两个脚本都可不传 `--reference`：施工树 `.work/src` 本身就是官方仓库的克隆（带官方 tag），
 不传时 verify 直接用它做比对来源，不写死任何本机路径（云端流程即如此运行）。
 
-- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2-zbs0.4`。
+- **命名规则**：`octop:<上游 tag 去掉开头的 v>-<server/VERSION 内容>`，当前 = `octop:1.0.2-zbs0.4.1`。
   版本号（2026-10-16 决策人定）：全称 = 官方版本 + 我们的版本（如 `1.0.2b6-zbs0.3`），用于镜像名；
   我们的版本按"大改.加功能.修 bug"三段走（0.3 → 0.3.1 → 0.4），不随官方升级归零；
   网页上只显示我们这段（`ZBS0.3`，由出镜像工具写入 `src/octop/zbs_version.txt`，补丁 23 读取）。

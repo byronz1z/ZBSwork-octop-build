@@ -233,6 +233,31 @@ zt026-octop2，镜像内 chromium-1228，CDP `Page.navigate` 原生链路）：
   `bwrap` 建 namespace 会 `Operation not permitted`；见 `原始输出\28` C 段）。
 - 关掉开关后一切行为与官方完全一致：覆写和校验函数开头都先读开关，未设置直接返回。
 
+## 修正（zbs0.4.1，ZT-036 36j，2026-10-22）
+
+- **现象**（日志 10-21 #491）：用户级别的用户在"专家"设置页把默认模型从"自动"切到"特定模型"
+  点保存，被提示没有权限（403 FORBIDDEN）——保存任何改动都被拦。
+- **根因**：`assert_user_may_change_backend` 把请求 `config.backend` 和库里存的整个字典逐字
+  比较。库里的 backend 是本补丁建 Agent 时写的 `{type, root_dir, virtual_mode, inherit_env,
+  env}`；官方设置页保存时按表单重拼 backend（dashboard `agentBackendForm.ts` 的
+  `backendRefToSpec`），只有 `{type, virtual_mode, root_dir}`，丢了 `inherit_env`/`env` →
+  不相等 → 403。而且管理员保存时围栏的 env 也会被页面悄悄丢掉。
+- **改了什么**（返工 1，2026-10-22，Codex 36j 小审两条挡路问题：签名比较放过 named 改名；type 切换时旧键灌进新类型导致 FilesystemBackend 加载 TypeError）：
+  1. `assert_user_may_change_backend`（validators.py）改为**先合回、再整字典比较**：取到请求的
+     `config.backend` 后，先用 `merge_enforced_backend_keys` 把页面不回传的围栏键
+     （`virtual_mode`/`inherit_env`/`env`）合回请求的 backend，再与库中现值**整字典相等**比较。
+     设置页只是漏了围栏键 → 合回后相等 → 放行；named 改名、composite 改 `routes`、显式改
+     `inherit_env`/`virtual_mode`/`root_dir`/`type` → 仍 403。普通用户无法通过接口把
+     `inherit_env` 改成 `true`（否则围栏里会继承宿主环境变量）——这是本改法的目的。
+     上一版"只比 type/root_dir 的运行方式签名"（`_backend_run_signature`）已删除：它会放过
+     named 后端改名、删 `name` 等真正的运行方式变化（resolver 按 name 展开 named 后端）。
+     stored 缺 backend 而请求有、或请求缺 backend 键，仍按"判为改动"拒绝；管理员照旧
+     不检查。
+  2. `merge_enforced_backend_keys`（validators.py）**只在 stored/new 的 `type` 相同时合回**
+     三个围栏键；type 不同时返回 new 的副本——不把旧类型的 `inherit_env`/`env` 灌进新类型
+     （`FilesystemBackend` 构造不接受这两个参数，灌进去加载即 TypeError）。
+     `patch_agent`（agents.py）写库前对所有用户合并（同上版）。
+
 ## 补丁 20 在本模块文件里的改动记录
 
 补丁 20 在 `manager.py` 的 `_build_harness_config` 里改了默认模型的挑法（按 Agent 主人的可用模型名单），位置在补丁 21 所有改动之后，不重叠。同次还在 `resource_policy.py`（本模块是主人）文件末尾加了补丁 20 自己的三个函数、文件开头加了一行 `import collections.abc`，都不碰本模块改过的行（总调度集成时补记，2026-10-16）。
