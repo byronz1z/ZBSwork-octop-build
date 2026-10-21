@@ -416,6 +416,7 @@ def _verify(args, temp_containers: list[str]) -> int:
     labels = json.loads(r.stdout.decode()) if r.returncode == 0 else {}
     expect = {
         "org.opencontainers.image.version": ver,
+        "org.opencontainers.image.source": "https://github.com/byronz1z/ZBSwork-octop-build",
         "org.opencontainers.image.revision": recipe_rev_sha,
         "cn.zbswork.upstream.tag": tag,
         "cn.zbswork.upstream.commit": upstream_commit,

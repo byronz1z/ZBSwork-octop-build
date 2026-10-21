@@ -182,8 +182,11 @@ def main() -> int:
         cmd += ["--platform", args.platform]
     for kv in args.build_arg:
         cmd += ["--build-arg", kv]
+    # 官方 Dockerfile 里 org.opencontainers.image.source 写的是上游地址（orca），但我们的镜像
+    # 出自配方库；决策人要求指向配方库地址。docker build 的 --label 会覆盖同名 LABEL，故在此打上。
     for k, v in {
         "org.opencontainers.image.version": f"{tag.lstrip('v')}-{version}",
+        "org.opencontainers.image.source": "https://github.com/byronz1z/ZBSwork-octop-build",
         "org.opencontainers.image.revision": recipe_rev_sha,
         "cn.zbswork.upstream.tag": tag,
         "cn.zbswork.upstream.commit": upstream_commit,
