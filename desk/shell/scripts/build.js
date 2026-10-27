@@ -7,13 +7,12 @@ syncVersion();
 const config = require('../src/config.json');
 
 const args = process.argv.slice(2); // 如 ['--win'] 或 ['--mac', '--dir']
-// Node 18.20.2+/20.12.2+ 起 spawn .cmd 必须 shell:true（CVE-2024-27980），改用 shell 模式起 npx
+// 不用 npx / shell:true：直接用 node 跑 electron-builder 的 cli 入口，参数原样传
 execFileSync(
-  'npx',
-  ['electron-builder', ...args, '--publish', 'never'],
+  process.execPath,
+  [require.resolve('electron-builder/out/cli/cli.js'), ...args, '--publish', 'never'],
   {
     stdio: 'inherit',
-    shell: true,
     env: { ...process.env, ZBSWORK_DISPLAY_VERSION: config.displayVersion },
   }
 );

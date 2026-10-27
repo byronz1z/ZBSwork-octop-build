@@ -7,8 +7,10 @@
     "sync-version": "node scripts/sync-version.js",
     "start": "npm run sync-version && electron .",
     "test": "node --test test/*.test.js",
-    "lint": "node --check src/main.js && node --check src/preload.js && node --check scripts/sync-version.js",
+    "smoke": "node test/smoke/smoke.mjs",
+    "lint": "node --check src/main.js && node --check src/preload.js && node --check src/find-preload.js && node --check src/lib/shortcuts.js && node --check src/lib/windowState.js && node --check src/lib/downloads.js && node --check src/lib/windowOpen.js && node --check scripts/sync-version.js && node --check scripts/build.js",
     "build": "node scripts/build.js --win",
+    "build:mac": "node scripts/build.js --mac --universal",
     "build:mac-check": "node scripts/build.js --mac --dir"
   },
   "devDependencies": {

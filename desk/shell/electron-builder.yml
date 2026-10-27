@@ -2,11 +2,13 @@ appId: cn.zbswork.desktop
 productName: ZBSwork
 directories:
   output: dist
+  buildResources: assets
 files:
   - src/**
   - package.json
 win:
   target: nsis
+  icon: assets/icon.png
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
@@ -18,5 +20,6 @@ mac:
   target: dmg
   category: public.app-category.productivity
   identity: null
-  artifactName: ZBSwork-${env.ZBSWORK_DISPLAY_VERSION}.${ext}
+  icon: assets/icon.png
+  artifactName: ZBSwork-${env.ZBSWORK_DISPLAY_VERSION}-${arch}.${ext}
 publish: null
