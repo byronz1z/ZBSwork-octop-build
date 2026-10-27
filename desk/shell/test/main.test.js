@@ -34,9 +34,11 @@ test('shouldBlockInput: F5 / F11 / Ctrl+R -> false', () => {
   assert.strictEqual(shouldBlockInput({ key: 'r', control: true, shift: false }), false);
 });
 
-test('shouldShowErrorPage: -3 false；-105/-106/-200 true', () => {
-  assert.strictEqual(shouldShowErrorPage(-3), false);
-  assert.strictEqual(shouldShowErrorPage(-105), true);
-  assert.strictEqual(shouldShowErrorPage(-106), true);
-  assert.strictEqual(shouldShowErrorPage(-200), true);
+test('shouldShowErrorPage: -3 false；主框架 -105/-106/-200 true；子框架一律 false', () => {
+  assert.strictEqual(shouldShowErrorPage(-3, true), false);
+  assert.strictEqual(shouldShowErrorPage(-105, true), true);
+  assert.strictEqual(shouldShowErrorPage(-106, true), true);
+  assert.strictEqual(shouldShowErrorPage(-200, true), true);
+  assert.strictEqual(shouldShowErrorPage(-200, false), false);
+  assert.strictEqual(shouldShowErrorPage(-105, false), false);
 });

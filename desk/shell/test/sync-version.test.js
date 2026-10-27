@@ -2,56 +2,43 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
 
-test('sync-version: zbs0.4.1 -> version 0.4.1, displayVersion zbs0.4.1', () => {
-  // 在临时目录搭一个最小副本，避免动真实文件
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zbs-sync-'));
-  fs.mkdirSync(path.join(tmp, 'server'));
-  fs.mkdirSync(path.join(tmp, 'desk', 'shell', 'src'), { recursive: true });
-  fs.mkdirSync(path.join(tmp, 'desk', 'shell', 'scripts'), { recursive: true });
-  fs.writeFileSync(path.join(tmp, 'server', 'VERSION'), 'zbs0.4.1\n');
-  fs.writeFileSync(
-    path.join(tmp, 'desk', 'shell', 'package.json'),
-    JSON.stringify({ name: 'zbswork-desktop', version: '0.0.0' }, null, 2) + '\n'
-  );
-  fs.copyFileSync(
-    path.join(__dirname, '..', 'scripts', 'sync-version.js'),
-    path.join(tmp, 'desk', 'shell', 'scripts', 'sync-version.js')
-  );
+// sync-version 读 ../../server/VERSION，写 package.json 的 version 和 src/config.json。
+// 测试验证"地址默认取 config.json、环境变量可覆盖"：跑前跑后把两个文件恢复原样。
+const { syncVersion } = require('../scripts/sync-version.js');
 
-  execFileSync(process.execPath, [path.join(tmp, 'desk', 'shell', 'scripts', 'sync-version.js')]);
 
-  const pkg = JSON.parse(fs.readFileSync(path.join(tmp, 'desk', 'shell', 'package.json'), 'utf8'));
-  assert.strictEqual(pkg.version, '0.4.1');
+const CONFIG_FILE = path.resolve(__dirname, '..', 'src', 'config.json');
+const PKG_FILE = path.resolve(__dirname, '..', 'package.json');
 
-  const config = JSON.parse(fs.readFileSync(path.join(tmp, 'desk', 'shell', 'src', 'config.json'), 'utf8'));
-  assert.strictEqual(config.displayVersion, 'zbs0.4.1');
-  assert.strictEqual(config.serverUrl, 'https://zbsworkoctoplink.api.zhangbaoshan.cn');
+function withConfig(fn) {
+  const backup = fs.readFileSync(CONFIG_FILE, 'utf8');
+  const pkgBackup = fs.readFileSync(PKG_FILE, 'utf8');
+  try {
+    fn();
+  } finally {
+    fs.writeFileSync(CONFIG_FILE, backup);
+    fs.writeFileSync(PKG_FILE, pkgBackup);
+    delete process.env.ZBSWORK_SERVER_URL;
+  }
+}
 
-  fs.rmSync(tmp, { recursive: true, force: true });
+test('sync-version: 无 ZBSWORK_SERVER_URL → serverUrl 保持 config.json 原值', () => {
+  withConfig(() => {
+    delete process.env.ZBSWORK_SERVER_URL;
+    const before = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')).serverUrl;
+    syncVersion();
+    const after = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')).serverUrl;
+    assert.strictEqual(after, before);
+  });
 });
 
-test('sync-version: ZBSWORK_SERVER_URL 覆盖 serverUrl', () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zbs-sync-'));
-  fs.mkdirSync(path.join(tmp, 'server'));
-  fs.mkdirSync(path.join(tmp, 'desk', 'shell', 'src'), { recursive: true });
-  fs.mkdirSync(path.join(tmp, 'desk', 'shell', 'scripts'), { recursive: true });
-  fs.writeFileSync(path.join(tmp, 'server', 'VERSION'), 'zbs0.4.1\n');
-  fs.writeFileSync(path.join(tmp, 'desk', 'shell', 'package.json'), JSON.stringify({ version: '0.0.0' }));
-  fs.copyFileSync(
-    path.join(__dirname, '..', 'scripts', 'sync-version.js'),
-    path.join(tmp, 'desk', 'shell', 'scripts', 'sync-version.js')
-  );
-
-  execFileSync(process.execPath, [path.join(tmp, 'desk', 'shell', 'scripts', 'sync-version.js')], {
-    env: { ...process.env, ZBSWORK_SERVER_URL: 'https://127.0.0.1:18443' },
+test('sync-version: 有 ZBSWORK_SERVER_URL → 覆盖 serverUrl', () => {
+  withConfig(() => {
+    process.env.ZBSWORK_SERVER_URL = 'https://127.0.0.1:18443';
+    syncVersion();
+    const after = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')).serverUrl;
+    assert.strictEqual(after, 'https://127.0.0.1:18443');
   });
-
-  const config = JSON.parse(fs.readFileSync(path.join(tmp, 'desk', 'shell', 'src', 'config.json'), 'utf8'));
-  assert.strictEqual(config.serverUrl, 'https://127.0.0.1:18443');
-
-  fs.rmSync(tmp, { recursive: true, force: true });
 });

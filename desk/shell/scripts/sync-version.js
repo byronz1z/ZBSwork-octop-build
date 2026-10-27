@@ -25,7 +25,9 @@ function syncVersion() {
   pkg.version = version;
   fs.writeFileSync(PKG_FILE, JSON.stringify(pkg, null, 2) + '\n');
 
-  const serverUrl = process.env.ZBSWORK_SERVER_URL || 'https://zbsworkoctoplink.api.zhangbaoshan.cn';
+  // 地址只有一处：config.json（进库）。传了 ZBSWORK_SERVER_URL 才覆盖。
+  const existing = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  const serverUrl = process.env.ZBSWORK_SERVER_URL || existing.serverUrl;
   const config = { serverUrl, displayVersion };
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n');
   process.env.ZBSWORK_DISPLAY_VERSION = displayVersion;

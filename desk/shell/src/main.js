@@ -15,8 +15,9 @@ function shouldBlockInput(input) {
   return false;
 }
 
-function shouldShowErrorPage(errorCode) {
-  return errorCode !== -3; // -3 = ERR_ABORTED，正常中止不算错
+function shouldShowErrorPage(errorCode, isMainFrame) {
+  // -3 = ERR_ABORTED（正常中止）不算错；只有主框架失败才切出错页
+  return isMainFrame === true && errorCode !== -3;
 }
 
 module.exports = { routeWindowOpen, shouldBlockInput, shouldShowErrorPage };
@@ -34,28 +35,34 @@ if (!process.env.NODE_TEST) {
     let crashTimer = null;
 
     app.on('second-instance', () => {
-      if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
     });
 
-    function loadServer() {
-      crashCount = 0;
+    // 所有"去服务器页"的唯一入口：先取消未触发的崩溃重载定时器
+    function goServer() {
+      if (crashTimer) { clearTimeout(crashTimer); crashTimer = null; }
       mainWindow.loadURL(config.serverUrl);
     }
 
     function showErrorPage(errorCode) {
+      if (crashTimer) { clearTimeout(crashTimer); crashTimer = null; }
       mainWindow.loadFile(path.join(__dirname, 'error.html'), {
         query: { code: String(errorCode || '') },
       });
     }
 
     function handleCrash() {
-      if (crashTimer) clearTimeout(crashTimer);
       crashCount += 1;
       if (crashCount >= 3) {
         showErrorPage();
         return;
       }
-      crashTimer = setTimeout(() => mainWindow.loadURL(config.serverUrl), 1000);
+      if (crashTimer) clearTimeout(crashTimer);
+      crashTimer = setTimeout(() => goServer(), 1000);
     }
 
     function createWindow() {
@@ -76,8 +83,12 @@ if (!process.env.NODE_TEST) {
       });
       mainWindow.webContents.on('render-process-gone', handleCrash);
       mainWindow.webContents.on('unresponsive', handleCrash);
-      mainWindow.webContents.on('did-fail-load', (_e, errorCode) => {
-        if (shouldShowErrorPage(errorCode)) showErrorPage(errorCode);
+      mainWindow.webContents.on('did-finish-load', () => {
+        // 自动重载成功（回到服务器页面）→ 崩溃计数清零
+        if (mainWindow.webContents.getURL().startsWith(config.serverUrl)) crashCount = 0;
+      });
+      mainWindow.webContents.on('did-fail-load', (_e, errorCode, _desc, _url, isMainFrame) => {
+        if (shouldShowErrorPage(errorCode, isMainFrame)) showErrorPage(errorCode);
       });
       mainWindow.webContents.setWindowOpenHandler(({ url }) => {
         if (routeWindowOpen(url, config.serverUrl) === 'child') {
@@ -92,15 +103,20 @@ if (!process.env.NODE_TEST) {
         return { action: 'deny' };
       });
 
-      loadServer();
+      goServer();
     }
 
-    ipcMain.on('zbswork:retry', () => { if (mainWindow) loadServer(); });
-
-    app.on('certificate-error', (event) => {
-      event.preventDefault(); // 不放行：阻止加载，走出错页
-      showErrorPage('certificate-error');
+    // 出错页的 retry 只认主窗口；正在加载时忽略，避免和 10 秒自动重试叠加
+    ipcMain.on('zbswork:retry', (event) => {
+      if (!mainWindow || event.sender !== mainWindow.webContents) return;
+      if (mainWindow.webContents.isLoading()) return;
+      goServer();
     });
+
+    // 证书错误：不调 preventDefault、不调 callback，保持 Electron 默认（拒绝）。
+    // 子资源证书问题也会触发本事件，不能在这里切出错页；
+    // 主框架证书错随后会走 did-fail-load（-202 类错误码），由那边统一切出错页。
+    app.on('certificate-error', () => {});
 
     app.whenReady().then(() => {
       createWindow();
