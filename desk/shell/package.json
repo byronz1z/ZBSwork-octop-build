@@ -1,0 +1,21 @@
+{
+  "name": "zbswork-desktop",
+  "version": "0.4.1",
+  "description": "ZBSwork desktop shell (Electron). Opens the server URL; no business logic.",
+  "main": "src/main.js",
+  "scripts": {
+    "sync-version": "node scripts/sync-version.js",
+    "start": "npm run sync-version && electron .",
+    "test": "node --test test/*.test.js",
+    "lint": "node --check src/main.js && node --check src/preload.js && node --check scripts/sync-version.js",
+    "build": "node scripts/build.js --win",
+    "build:mac-check": "node scripts/build.js --mac --dir"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "26.18.0"
+  },
+  "dependencies": {
+    "electron-context-menu": "5.1.0"
+  }
+}

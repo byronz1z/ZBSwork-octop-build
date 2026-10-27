@@ -1,0 +1,22 @@
+appId: cn.zbswork.desktop
+productName: ZBSwork
+directories:
+  output: dist
+files:
+  - src/**
+  - package.json
+win:
+  target: nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  artifactName: ZBSwork-Setup-${env.ZBSWORK_DISPLAY_VERSION}.${ext}
+mac:
+  target: dmg
+  category: public.app-category.productivity
+  identity: null
+  artifactName: ZBSwork-${env.ZBSWORK_DISPLAY_VERSION}.${ext}
+publish: null
