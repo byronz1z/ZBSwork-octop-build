@@ -21,17 +21,34 @@ test('routeWindowOpen: serverUrl 为 https://127.0.0.1:18443 时同前缀 -> chi
   assert.strictEqual(routeWindowOpen('http://127.0.0.1:18443/page', local), 'external');
 });
 
-test('shouldBlockInput: Ctrl+W / Ctrl+Shift+I / F12 -> true', () => {
-  assert.strictEqual(shouldBlockInput({ key: 'w', control: true, shift: false }), true);
-  assert.strictEqual(shouldBlockInput({ key: 'W', control: true, shift: false }), true);
-  assert.strictEqual(shouldBlockInput({ key: 'i', control: true, shift: true }), true);
-  assert.strictEqual(shouldBlockInput({ key: 'F12', control: false, shift: false }), true);
+test('shouldBlockInput: win32 的 Ctrl+W / Ctrl+Shift+I / F12 -> true', () => {
+  assert.strictEqual(shouldBlockInput({ key: 'w', control: true, shift: false }, 'win32'), true);
+  assert.strictEqual(shouldBlockInput({ key: 'W', control: true, shift: false }, 'win32'), true);
+  assert.strictEqual(shouldBlockInput({ key: 'i', control: true, shift: true }, 'win32'), true);
+  assert.strictEqual(shouldBlockInput({ key: 'F12', control: false, shift: false }, 'win32'), true);
+});
+
+test('shouldBlockInput: darwin 的 Cmd+W / Cmd+Option+I / Cmd+Q -> true', () => {
+  assert.strictEqual(shouldBlockInput({ key: 'w', meta: true, control: false, alt: false }, 'darwin'), true);
+  assert.strictEqual(shouldBlockInput({ key: 'W', meta: true, control: false, alt: false }, 'darwin'), true);
+  assert.strictEqual(shouldBlockInput({ key: 'i', meta: true, alt: true, control: false }, 'darwin'), true);
+  assert.strictEqual(shouldBlockInput({ key: 'q', meta: true, control: false, alt: false }, 'darwin'), true);
+  assert.strictEqual(shouldBlockInput({ key: 'Q', meta: true, control: false, alt: false }, 'darwin'), true);
+});
+
+test('shouldBlockInput: darwin 上 win32 组合键不屏蔽；Ctrl+Shift+I/F12 只在非 darwin', () => {
+  // Mac 上 Ctrl+W 是普通组合，不拦（拦的是 Cmd+W）
+  assert.strictEqual(shouldBlockInput({ key: 'w', control: true, meta: false }, 'darwin'), false);
+  assert.strictEqual(shouldBlockInput({ key: 'r', control: true, meta: false }, 'darwin'), false);
+  // F12 在 Mac 上也是 DevTools 键，统一屏蔽
+  assert.strictEqual(shouldBlockInput({ key: 'F12' }, 'darwin'), true);
+  assert.strictEqual(shouldBlockInput({ key: 'i', control: true, shift: true }, 'linux'), true);
 });
 
 test('shouldBlockInput: F5 / F11 / Ctrl+R -> false', () => {
-  assert.strictEqual(shouldBlockInput({ key: 'F5', control: false, shift: false }), false);
-  assert.strictEqual(shouldBlockInput({ key: 'F11', control: false, shift: false }), false);
-  assert.strictEqual(shouldBlockInput({ key: 'r', control: true, shift: false }), false);
+  assert.strictEqual(shouldBlockInput({ key: 'F5', control: false, shift: false }, 'win32'), false);
+  assert.strictEqual(shouldBlockInput({ key: 'F11', control: false, shift: false }, 'win32'), false);
+  assert.strictEqual(shouldBlockInput({ key: 'r', control: true, shift: false }, 'win32'), false);
 });
 
 test('shouldShowErrorPage: -3 false；主框架 -105/-106/-200 true；子框架一律 false', () => {

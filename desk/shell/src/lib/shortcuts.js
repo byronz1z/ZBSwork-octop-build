@@ -13,7 +13,8 @@ function mapShortcut(input, platform) {
   if (key === 'F11' || (darwin && input.control && input.meta && (key === 'f' || key === 'F'))) {
     return 'fullscreen';
   }
-  if ((input.alt && key === 'Left') || (darwin && input.meta && !input.control && key === '[')) return 'back';
+  // Electron 的 input.key 遵循 KeyboardEvent.key：方向键是 ArrowLeft，不是 Left
+  if ((input.alt && key === 'ArrowLeft') || (darwin && input.meta && !input.control && key === '[')) return 'back';
   if (mod && (key === 'f' || key === 'F') && !input.alt && !input.shift) return 'find';
   if (key === 'Escape') return 'escape';
   return null;

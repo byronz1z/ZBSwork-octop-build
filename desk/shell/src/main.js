@@ -8,10 +8,18 @@ const { clampBounds } = require('./lib/windowState');
 const { uniqueDownloadPath } = require('./lib/downloads');
 
 // ---- 纯函数（供单测） ----
-function shouldBlockInput(input) {
-  if (input.key === 'F12') return true;
-  if (input.control && !input.shift && input.key.toLowerCase() === 'w') return true;
-  if (input.control && input.shift && input.key.toLowerCase() === 'i') return true;
+function shouldBlockInput(input, platform) {
+  const k = input.key;
+  if (k === 'F12') return true;
+  if (platform === 'darwin') {
+    // Mac：Cmd+W 关窗、Cmd+Option+I 开 DevTools、Cmd+Q 退应用，都屏蔽
+    if (input.meta && k.toLowerCase() === 'w') return true;
+    if (input.meta && input.alt && k.toLowerCase() === 'i') return true;
+    if (input.meta && k.toLowerCase() === 'q') return true;
+    return false;
+  }
+  if (input.control && !input.shift && k.toLowerCase() === 'w') return true;
+  if (input.control && input.shift && k.toLowerCase() === 'i') return true;
   return false;
 }
 
@@ -48,12 +56,23 @@ if (!process.env.NODE_TEST) {
     // session 要等 app ready 后才能取，移进 whenReady（createWindow 之前）执行。
     function installPermissionHandler() {
       const serverOrigin = new URL(config.serverUrl).origin;
+      const allow = ['notifications', 'media', 'clipboard-read', 'clipboard-sanitized-write'];
+      const isAllowed = (permission, origin) => origin === serverOrigin && allow.includes(permission);
       session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
         // Electron 45 的 details 只有 requestingUrl（旧版的 requestingOrigin 已不存在），自己算 origin
         const origin = details && details.requestingUrl
           ? new URL(details.requestingUrl).origin : null;
-        const allow = ['notifications', 'media', 'clipboard-read', 'clipboard-sanitized-write'];
-        callback(origin === serverOrigin && allow.includes(permission));
+        callback(isAllowed(permission, origin));
+      });
+      // 权限检查处理器：网页 API（如 Notification.permission）同步探测时走这条路径，
+      // 与请求处理器共用同一个 isAllowed 判断，避免两处口径不一致。
+      session.defaultSession.setPermissionCheckHandler((_wc, permission, requestingOrigin, details) => {
+        let origin = requestingOrigin || null;
+        if (!origin && details && details.requestingUrl) {
+          try { origin = new URL(details.requestingUrl).origin; } catch (_e) { origin = null; }
+        }
+        if (origin) { try { origin = new URL(origin).origin; } catch (_e) { /* 已是 origin */ } }
+        return isAllowed(permission, origin);
       });
     }
 
@@ -120,7 +139,10 @@ if (!process.env.NODE_TEST) {
 
     function loadZoomLevel() {
       try {
-        return JSON.parse(fs.readFileSync(zoomSettingsPath(), 'utf8')).zoomLevel || 0;
+        const z = JSON.parse(fs.readFileSync(zoomSettingsPath(), 'utf8')).zoomLevel;
+        // 只认有限数并夹到 -3..3（与快捷键缩放同区间），否则当 0
+        if (Number.isFinite(z)) return Math.max(-3, Math.min(3, z));
+        return 0;
       } catch (_e) {
         return 0;
       }
@@ -143,13 +165,13 @@ if (!process.env.NODE_TEST) {
 
     function openFindWindow() {
       if (findWindow) { findWindow.focus(); return; }
+      const owner = mainWindow; // 创建时绑定的主窗口：closed 回调里只对它操作，防止主窗口先销毁
       findWindow = new BrowserWindow({
         parent: mainWindow,
         width: 360, height: 48,
         frame: false,
         resizable: false,
         skipTaskbar: true,
-        alwaysOnTop: true,
         webPreferences: {
           preload: path.join(__dirname, 'find-preload.js'),
           contextIsolation: true,
@@ -157,16 +179,44 @@ if (!process.env.NODE_TEST) {
           sandbox: true,
         },
       });
+      // 不设 alwaysOnTop：child 窗口默认浮在 parent 之上，够了；主窗口最小化时它跟着隐藏
+      hardenWindow(findWindow);
       positionFindWindow();
       findWindow.loadFile(path.join(__dirname, 'find.html'));
       findWindow.on('closed', () => {
         findWindow = null;
-        mainWindow.webContents.stopFindInPage('clearSelection');
+        if (owner && !owner.isDestroyed() && owner.webContents && !owner.webContents.isDestroyed()) {
+          owner.webContents.stopFindInPage('clearSelection');
+        }
       });
     }
 
     function closeFindWindow() {
       if (findWindow) findWindow.close(); // closed 事件里负责清状态
+    }
+
+    // 所有窗口统一加固：拦危险键 + 弹窗路由 + 弹出来的子窗口递归加固。
+    // mapShortcut（重载/缩放/全屏/后退/查找）只在主窗口装，不在这里。
+    function hardenWindow(win, extraOpenOptions = {}) {
+      win.webContents.on('before-input-event', (event, input) => {
+        if (shouldBlockInput(input, process.platform)) event.preventDefault();
+      });
+      win.webContents.setWindowOpenHandler(({ url }) => {
+        if (routeWindowOpen(url, config.serverUrl) === 'child') {
+          return {
+            action: 'allow',
+            overrideBrowserWindowOptions: {
+              autoHideMenuBar: true,
+              // 弹窗子窗口显式安全参数；不带 preload（只有主窗口和查找窗要 preload）
+              webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+              ...extraOpenOptions,
+            },
+          };
+        }
+        shell.openExternal(url);
+        return { action: 'deny' };
+      });
+      win.webContents.on('did-create-window', (child) => hardenWindow(child));
     }
 
     function showErrorPage(errorCode) {
@@ -210,9 +260,11 @@ if (!process.env.NODE_TEST) {
       mainWindow.on('resize', positionFindWindow);
       mainWindow.on('closed', () => { mainWindow = null; closeFindWindow(); });
 
-      // 快捷键：先拦危险键（第一轮规则），再按 mapShortcut 执行
+      // 统一加固：拦危险键 + 弹窗路由（弹窗带显式安全参数，不带 preload）+ 子窗口递归
+      hardenWindow(mainWindow, { parent: mainWindow, width: 720, height: 800 });
+
+      // 主窗口专属：mapShortcut（重载/缩放/全屏/后退/查找/收查找条）。危险键拦截在 hardenWindow 里。
       mainWindow.webContents.on('before-input-event', (event, input) => {
-        if (shouldBlockInput(input)) { event.preventDefault(); return; }
         const action = mapShortcut(input, process.platform);
         if (action === 'reload') { event.preventDefault(); mainWindow.webContents.reload(); }
         else if (action === 'zoomIn' || action === 'zoomOut') {
@@ -244,62 +296,12 @@ if (!process.env.NODE_TEST) {
       mainWindow.webContents.on('did-fail-load', (_e, errorCode, _desc, _url, isMainFrame) => {
         if (shouldShowErrorPage(errorCode, isMainFrame)) showErrorPage(errorCode);
       });
-      mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-        if (routeWindowOpen(url, config.serverUrl) === 'child') {
-          return {
-            action: 'allow',
-            overrideBrowserWindowOptions: {
-              parent: mainWindow, width: 720, height: 800, autoHideMenuBar: true,
-            },
-          };
-        }
-        shell.openExternal(url);
-        return { action: 'deny' };
-      });
-
-      // 弹窗子窗口：和主窗口同一套输入拦截与弹窗路由（崩溃重载只管主窗口）
-      mainWindow.webContents.on('did-create-window', (child) => {
-        child.webContents.on('before-input-event', (event, input) => {
-          if (shouldBlockInput(input)) event.preventDefault();
-        });
-        child.webContents.setWindowOpenHandler(({ url }) => {
-          if (routeWindowOpen(url, config.serverUrl) === 'child') return { action: 'allow' };
-          shell.openExternal(url);
-          return { action: 'deny' };
-        });
-      });
 
       // 查找结果回给查找窗显示 "x / y"
       mainWindow.webContents.on('found-in-page', (_e, r) => {
         if (findWindow && !findWindow.isDestroyed()) {
           findWindow.webContents.send('zbs:find-result', r);
         }
-      });
-
-      // 查找窗来的消息：只认查找窗
-      ipcMain.on('zbs:find', (event, { text, forward, findNext }) => {
-        if (!findWindow || event.sender !== findWindow.webContents) return;
-        if (!text) { mainWindow.webContents.stopFindInPage('clearSelection'); return; }
-        mainWindow.webContents.findInPage(text, { forward: !!forward, findNext: !!findNext });
-      });
-      ipcMain.on('zbs:find-close', (event) => {
-        if (findWindow && event.sender === findWindow.webContents) closeFindWindow();
-      });
-
-      // 下载提示：存到系统下载目录，重名按 "名 (1).扩展名" 递增
-      session.defaultSession.on('will-download', (_e, item) => {
-        const dir = app.getPath('downloads');
-        const savePath = uniqueDownloadPath(dir, item.getFilename(), (p) => fs.existsSync(p));
-        item.setSavePath(savePath);
-        item.once('done', (_ev, state) => {
-          if (state === 'completed') {
-            const n = new Notification({ title: '下载完成', body: path.basename(savePath) });
-            n.on('click', () => shell.showItemInFolder(savePath));
-            n.show();
-          } else {
-            new Notification({ title: '下载失败', body: item.getFilename() }).show();
-          }
-        });
       });
 
       goServer();
@@ -334,6 +336,35 @@ if (!process.env.NODE_TEST) {
         },
         append: () => [{ label: '关于 ZBSwork', click: showAbout }],
       });
+
+      // 只注册一次的监听（不随 createWindow 反复挂）：查找窗来的消息、下载提示。
+      // 查找窗来的消息：只认查找窗
+      ipcMain.on('zbs:find', (event, { text, forward, findNext }) => {
+        if (!findWindow || event.sender !== findWindow.webContents) return;
+        if (!mainWindow || !mainWindow.webContents || mainWindow.webContents.isDestroyed()) return;
+        if (!text) { mainWindow.webContents.stopFindInPage('clearSelection'); return; }
+        mainWindow.webContents.findInPage(text, { forward: !!forward, findNext: !!findNext });
+      });
+      ipcMain.on('zbs:find-close', (event) => {
+        if (findWindow && event.sender === findWindow.webContents) closeFindWindow();
+      });
+
+      // 下载提示：存到系统下载目录，重名按 "名 (1).扩展名" 递增
+      session.defaultSession.on('will-download', (_e, item) => {
+        const dir = app.getPath('downloads');
+        const savePath = uniqueDownloadPath(dir, item.getFilename(), (p) => fs.existsSync(p));
+        item.setSavePath(savePath);
+        item.once('done', (_ev, state) => {
+          if (state === 'completed') {
+            const n = new Notification({ title: '下载完成', body: path.basename(savePath) });
+            n.on('click', () => shell.showItemInFolder(savePath));
+            n.show();
+          } else {
+            new Notification({ title: '下载失败', body: item.getFilename() }).show();
+          }
+        });
+      });
+
       createWindow();
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();

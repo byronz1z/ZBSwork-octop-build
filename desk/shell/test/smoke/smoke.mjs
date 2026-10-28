@@ -94,10 +94,11 @@ async function main() {
       return true;
     });
   } finally {
-    try { if (app) await app.close(); } catch { /* 已经死了就算了 */ }
-    fs.rmSync(userData, { recursive: true, force: true });
-    fs.writeFileSync(CONFIG, originalConfig);
-    server.close();
+    // 各恢复步骤独立 try/catch：任何一步失败不影响其他步骤
+    try { if (app) await app.close(); } catch (e) { console.error('关闭壳失败：', e); }
+    try { fs.writeFileSync(CONFIG, originalConfig); } catch (e) { console.error('恢复 config.json 失败：', e); }
+    try { fs.rmSync(userData, { recursive: true, force: true }); } catch (e) { console.error('删临时目录失败：', e); }
+    try { server.close(); } catch (e) { console.error('关服务失败：', e); }
   }
   if (failed > 0) {
     console.error(`冒烟失败：${failed} 条断言未通过`);

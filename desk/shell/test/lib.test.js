@@ -17,9 +17,9 @@ test('mapShortcut: Cmd+f darwin -> find', () => {
     mapShortcut({ key: 'f', control: false, meta: true, alt: false, shift: false, type: 'keyDown' }, 'darwin'),
     'find');
 });
-test('mapShortcut: Alt+Left -> back', () => {
+test('mapShortcut: Alt+ArrowLeft -> back', () => {
   assert.strictEqual(
-    mapShortcut({ key: 'Left', alt: true, control: false, meta: false, shift: false, type: 'keyDown' }, 'win32'),
+    mapShortcut({ key: 'ArrowLeft', alt: true, control: false, meta: false, shift: false, type: 'keyDown' }, 'win32'),
     'back');
 });
 test('mapShortcut: Escape -> escape；无关键 -> null', () => {
@@ -42,6 +42,15 @@ test('clampBounds: 完全在屏外 -> 默认大小居中', () => {
 test('clampBounds: 部分在外 -> 平移进屏', () => {
   const r = clampBounds({ x: 1800, y: 900, width: 1000, height: 700 }, DISPLAYS, DEFAULTS);
   assert.deepStrictEqual(r, { x: 920, y: 340, width: 1000, height: 700 });
+});
+test('clampBounds: 工作区 1024x728（比默认小）时 x、y 不为负且右下角在屏内', () => {
+  const small = [{ workArea: { x: 0, y: 0, width: 1024, height: 728 } }];
+  const r = clampBounds({ x: 5000, y: 5000, width: 1000, height: 700 }, small, DEFAULTS);
+  assert.ok(r.x >= 0 && r.y >= 0, `x/y 为负：${r.x},${r.y}`);
+  assert.ok(r.x + r.width <= 1024 && r.y + r.height <= 728,
+    `右下角出屏：${r.x + r.width},${r.y + r.height}`);
+  assert.strictEqual(r.width, 1024); // 默认宽被夹到工作区宽
+  assert.strictEqual(r.height, 728);
 });
 
 // ---- uniqueDownloadPath ----

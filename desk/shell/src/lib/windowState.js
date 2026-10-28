@@ -19,13 +19,15 @@ function clampBounds(bounds, displays, defaults) {
     if (area > bestArea) { bestArea = area; best = wa; }
   }
   if (!best) {
-    // 完全在屏幕外：默认大小，在首个屏幕工作区居中
+    // 完全在屏幕外：默认大小（先夹到不超过工作区）在首个屏幕工作区居中
     const wa = displays[0].workArea;
+    const width = Math.min(defaults.width, wa.width);
+    const height = Math.min(defaults.height, wa.height);
     return {
-      x: wa.x + Math.round((wa.width - defaults.width) / 2),
-      y: wa.y + Math.round((wa.height - defaults.height) / 2),
-      width: defaults.width,
-      height: defaults.height,
+      x: wa.x + Math.round((wa.width - width) / 2),
+      y: wa.y + Math.round((wa.height - height) / 2),
+      width,
+      height,
     };
   }
   // 部分在外：大小不变，平移进该屏幕
