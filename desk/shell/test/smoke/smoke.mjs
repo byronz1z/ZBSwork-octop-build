@@ -33,18 +33,19 @@ async function main() {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const serverUrl = `http://127.0.0.1:${server.address().port}/`;
 
-  // 地址唯一来源是 config.json：先备份，改写为测试地址，结束后恢复
+  // 地址唯一来源是 config.json：先备份原内容；改写与建临时目录都放进 try，失败也会走 finally 恢复
   const CONFIG = path.join(ROOT, 'src', 'config.json');
   const originalConfig = fs.readFileSync(CONFIG, 'utf8');
-  fs.writeFileSync(CONFIG, JSON.stringify({
-    serverUrl,
-    displayVersion: JSON.parse(originalConfig).displayVersion,
-  }, null, 2) + '\n');
-
-  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'zbswork-smoke-'));
+  let userData = null;
   let app = null;
   let failed = 0;
   try {
+    fs.writeFileSync(CONFIG, JSON.stringify({
+      serverUrl,
+      displayVersion: JSON.parse(originalConfig).displayVersion,
+    }, null, 2) + '\n');
+    if (process.env.ZBSWORK_SMOKE_FAIL_MKDTEMP === '1') throw new Error('模拟 mkdtemp 失败');
+    userData = fs.mkdtempSync(path.join(os.tmpdir(), 'zbswork-smoke-'));
     app = await electron.launch({
       args: [ROOT],
       env: { ...process.env, ZBSWORK_SERVER_URL: serverUrl, ZBSWORK_USER_DATA: userData },
@@ -94,10 +95,19 @@ async function main() {
       return true;
     });
   } finally {
-    // 各恢复步骤独立 try/catch：任何一步失败不影响其他步骤
-    try { if (app) await app.close(); } catch (e) { console.error('关闭壳失败：', e); }
+    // 各恢复步骤独立 try/catch：任何一步失败不影响其他步骤；关壳等待上限 15 秒，超时强杀
+    try {
+      if (app) {
+        let timedOut = false;
+        const timer = setTimeout(() => { timedOut = true; }, 15000);
+        try {
+          await Promise.race([app.close(), new Promise((r) => { setTimeout(r, 15000); })]);
+        } finally { clearTimeout(timer); }
+        if (timedOut) { try { app.process().kill(); } catch (e) { console.error('强杀壳进程失败：', e); } }
+      }
+    } catch (e) { console.error('关闭壳失败：', e); }
     try { fs.writeFileSync(CONFIG, originalConfig); } catch (e) { console.error('恢复 config.json 失败：', e); }
-    try { fs.rmSync(userData, { recursive: true, force: true }); } catch (e) { console.error('删临时目录失败：', e); }
+    try { if (userData !== null) fs.rmSync(userData, { recursive: true, force: true }); } catch (e) { console.error('删临时目录失败：', e); }
     try { server.close(); } catch (e) { console.error('关服务失败：', e); }
   }
   if (failed > 0) {
