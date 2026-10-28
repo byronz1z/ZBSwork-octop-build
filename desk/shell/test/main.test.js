@@ -5,7 +5,7 @@ const assert = require('node:assert');
 process.env.NODE_TEST = '1';
 const { routeWindowOpen, shouldBlockInput, shouldShowErrorPage } = require('../src/main.js');
 
-const SERVER = 'https://zbsworkoctoplink.api.zhangbaoshan.cn';
+const SERVER = 'https://zbsworkoctoplink.api.zhangbaoshan.cn:8443';
 
 test('routeWindowOpen: 同源前缀 -> child', () => {
   assert.strictEqual(routeWindowOpen(SERVER + '/oauth/callback', SERVER), 'child');
@@ -58,4 +58,12 @@ test('shouldShowErrorPage: -3 false；主框架 -105/-106/-200 true；子框架�
   assert.strictEqual(shouldShowErrorPage(-200, true), true);
   assert.strictEqual(shouldShowErrorPage(-200, false), false);
   assert.strictEqual(shouldShowErrorPage(-105, false), false);
+});
+
+test('config.json 默认地址：https、生产域名、显式端口 8443（10-28 真机测试发现 443 是路由器）', () => {
+  const cfg = require('../src/config.json');
+  const u = new URL(cfg.serverUrl);
+  assert.strictEqual(u.protocol, 'https:');
+  assert.strictEqual(u.hostname, 'zbsworkoctoplink.api.zhangbaoshan.cn');
+  assert.strictEqual(u.port, '8443');
 });

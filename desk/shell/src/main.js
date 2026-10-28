@@ -37,6 +37,10 @@ if (!process.env.NODE_TEST) {
   const contextMenu = require('electron-context-menu').default;
   Menu.setApplicationMenu(null);
 
+  // 测试用：允许覆盖 userData 目录（跑完即删）。必须在单实例锁之前：Electron 的锁按 userData 路径算，
+  // 否则测试实例会和已安装、正在运行的 ZBSwork 撞锁而直接退出（10-28 V10 实测）。
+  if (process.env.ZBSWORK_USER_DATA) app.setPath('userData', process.env.ZBSWORK_USER_DATA);
+
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
     app.quit();
@@ -48,9 +52,6 @@ if (!process.env.NODE_TEST) {
 
     // Windows 通知中心按 AppUserModelId 认应用；须与 electron-builder.yml 的 appId 一致
     if (process.platform === 'win32') app.setAppUserModelId('cn.zbswork.desktop');
-
-    // 冒烟测试用：允许覆盖 userData 目录（跑完即删）
-    if (process.env.ZBSWORK_USER_DATA) app.setPath('userData', process.env.ZBSWORK_USER_DATA);
 
     // 权限：只放行 serverUrl 来源的通知/麦克风/剪贴板，其他来源一律拒，其他权限走默认。
     // session 要等 app ready 后才能取，移进 whenReady（createWindow 之前）执行。
