@@ -25,7 +25,8 @@ module.exports = { routeWindowOpen, shouldBlockInput, shouldShowErrorPage };
 // ---- 主进程逻辑（被 require 时不跑） ----
 if (!process.env.NODE_TEST) {
   const { app, BrowserWindow, Menu, shell, ipcMain, Notification, session, screen, dialog } = require('electron');
-  const contextMenu = require('electron-context-menu');
+  // electron-context-menu v5 是 ESM 默认导出，CJS 里要取 .default
+  const contextMenu = require('electron-context-menu').default;
   Menu.setApplicationMenu(null);
 
   const gotLock = app.requestSingleInstanceLock();
@@ -43,18 +44,18 @@ if (!process.env.NODE_TEST) {
     // 冒烟测试用：允许覆盖 userData 目录（跑完即删）
     if (process.env.ZBSWORK_USER_DATA) app.setPath('userData', process.env.ZBSWORK_USER_DATA);
 
-    // 权限：只放行 serverUrl 来源的通知/麦克风/剪贴板，其他来源一律拒，其他权限走默认
-    const serverOrigin = new URL(config.serverUrl).origin;
-    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
-      const allow = ['notifications', 'media', 'clipboard-read', 'clipboard-sanitized-write'];
-      if (allow.includes(permission) && details.requestingOrigin === serverOrigin) {
-        callback(true);
-      } else if (allow.includes(permission)) {
-        callback(false);
-      } else {
-        callback(false);
-      }
-    });
+    // 权限：只放行 serverUrl 来源的通知/麦克风/剪贴板，其他来源一律拒，其他权限走默认。
+    // session 要等 app ready 后才能取，移进 whenReady（createWindow 之前）执行。
+    function installPermissionHandler() {
+      const serverOrigin = new URL(config.serverUrl).origin;
+      session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+        // Electron 45 的 details 只有 requestingUrl（旧版的 requestingOrigin 已不存在），自己算 origin
+        const origin = details && details.requestingUrl
+          ? new URL(details.requestingUrl).origin : null;
+        const allow = ['notifications', 'media', 'clipboard-read', 'clipboard-sanitized-write'];
+        callback(origin === serverOrigin && allow.includes(permission));
+      });
+    }
 
     // 把窗口叫到前面（second-instance 与网页端 focusWindow 共用）
     function focusMainWindow() {
@@ -317,6 +318,7 @@ if (!process.env.NODE_TEST) {
     app.on('certificate-error', () => {});
 
     app.whenReady().then(() => {
+      installPermissionHandler();
       // 中文右键菜单；不带 Google 搜索/查词/开发者工具项
       contextMenu({
         showCopyImageAddress: true,
