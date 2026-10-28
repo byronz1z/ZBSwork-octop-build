@@ -8,6 +8,10 @@ on:
         required: false
         default: https://zbsworkoctoplink.api.zhangbaoshan.cn
         type: string
+  pull_request:
+    paths:
+      - 'desk/**'
+      - '.github/workflows/build-desk.yml'
 
 permissions:
   contents: read
@@ -31,7 +35,7 @@ jobs:
       - name: Build Windows installer
         working-directory: desk/shell
         env:
-          ZBSWORK_SERVER_URL: ${{ inputs.server_url }}
+          ZBSWORK_SERVER_URL: ${{ inputs.server_url || 'https://zbsworkoctoplink.api.zhangbaoshan.cn' }}
         run: npm run build
       - name: SHA256 to log
         working-directory: desk/shell
@@ -62,7 +66,7 @@ jobs:
       - name: Build Mac dmg (universal, unsigned)
         working-directory: desk/shell
         env:
-          ZBSWORK_SERVER_URL: ${{ inputs.server_url }}
+          ZBSWORK_SERVER_URL: ${{ inputs.server_url || 'https://zbsworkoctoplink.api.zhangbaoshan.cn' }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run build:mac
       - name: SHA256 to log

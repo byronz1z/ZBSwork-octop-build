@@ -24,7 +24,9 @@ npm run build:mac-check # 校验 Mac 打包配置（本机 Windows，只验不�
 
 ## 云端构建（GitHub Actions）
 
-`.github/workflows/build-desk.yml` 只手动触发（workflow_dispatch），不发 Release、不推镜像：
+`.github/workflows/build-desk.yml` 手动触发（workflow_dispatch），不发 Release、不推镜像：
+
+改到 desk/ 的 PR 会自动跑一次构建（产物同样在该次运行的 Artifacts）；手动触发只对已在 main 上的工作流有效。
 
 1. GitHub 仓库页面 → Actions → 左侧选 `build-desk` → Run workflow；
 2. 输入框 `server_url` 填壳要打开的服务器地址（默认生产地址），Run；
