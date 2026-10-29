@@ -4,7 +4,7 @@ const assert = require('node:assert');
 
 const { mapShortcut } = require('../src/lib/shortcuts');
 const { clampBounds } = require('../src/lib/windowState');
-const { uniqueDownloadPath } = require('../src/lib/downloads');
+const { uniqueDownloadPath, downloadToast } = require('../src/lib/downloads');
 
 // ---- mapShortcut（第 4 节样例 + Escape + 无关键） ----
 test('mapShortcut: Ctrl+F win32 -> find', () => {
@@ -65,4 +65,21 @@ test('uniqueDownloadPath: 存在一次 -> 名 (1).扩展名', () => {
 test('uniqueDownloadPath: 存在两次 -> 名 (2).扩展名', () => {
   const exists = (p) => p.endsWith('报告.pdf') || p.endsWith('报告 (1).pdf');
   assert.strictEqual(uniqueDownloadPath('/tmp', '报告.pdf', exists), '/tmp/报告 (2).pdf');
+});
+
+// ---- downloadToast ----
+test('downloadToast: completed -> ok true 且文案为"已保存到下载文件夹：…"', () => {
+  const r = downloadToast('completed', 'a.txt');
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.text, '已保存到下载文件夹：a.txt');
+});
+test('downloadToast: interrupted -> ok false 且文案为"下载失败：…"', () => {
+  const r = downloadToast('interrupted', 'a.txt');
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.text, '下载失败：a.txt');
+});
+test('downloadToast: completed 且文件名为空 -> 文案含"文件"', () => {
+  const r = downloadToast('completed', '');
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.text.includes('文件'), `文案不含"文件"：${r.text}`);
 });

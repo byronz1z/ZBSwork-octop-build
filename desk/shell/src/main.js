@@ -5,7 +5,7 @@ const config = require('./config.json');
 const { routeWindowOpen } = require('./lib/windowOpen');
 const { mapShortcut } = require('./lib/shortcuts');
 const { clampBounds } = require('./lib/windowState');
-const { uniqueDownloadPath } = require('./lib/downloads');
+const { uniqueDownloadPath, downloadToast } = require('./lib/downloads');
 
 // ---- 纯函数（供单测） ----
 function shouldBlockInput(input, platform) {
@@ -351,19 +351,37 @@ if (!process.env.NODE_TEST) {
       });
 
       // 下载提示：存到系统下载目录，重名按 "名 (1).扩展名" 递增
+      // completedDownloads：已完成下载的 savePath 白名单，"打开文件夹"只认这里面的路径，
+      // 网页伪造消息不能借这条通道打开任意路径
+      const completedDownloads = new Set();
       session.defaultSession.on('will-download', (_e, item) => {
         const dir = app.getPath('downloads');
         const savePath = uniqueDownloadPath(dir, item.getFilename(), (p) => fs.existsSync(p));
         item.setSavePath(savePath);
         item.once('done', (_ev, state) => {
           if (state === 'completed') {
+            completedDownloads.add(savePath);
             const n = new Notification({ title: '下载完成', body: path.basename(savePath) });
             n.on('click', () => shell.showItemInFolder(savePath));
             n.show();
           } else {
             new Notification({ title: '下载失败', body: item.getFilename() }).show();
           }
+          // 窗口内也弹提示条（preload 里渲染）；成功才带 savePath 供"打开文件夹"用
+          if (mainWindow && !mainWindow.webContents.isDestroyed()) {
+            mainWindow.webContents.send('zbs:download-done', {
+              ...downloadToast(state, path.basename(savePath)),
+              savePath: state === 'completed' ? savePath : null,
+            });
+          }
         });
+      });
+
+      // 提示条里"打开文件夹"按钮：只认主窗口发来的、且路径在完成白名单里
+      ipcMain.on('zbs:open-download', (event, savePath) => {
+        if (!mainWindow || event.sender !== mainWindow.webContents) return;
+        if (typeof savePath !== 'string' || !completedDownloads.has(savePath)) return;
+        shell.showItemInFolder(savePath);
       });
 
       createWindow();

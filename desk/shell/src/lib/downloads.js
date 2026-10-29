@@ -17,4 +17,12 @@ function uniqueDownloadPath(dir, filename, existsFn) {
   return candidate;
 }
 
-module.exports = { uniqueDownloadPath };
+// 下载完成/失败后窗口内提示条的文案（纯函数，供测试与主进程共用）。
+// state === 'completed' 算成功；filename 为空时兜底为"文件"。
+function downloadToast(state, filename) {
+  const name = filename || '文件';
+  if (state === 'completed') return { ok: true, text: '已保存到下载文件夹：' + name };
+  return { ok: false, text: '下载失败：' + name };
+}
+
+module.exports = { uniqueDownloadPath, downloadToast };
