@@ -180,13 +180,25 @@ async function main() {
     await assert(10, '外链打开失败时壳不崩、页面照常', async () => {
       await app.evaluate(({ shell }) => {
         shell.openExternal = (u) => { global.__ext.push(String(u)); return Promise.reject(new Error('模拟：本机没有处理程序')); };
+        // 记录主进程的失败日志与未处理拒绝：失败必须被 main.js 的 catch 接住并记日志，不能变成 unhandledRejection
+        global.__errlog = [];
+        global.__unhandled = [];
+        const origError = console.error;
+        console.error = (...args) => { global.__errlog.push(args.map(String).join(' ')); origError.apply(console, args); };
+        process.on('unhandledRejection', (e) => { global.__unhandled.push(String(e && e.message ? e.message : e)); });
       });
       await page.click('#ext');
       const deadline = Date.now() + 5000;
       while ((await app.evaluate(() => global.__ext.length)) < 2 && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 100));
       }
+      const extLen = await app.evaluate(() => global.__ext.length);
+      if (extLen < 2) throw new Error(`5 秒内桩没有被调到（记录 ${extLen} 条），外链没有走到 openExternal`);
       await new Promise((r) => setTimeout(r, 300)); // 给拒绝一个冒出来的机会
+      const errlog = await app.evaluate(() => global.__errlog.filter((s) => s.includes('交系统程序打开失败')));
+      if (errlog.length < 1) throw new Error('失败没有被记录（main.js 的 catch 没生效）');
+      const unhandled = await app.evaluate(() => global.__unhandled);
+      if (unhandled.length !== 0) throw new Error(`出现未处理拒绝：${JSON.stringify(unhandled)}`);
       const title = await page.evaluate(() => document.title);
       if (!title.includes('ZBSwork 冒烟')) throw new Error(`页面标题变成：${title}`);
       if (app.windows().length !== 1) throw new Error(`窗口数是 ${app.windows().length}，不是 1`);
