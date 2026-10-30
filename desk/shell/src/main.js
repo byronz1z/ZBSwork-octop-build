@@ -50,8 +50,11 @@ if (!process.env.NODE_TEST) {
     let crashTimer = null;
     let findWindow = null;
 
-    // Windows 通知中心按 AppUserModelId 认应用；须与 electron-builder.yml 的 appId 一致
-    if (process.platform === 'win32') app.setAppUserModelId('cn.zbswork.desktop');
+    // Windows 通知中心按 AppUserModelId 认应用；须与 electron-builder.yml 的 appId 一致。
+    // 开发态用 .dev 后缀，免得开发版 Electron 写的开始菜单快捷方式顶掉装好的客户端的图标
+    if (process.platform === 'win32') {
+      app.setAppUserModelId(app.isPackaged ? 'cn.zbswork.desktop' : 'cn.zbswork.desktop.dev');
+    }
 
     // 权限：只放行 serverUrl 来源的通知/麦克风/剪贴板，其他来源一律拒，其他权限走默认。
     // session 要等 app ready 后才能取，移进 whenReady（createWindow 之前）执行。
@@ -202,8 +205,9 @@ if (!process.env.NODE_TEST) {
       win.webContents.on('before-input-event', (event, input) => {
         if (shouldBlockInput(input, process.platform)) event.preventDefault();
       });
-      win.webContents.setWindowOpenHandler(({ url }) => {
-        if (routeWindowOpen(url, config.serverUrl) === 'child') {
+      win.webContents.setWindowOpenHandler(({ url, disposition }) => {
+        const route = routeWindowOpen(url, config.serverUrl, disposition);
+        if (route === 'child') {
           return {
             action: 'allow',
             overrideBrowserWindowOptions: {
@@ -214,8 +218,11 @@ if (!process.env.NODE_TEST) {
             },
           };
         }
-        shell.openExternal(url);
-        return { action: 'deny' };
+        if (route === 'external') {
+          shell.openExternal(url);
+          return { action: 'deny' };
+        }
+        return { action: 'deny' }; // R3：其他协议什么都不发生，绝不 shell.openExternal
       });
       win.webContents.on('did-create-window', (child) => hardenWindow(child));
     }

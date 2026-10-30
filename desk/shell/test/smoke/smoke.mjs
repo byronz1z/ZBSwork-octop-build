@@ -1,4 +1,4 @@
-// 自动冒烟：起本机测试服务 → 启动壳 → 七条断言 → 清理
+// 自动冒烟：起本机测试服务 → 启动壳 → 九条断言 → 清理
 // 用法：在 desk/shell 下 npm run smoke。任一断言失败退出码非 0，输出写明第几条。
 'use strict';
 import http from 'node:http';
@@ -16,12 +16,15 @@ const ROOT = process.cwd(); // npm run smoke 的 cwd 就是 desk/shell
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>ZBSwork 冒烟</title></head>
 <body><div id="perm">pending</div><div id="focus">pending</div>
 <a id="dl" href="/file.bin" download="冒烟下载.bin">下载</a>
+<button id="popup">授权</button>
+<a id="ext" href="https://example.com/x" target="_blank" rel="noreferrer">外站</a>
 <script>
 Notification.requestPermission().then(function (p) {
   document.getElementById('perm').textContent = p;
 });
 document.getElementById('focus').textContent = typeof window.zbsDesktop !== 'undefined'
   ? typeof window.zbsDesktop.focusWindow : 'none';
+document.getElementById('popup').onclick = function(){ window.open('about:blank','octop-oauth','width=520,height=720'); };
 </script></body></html>`;
 
 const stripSlash = (u) => u.replace(/\/+$/, '');
@@ -116,6 +119,58 @@ async function main() {
       if (openBtns < 1) throw new Error('提示条里没有"打开文件夹"按钮');
       return true;
     });
+
+    // 脚本弹窗（window.open 带尺寸参数，disposition=new-window）：about:blank 也开成子窗口，不交系统浏览器
+    await assert(8, '脚本弹窗 about:blank 开成子窗口、不交系统浏览器', async () => {
+      // 主进程挂钩只记录不真开：断言 0 次系统浏览器调用
+      await app.evaluate(({ shell }) => {
+        global.__ext = [];
+        shell.openExternal = (u) => { global.__ext.push(String(u)); return Promise.resolve(); };
+      });
+      const popupPromise = app.waitForEvent('window');
+      await page.click('#popup');
+      const popup = await popupPromise;
+      if (app.windows().length !== 2) throw new Error(`窗口数是 ${app.windows().length}，不是 2`);
+      if (!popup.url().startsWith('about:blank')) throw new Error(`子窗口 url：${popup.url()}`);
+      const extCount = await app.evaluate(() => global.__ext.length);
+      if (extCount !== 0) throw new Error(`shell.openExternal 被调 ${extCount} 次`);
+      // 关子窗口走主进程 BrowserWindow.close()（用户关窗的优雅路径），按 URL 认弹窗：
+      // getAllWindows() 的顺序不是创建顺序（约是 z 序，聚焦的弹窗可能排第一），不能按索引关。
+      // 不用 Playwright 的 popup.close()：about:blank 弹窗与主窗口共用渲染进程，
+      // CDP 式关闭会把主窗口渲染进程一起杀掉，主页会话断掉（10-30 冒烟实测）。
+      await app.evaluate(({ BrowserWindow }) => {
+        for (const w of BrowserWindow.getAllWindows()) {
+          let u = '';
+          try { u = w.webContents.getURL(); } catch (_e) { /* 已销毁则忽略 */ }
+          if (u === '' || u.startsWith('about:blank')) w.close();
+        }
+      });
+      // ElectronApplication 没有 waitForFunction（那是 Page 的方法），轮询等窗口数回到 1
+      const deadline = Date.now() + 10000;
+      while (app.windows().length !== 1 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (app.windows().length !== 1) throw new Error(`关掉子窗口后窗口数是 ${app.windows().length}，不是 1`);
+      return true;
+    });
+
+    // 外站链接（target=_blank，非脚本弹窗）：交系统浏览器，不开新窗口
+    await assert(9, '外站链接交系统浏览器、不开窗口', async () => {
+      // 兜底：若主页面会话意外断掉（如渲染进程崩溃），等崩溃重载把它救回来，最多 5 秒
+      const healthy = Date.now() + 5000;
+      while (Date.now() < healthy) {
+        try { await page.evaluate(() => document.title); break; }
+        catch (_e) { await new Promise((r) => setTimeout(r, 200)); }
+      }
+      await page.click('#ext');
+      await new Promise((r) => setTimeout(r, 300));
+      const ext = await app.evaluate(() => global.__ext);
+      if (JSON.stringify(ext) !== JSON.stringify(['https://example.com/x'])) {
+        throw new Error(`shell.openExternal 记录：${JSON.stringify(ext)}`);
+      }
+      if (app.windows().length !== 1) throw new Error(`窗口数是 ${app.windows().length}，不是 1`);
+      return true;
+    });
   } finally {
     // 各恢复步骤独立 try/catch：任何一步失败不影响其他步骤；关壳等待上限 15 秒，超时强杀
     try {
@@ -137,7 +192,7 @@ async function main() {
     console.error(`冒烟失败：${failed} 条断言未通过`);
     process.exit(1);
   }
-  console.log('冒烟通过：7/7');
+  console.log('冒烟通过：9/9');
 }
 
 main().catch((e) => { console.error(e && e.stack ? e.stack : e); process.exit(1); });

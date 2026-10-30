@@ -49,7 +49,7 @@ npm run build:mac-check # 校验 Mac 打包配置（本机 Windows，只验不�
 ## 和网页端的耦合点（每次官方升级任务对照一遍；变了就开 desk 任务）
 | 接缝 | 网页端现状（2026-10-27） | 壳里对应 |
 |---|---|---|
-| 弹窗 | window.open 命名小窗：octop-oauth、octop-connector-auth、SSO 弹窗（Connectors/index.tsx、CustomMcpTab.tsx、ssoPopup.ts、CodexOAuthConnect.tsx） | setWindowOpenHandler：URL 以 serverUrl 为前缀→子窗口、其他→系统浏览器（第一轮已做） |
+| 弹窗 | window.open 命名小窗：octop-oauth、octop-connector-auth、SSO 弹窗（Connectors/index.tsx、CustomMcpTab.tsx、ssoPopup.ts、CodexOAuthConnect.tsx） | setWindowOpenHandler 按打开方式分类 R1/R2/R3（脚本弹窗一律子窗口；链接新开同源→子窗口、外站→系统浏览器；其他协议不处理），规则全文见 shell/README.md「链接与弹窗去向」（r3） |
 | 下载 | blob + a.download（AuthFileDownloadLink.tsx） | will-download 提示：存系统下载目录、重名递增、完成/失败系统通知（已做） |
 | 权限 | 麦克风（useVoiceInput.ts） | setPermissionRequestHandler：只放行 serverUrl 来源的通知/麦克风/剪贴板，其他来源一律拒（已做） |
 | 识别桌面壳 | window._wails（desktopChrome.ts） | 壳不注入 _wails，网页按普通浏览器处理；壳注入 window.zbsDesktop（isDesktop、focusWindow），补丁 24 用它把窗口叫到前面（已做） |

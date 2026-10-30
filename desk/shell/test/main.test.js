@@ -21,6 +21,34 @@ test('routeWindowOpen: serverUrl 为 https://127.0.0.1:18443 时同前缀 -> chi
   assert.strictEqual(routeWindowOpen('http://127.0.0.1:18443/page', local), 'external');
 });
 
+test('routeWindowOpen: 脚本弹窗（new-window）about:blank -> child（连接器授权）', () => {
+  assert.strictEqual(routeWindowOpen('about:blank', SERVER, 'new-window'), 'child');
+});
+
+test('routeWindowOpen: 脚本弹窗（new-window）第三方授权站 -> child', () => {
+  assert.strictEqual(routeWindowOpen('https://open.feishu.cn/x', SERVER, 'new-window'), 'child');
+});
+
+test('routeWindowOpen: 链接新开（foreground-tab）外站 -> external', () => {
+  assert.strictEqual(routeWindowOpen('https://example.com/x', SERVER, 'foreground-tab'), 'external');
+});
+
+test('routeWindowOpen: 链接新开（foreground-tab）同源 -> child', () => {
+  assert.strictEqual(routeWindowOpen(SERVER + '/experts', SERVER, 'foreground-tab'), 'child');
+});
+
+test('routeWindowOpen: 链接新开（foreground-tab）file: 协议 -> deny', () => {
+  assert.strictEqual(routeWindowOpen('file:///D:/a.txt', SERVER, 'foreground-tab'), 'deny');
+});
+
+test('routeWindowOpen: 不传 disposition 时 javascript: -> deny', () => {
+  assert.strictEqual(routeWindowOpen('javascript:alert(1)', SERVER), 'deny');
+});
+
+test('routeWindowOpen: 不传 disposition 时 about:blank -> child', () => {
+  assert.strictEqual(routeWindowOpen('about:blank', SERVER), 'child');
+});
+
 test('shouldBlockInput: win32 的 Ctrl+W / Ctrl+Shift+I / F12 -> true', () => {
   assert.strictEqual(shouldBlockInput({ key: 'w', control: true, shift: false }, 'win32'), true);
   assert.strictEqual(shouldBlockInput({ key: 'W', control: true, shift: false }, 'win32'), true);
