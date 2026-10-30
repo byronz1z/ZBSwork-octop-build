@@ -31,5 +31,5 @@ appId 一致）；开发态用 `cn.zbswork.desktop.dev` 后缀——开发版 El
 ```bash
 npm run lint   # node --check 语法检查
 npm test       # node:test 单测（纯函数）
-npm run smoke  # 起本机测试服务的九条断言冒烟（test/smoke/smoke.mjs）
+npm run smoke  # 起本机测试服务的十条断言冒烟（test/smoke/smoke.mjs）
 ```

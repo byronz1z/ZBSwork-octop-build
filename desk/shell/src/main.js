@@ -219,7 +219,10 @@ if (!process.env.NODE_TEST) {
           };
         }
         if (route === 'external') {
-          shell.openExternal(url);
+          // 本机没有对应程序（如 mailto:/tel: 无邮件/拨号程序）时 openExternal 会异步失败：只记录，不让未处理的拒绝冒出来（Codex 27 必须改）
+          shell.openExternal(url).catch((e) => {
+            console.error('[zbswork] 交系统程序打开失败：', url, e && e.message ? e.message : e);
+          });
           return { action: 'deny' };
         }
         return { action: 'deny' }; // R3：其他协议什么都不发生，绝不 shell.openExternal

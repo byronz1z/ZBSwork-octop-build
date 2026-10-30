@@ -1,4 +1,4 @@
-// 自动冒烟：起本机测试服务 → 启动壳 → 九条断言 → 清理
+// 自动冒烟：起本机测试服务 → 启动壳 → 十条断言 → 清理
 // 用法：在 desk/shell 下 npm run smoke。任一断言失败退出码非 0，输出写明第几条。
 'use strict';
 import http from 'node:http';
@@ -175,6 +175,23 @@ async function main() {
       if (app.windows().length !== 1) throw new Error(`窗口数是 ${app.windows().length}，不是 1`);
       return true;
     });
+
+    // 外链交系统程序失败（本机没有处理程序）：壳不崩、页面照常（Codex 27 必须改的验证）
+    await assert(10, '外链打开失败时壳不崩、页面照常', async () => {
+      await app.evaluate(({ shell }) => {
+        shell.openExternal = (u) => { global.__ext.push(String(u)); return Promise.reject(new Error('模拟：本机没有处理程序')); };
+      });
+      await page.click('#ext');
+      const deadline = Date.now() + 5000;
+      while ((await app.evaluate(() => global.__ext.length)) < 2 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      await new Promise((r) => setTimeout(r, 300)); // 给拒绝一个冒出来的机会
+      const title = await page.evaluate(() => document.title);
+      if (!title.includes('ZBSwork 冒烟')) throw new Error(`页面标题变成：${title}`);
+      if (app.windows().length !== 1) throw new Error(`窗口数是 ${app.windows().length}，不是 1`);
+      return true;
+    });
   } finally {
     // 各恢复步骤独立 try/catch：任何一步失败不影响其他步骤；关壳等待上限 15 秒，超时强杀
     try {
@@ -196,7 +213,7 @@ async function main() {
     console.error(`冒烟失败：${failed} 条断言未通过`);
     process.exit(1);
   }
-  console.log('冒烟通过：9/9');
+  console.log('冒烟通过：10/10');
 }
 
 main().catch((e) => { console.error(e && e.stack ? e.stack : e); process.exit(1); });
