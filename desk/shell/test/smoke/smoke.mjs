@@ -163,7 +163,11 @@ async function main() {
         catch (_e) { await new Promise((r) => setTimeout(r, 200)); }
       }
       await page.click('#ext');
-      await new Promise((r) => setTimeout(r, 300));
+      // 不固定等 300 毫秒（慢机器偶发失败，Codex 26 建议）：最多等 5 秒，每 100 毫秒看一次有没有记录到外链
+      const extDeadline = Date.now() + 5000;
+      while ((await app.evaluate(() => global.__ext.length)) < 1 && Date.now() < extDeadline) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
       const ext = await app.evaluate(() => global.__ext);
       if (JSON.stringify(ext) !== JSON.stringify(['https://example.com/x'])) {
         throw new Error(`shell.openExternal 记录：${JSON.stringify(ext)}`);

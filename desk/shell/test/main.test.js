@@ -45,6 +45,14 @@ test('routeWindowOpen: 不传 disposition 时 javascript: -> deny', () => {
   assert.strictEqual(routeWindowOpen('javascript:alert(1)', SERVER), 'deny');
 });
 
+test('routeWindowOpen: mailto: 链接新开 -> external（r4 放行）', () => {
+  assert.strictEqual(routeWindowOpen('mailto:a@b.com', SERVER, 'foreground-tab'), 'external');
+});
+
+test('routeWindowOpen: tel: 不传 disposition -> external（r4 放行）', () => {
+  assert.strictEqual(routeWindowOpen('tel:13800000000', SERVER), 'external');
+});
+
 test('routeWindowOpen: 不传 disposition 时 about:blank -> child', () => {
   assert.strictEqual(routeWindowOpen('about:blank', SERVER), 'child');
 });
