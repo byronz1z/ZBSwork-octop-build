@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<style>
+  body { margin: 0; font-family: "Microsoft YaHei", sans-serif; background: #fff;
+         display: flex; align-items: center; gap: 4px; padding: 6px 8px;
+         border: 1px solid #ccc; box-sizing: border-box; height: 48px;
+         user-select: none; -webkit-app-region: no-drag; }
+  input { flex: 1; font-size: 13px; padding: 4px 6px; border: 1px solid #bbb; border-radius: 3px; }
+  #count { font-size: 12px; color: #888; min-width: 44px; text-align: center; white-space: nowrap; }
+  button { font-size: 13px; border: 1px solid #bbb; background: #f7f7f7; border-radius: 3px;
+           padding: 3px 8px; cursor: pointer; }
+  button:hover { background: #eee; }
+</style>
+</head>
+<body>
+  <input id="q" type="text" placeholder="页内查找" autofocus>
+  <span id="count"></span>
+  <button id="prev" title="上一个">↑</button>
+  <button id="next" title="下一个">↓</button>
+  <button id="close" title="关闭">✕</button>
+<script>
+  const q = document.getElementById('q');
+  const find = window.zbsFind;
+  q.addEventListener('input', () => find.find(q.value, true));
+  q.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') find.find(q.value, !e.shiftKey, true);
+    if (e.key === 'Escape') find.close();
+  });
+  document.getElementById('prev').onclick = () => find.find(q.value, false, true);
+  document.getElementById('next').onclick = () => find.find(q.value, true, true);
+  document.getElementById('close').onclick = () => find.close();
+  find.onResult((r) => {
+    document.getElementById('count').textContent =
+      r.matches > 0 ? `${r.activeMatchOrdinal} / ${r.matches}` : '';
+  });
+</script>
+</body>
+</html>

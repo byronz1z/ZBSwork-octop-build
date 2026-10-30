@@ -1,0 +1,80 @@
+name: build-desk
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: 壳打开的服务器地址
+        required: false
+        default: https://zbsworkoctoplink.api.zhangbaoshan.cn:8443
+        type: string
+  pull_request:
+    paths:
+      - 'desk/**'
+      - '.github/workflows/build-desk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desk/shell/package-lock.json
+      - name: Install, lint, test
+        working-directory: desk/shell
+        run: |
+          npm ci
+          npm run lint
+          npm test
+      - name: Build Windows installer
+        working-directory: desk/shell
+        env:
+          ZBSWORK_SERVER_URL: ${{ inputs.server_url || 'https://zbsworkoctoplink.api.zhangbaoshan.cn:8443' }}
+        run: npm run build
+      - name: SHA256 to log
+        working-directory: desk/shell
+        shell: pwsh
+        run: Get-FileHash -Algorithm SHA256 dist\*.exe | Format-List
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ZBSwork-windows
+          path: desk/shell/dist/*.exe
+          retention-days: 30
+          if-no-files-found: error
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desk/shell/package-lock.json
+      - name: Install, lint, test
+        working-directory: desk/shell
+        run: |
+          npm ci
+          npm run lint
+          npm test
+      - name: Build Mac dmg (universal, unsigned)
+        working-directory: desk/shell
+        env:
+          ZBSWORK_SERVER_URL: ${{ inputs.server_url || 'https://zbsworkoctoplink.api.zhangbaoshan.cn:8443' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run build:mac
+      - name: SHA256 to log
+        working-directory: desk/shell
+        run: shasum -a 256 dist/*.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ZBSwork-mac
+          path: desk/shell/dist/*.dmg
+          retention-days: 30
+          if-no-files-found: error
