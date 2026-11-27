@@ -1,0 +1,379 @@
+diff --git a/dashboard/src/api/request.ts b/dashboard/src/api/request.ts
+index 7afb709d76c24e554bdf4085ea24be3bdd0a7d49..cc676647c85775e3854f53fbeb002ffa05aa7e46 100644
+--- a/dashboard/src/api/request.ts
++++ b/dashboard/src/api/request.ts
+@@ -79,6 +79,9 @@ export function setAuthToken(token: string, remember: boolean = true) {
+     sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+     localStorage.removeItem(AUTH_TOKEN_KEY);
+   }
++  if (token.trim()) {
++    _redirectingToLogin = false;
++  }
+   clearSetupRequired();
+ }
+ 
+diff --git a/dashboard/src/api/request.unauthorized.test.ts b/dashboard/src/api/request.unauthorized.test.ts
+index 94ee6585a01cb1bbacc7325bb70078874899f1e0..126186e4b86a7f870c10008b62283b6dc46626f5 100644
+--- a/dashboard/src/api/request.unauthorized.test.ts
++++ b/dashboard/src/api/request.unauthorized.test.ts
+@@ -99,4 +99,27 @@ describe("401 handling", () => {
+ 
+     window.removeEventListener(mod.UNAUTHORIZED_EVENT, listener);
+   });
++
++  it("resets redirect guard when setAuthToken writes a new non-empty token after SPA re-login", async () => {
++    const listener = vi.fn((event: Event) => event.preventDefault());
++    window.addEventListener(mod.UNAUTHORIZED_EVENT, listener);
++
++    // First expiry handled in-SPA (no full page reload)
++    await expect(mod.request("/agents")).rejects.toThrow();
++    expect(listener).toHaveBeenCalledTimes(1);
++    expect(mod.getAuthToken()).toBe("");
++
++    // Empty/whitespace token must NOT re-arm the redirect guard
++    mod.setAuthToken("   ");
++    await expect(mod.request("/agents")).rejects.toThrow();
++    expect(listener).toHaveBeenCalledTimes(1);
++
++    // Re-login with a valid non-empty token resets _redirectingToLogin
++    mod.setAuthToken("fresh-session-token");
++    await expect(mod.request("/agents")).rejects.toThrow();
++    expect(listener).toHaveBeenCalledTimes(2);
++    expect(replace).not.toHaveBeenCalled();
++
++    window.removeEventListener(mod.UNAUTHORIZED_EVENT, listener);
++  });
+ });
+diff --git a/dashboard/src/pages/Chat/hooks/useMemoryMaintenance.test.ts b/dashboard/src/pages/Chat/hooks/useMemoryMaintenance.test.ts
+index 5c8cf4db4387225e2d074dcd2a563c02d73897c7..c50ceba8324bdc82c74023042aa894ee6094dd1c 100644
+--- a/dashboard/src/pages/Chat/hooks/useMemoryMaintenance.test.ts
++++ b/dashboard/src/pages/Chat/hooks/useMemoryMaintenance.test.ts
+@@ -1,9 +1,30 @@
+ import { act, renderHook } from "@testing-library/react";
+-import { afterEach, describe, expect, it, vi } from "vitest";
+-import { request } from "../../../api/request";
+-import { useMemoryMaintenance } from "./useMemoryMaintenance";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import {
++  getAuthToken,
++  request,
++  UNAUTHORIZED_EVENT,
++} from "../../../api/request";
++import {
++  nextPollBackoffMs,
++  useMemoryMaintenance,
++} from "./useMemoryMaintenance";
+ 
+-vi.mock("../../../api/request", () => ({ request: vi.fn() }));
++vi.mock("../../../api/request", () => ({
++  request: vi.fn(),
++  getAuthToken: vi.fn(() => "valid-token"),
++  UNAUTHORIZED_EVENT: "octop:unauthorized",
++  SetupRequiredError: class SetupRequiredError extends Error {
++    constructor() {
++      super("Setup required");
++      this.name = "SetupRequiredError";
++    }
++  },
++}));
++
++beforeEach(() => {
++  vi.mocked(getAuthToken).mockReturnValue("valid-token");
++});
+ 
+ afterEach(() => {
+   vi.useRealTimers();
+@@ -102,3 +123,173 @@ it("does not turn legacy completion into a persistent manual-maintenance result"
+   expect(result.current.blocking).toBe(false);
+   unmount();
+ });
++
++describe("auth guard and bounded exponential backoff", () => {
++  it("computes bounded backoff sequence 2s→4s→8s→16s→30s", () => {
++    expect(nextPollBackoffMs(1)).toBe(2000);
++    expect(nextPollBackoffMs(2)).toBe(4000);
++    expect(nextPollBackoffMs(3)).toBe(8000);
++    expect(nextPollBackoffMs(4)).toBe(16000);
++    expect(nextPollBackoffMs(5)).toBe(30000);
++    expect(nextPollBackoffMs(6)).toBe(30000);
++  });
++
++  it("skips polling entirely when no valid auth token is present", async () => {
++    vi.useFakeTimers();
++    vi.mocked(getAuthToken).mockReturnValue("   ");
++    const { unmount } = renderHook(() => useMemoryMaintenance("main", true));
++    await act(async () => {
++      await Promise.resolve();
++      await vi.advanceTimersByTimeAsync(60_000);
++    });
++    expect(request).not.toHaveBeenCalled();
++    unmount();
++  });
++
++  it("stops polling immediately on 401 / Unauthorized failure", async () => {
++    vi.useFakeTimers();
++    vi.mocked(request).mockRejectedValueOnce(new Error("Unauthorized"));
++    const { unmount } = renderHook(() => useMemoryMaintenance("main", true));
++    await act(async () => {
++      await Promise.resolve();
++    });
++    expect(request).toHaveBeenCalledTimes(1);
++
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(120_000);
++    });
++    expect(request).toHaveBeenCalledTimes(1);
++    unmount();
++  });
++
++  it("stops polling immediately when token is cleared on auth error", async () => {
++    vi.useFakeTimers();
++    vi.mocked(request).mockImplementationOnce(async () => {
++      vi.mocked(getAuthToken).mockReturnValue("");
++      throw new Error("Request failed: 401 Unauthorized");
++    });
++    const { unmount } = renderHook(() => useMemoryMaintenance("main", true));
++    await act(async () => {
++      await Promise.resolve();
++    });
++    expect(request).toHaveBeenCalledTimes(1);
++
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(120_000);
++    });
++    expect(request).toHaveBeenCalledTimes(1);
++    unmount();
++  });
++
++  it("stops scheduled polling when octop:unauthorized event fires", async () => {
++    vi.useFakeTimers();
++    vi.mocked(request).mockResolvedValue({
++      memory_maintenance: { phase: "idle" },
++    });
++    const { unmount } = renderHook(() => useMemoryMaintenance("main", true));
++    await act(async () => {
++      await Promise.resolve();
++    });
++    expect(request).toHaveBeenCalledTimes(1);
++
++    act(() => {
++      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
++    });
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(60_000);
++    });
++    expect(request).toHaveBeenCalledTimes(1);
++    unmount();
++  });
++
++  it("backs off 2s→4s→8s→16s→30s on consecutive transient errors and resets after recovery", async () => {
++    vi.useFakeTimers();
++    vi.mocked(request)
++      .mockRejectedValueOnce(new Error("network down 1"))
++      .mockRejectedValueOnce(new Error("network down 2"))
++      .mockRejectedValueOnce(new Error("network down 3"))
++      .mockRejectedValueOnce(new Error("network down 4"))
++      .mockRejectedValueOnce(new Error("network down 5"))
++      .mockRejectedValueOnce(new Error("network down 6"))
++      .mockResolvedValueOnce({
++        memory_maintenance: { phase: "idle" },
++      })
++      .mockResolvedValueOnce({
++        memory_maintenance: { phase: "idle" },
++      });
++
++    const { result, unmount } = renderHook(() =>
++      useMemoryMaintenance("main", true),
++    );
++    // Initial poll #1 fails -> schedules +2s
++    await act(async () => {
++      await Promise.resolve();
++    });
++    expect(request).toHaveBeenCalledTimes(1);
++    expect(result.current.connectionLost).toBe(true);
++
++    // Before 2s: no retry; at 2s: poll #2 fails -> schedules +4s
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(1999);
++    });
++    expect(request).toHaveBeenCalledTimes(1);
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(1);
++    });
++    expect(request).toHaveBeenCalledTimes(2);
++
++    // At +4s: poll #3 fails -> schedules +8s
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(3999);
++    });
++    expect(request).toHaveBeenCalledTimes(2);
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(1);
++    });
++    expect(request).toHaveBeenCalledTimes(3);
++
++    // At +8s: poll #4 fails -> schedules +16s
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(7999);
++    });
++    expect(request).toHaveBeenCalledTimes(3);
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(1);
++    });
++    expect(request).toHaveBeenCalledTimes(4);
++
++    // At +16s: poll #5 fails -> schedules +30s (capped)
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(15999);
++    });
++    expect(request).toHaveBeenCalledTimes(4);
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(1);
++    });
++    expect(request).toHaveBeenCalledTimes(5);
++
++    // At +30s: poll #6 fails -> still capped at +30s
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(29999);
++    });
++    expect(request).toHaveBeenCalledTimes(5);
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(1);
++    });
++    expect(request).toHaveBeenCalledTimes(6);
++
++    // At +30s: poll #7 succeeds -> resets backoff to 2s and clears connectionLost
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(30_000);
++    });
++    expect(request).toHaveBeenCalledTimes(7);
++    expect(result.current.connectionLost).toBe(false);
++
++    // Next poll resumes at 2s cadence
++    await act(async () => {
++      await vi.advanceTimersByTimeAsync(2000);
++    });
++    expect(request).toHaveBeenCalledTimes(8);
++    unmount();
++  });
++});
+diff --git a/dashboard/src/pages/Chat/hooks/useMemoryMaintenance.ts b/dashboard/src/pages/Chat/hooks/useMemoryMaintenance.ts
+index 766240ede9f86e2b14a8a40e1a1c66bb59d15898..0359e170f1b472ccbebc19e539185554dda7dc2b 100644
+--- a/dashboard/src/pages/Chat/hooks/useMemoryMaintenance.ts
++++ b/dashboard/src/pages/Chat/hooks/useMemoryMaintenance.ts
+@@ -1,5 +1,46 @@
+ import { useEffect, useState } from "react";
+-import { request } from "../../../api/request";
++import {
++  getAuthToken,
++  request,
++  SetupRequiredError,
++  UNAUTHORIZED_EVENT,
++} from "../../../api/request";
++
++export const MEMORY_POLL_BASE_DELAY_MS = 2000;
++export const MEMORY_POLL_MAX_DELAY_MS = 30000;
++
++/** Bounded exponential backoff for transient poll errors: 2s→4s→8s→16s→30s. */
++export function nextPollBackoffMs(consecutiveErrors: number): number {
++  if (consecutiveErrors <= 1) return MEMORY_POLL_BASE_DELAY_MS;
++  return Math.min(
++    MEMORY_POLL_BASE_DELAY_MS * 2 ** (consecutiveErrors - 1),
++    MEMORY_POLL_MAX_DELAY_MS,
++  );
++}
++
++function hasValidAuthToken(): boolean {
++  try {
++    return Boolean(getAuthToken().trim());
++  } catch {
++    return false;
++  }
++}
++
++function isAuthFailureError(err: unknown): boolean {
++  if (typeof SetupRequiredError === "function" && err instanceof SetupRequiredError) {
++    return true;
++  }
++  if (err && typeof err === "object") {
++    const status = (err as { status?: unknown }).status;
++    if (status === 401) return true;
++  }
++  if (err instanceof Error) {
++    return /\b(?:401|unauthorized|token_expired|auth_failed)\b/i.test(
++      err.message,
++    );
++  }
++  return false;
++}
+ 
+ export type MemoryMaintenancePhase =
+   | "idle"
+@@ -70,33 +111,61 @@ export function useMemoryMaintenance(
+     setStatus(null);
+     setConnectionLost(false);
+     // Bridge shadows have no local harness status / memory maintenance.
+-    if (!agentId || !enabled || bridgeAgent) {
++    if (!agentId || !enabled || bridgeAgent || !hasValidAuthToken()) {
+       return;
+     }
+     let stop = false;
+     let timer: number | null = null;
++    let consecutiveErrors = 0;
++
++    const haltPolling = () => {
++      stop = true;
++      if (timer != null) {
++        window.clearTimeout(timer);
++        timer = null;
++      }
++    };
++
++    const onUnauthorized = () => {
++      haltPolling();
++    };
++    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
++
+     const pull = async () => {
+-      const nextDelay = 2000;
++      if (stop || !hasValidAuthToken()) {
++        haltPolling();
++        return;
++      }
++      let nextDelay = MEMORY_POLL_BASE_DELAY_MS;
+       try {
+         const row = await request<{
+           memory_maintenance?: MemoryMaintenanceStatus | null;
+         }>(`/agents/${agentId}/status`);
++        consecutiveErrors = 0;
+         const next = row.memory_maintenance ?? null;
+         if (!stop) {
+           setStatus(next);
+           setConnectionLost(false);
+         }
+-      } catch {
++      } catch (err) {
++        if (isAuthFailureError(err) || !hasValidAuthToken()) {
++          haltPolling();
++          return;
++        }
++        consecutiveErrors += 1;
++        nextDelay = nextPollBackoffMs(consecutiveErrors);
+         // Keep the last known state; a later single-flight poll can recover.
+         if (!stop) setConnectionLost(true);
+       } finally {
+-        if (!stop) timer = window.setTimeout(pull, nextDelay);
++        if (!stop && hasValidAuthToken()) {
++          timer = window.setTimeout(pull, nextDelay);
++        }
+       }
+     };
+     void pull();
+     return () => {
+-      stop = true;
+-      if (timer != null) window.clearTimeout(timer);
++      window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
++      haltPolling();
+     };
+   }, [agentId, enabled, bridgeAgent]);
+ 

@@ -8,7 +8,7 @@
 npm ci                 # 装依赖（只用官方 registry）
 npm start              # 本地跑：先同步版本再开窗口
 npm test               # 单元测试（node:test）
-npm run smoke          # Playwright 冒烟（起本机测试服务，六条断言）
+npm run smoke          # Playwright 冒烟（起本机测试服务，十二条断言）
 npm run build          # 出 Windows NSIS 安装包 → dist/ZBSwork-Setup-zbs<版本>.exe
 npm run build:mac-check # 校验 Mac 打包配置（本机 Windows，只验不打 dmg）
 ```
@@ -49,9 +49,9 @@ npm run build:mac-check # 校验 Mac 打包配置（本机 Windows，只验不�
 ## 和网页端的耦合点（每次官方升级任务对照一遍；变了就开 desk 任务）
 | 接缝 | 网页端现状（2026-10-27） | 壳里对应 |
 |---|---|---|
-| 弹窗 | window.open 命名小窗：octop-oauth、octop-connector-auth、SSO 弹窗（Connectors/index.tsx、CustomMcpTab.tsx、ssoPopup.ts、CodexOAuthConnect.tsx） | setWindowOpenHandler 按打开方式分类 R1/R2/R3（脚本弹窗一律子窗口；链接新开同源→子窗口、外站→系统浏览器；其他协议不处理），规则全文见 shell/README.md「链接与弹窗去向」（r3） |
-| 下载 | blob + a.download（AuthFileDownloadLink.tsx） | will-download 提示：存系统下载目录、重名递增、完成/失败系统通知（已做） |
-| 权限 | 麦克风（useVoiceInput.ts） | setPermissionRequestHandler：只放行 serverUrl 来源的通知/麦克风/剪贴板，其他来源一律拒（已做） |
+| 弹窗 | window.open 命名小窗：octop-oauth、octop-connector-auth、SSO 弹窗（Connectors/index.tsx、CustomMcpTab.tsx、ssoPopup.ts、CodexOAuthConnect.tsx） | setWindowOpenHandler 按打开方式分类 R1/R2/R3（R1 脚本弹窗一律子窗口；R2 严格 `URL.origin` 同源→子窗口且拦截空/同页重复链接、外站→系统浏览器；R3 其他协议拒绝），规则全文见 shell/README.md「链接与弹窗去向」（r5） |
+| 下载 | blob + a.download（AuthFileDownloadLink.tsx） | will-download 提示：存系统下载目录、内存预留集合防并发重名覆盖、完成/失败系统通知与页内提示条，用户主动取消不弹失败提示（r5） |
+| 权限 | 麦克风（useVoiceInput.ts）、全屏 | setPermissionRequestHandler / CheckHandler：严格同源放行通知/麦克风/剪贴板/全屏（fullscreen），其他来源一律拒（r5） |
 | 识别桌面壳 | window._wails（desktopChrome.ts） | 壳不注入 _wails，网页按普通浏览器处理；壳注入 window.zbsDesktop（isDesktop、focusWindow），补丁 24 用它把窗口叫到前面（已做） |
 | 通知 | 补丁 24（useDashboardPushToast.tsx）调 Notification | Windows 设 appUserModelId（cn.zbswork.desktop，与 appId 一致）；点通知聚焦窗口（已做） |
 | 登录态 | 默认持久分区 | 改会话机制要真机验 |

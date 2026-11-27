@@ -1,6 +1,6 @@
 {
   "name": "zbswork-desktop",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "ZBSwork desktop shell (Electron). Opens the server URL; no business logic.",
   "main": "src/main.js",
   "scripts": {
@@ -8,7 +8,7 @@
     "start": "npm run sync-version && electron .",
     "test": "node --test test/*.test.js",
     "smoke": "node test/smoke/smoke.mjs",
-    "lint": "node --check src/main.js && node --check src/preload.js && node --check src/find-preload.js && node --check src/lib/shortcuts.js && node --check src/lib/windowState.js && node --check src/lib/downloads.js && node --check src/lib/windowOpen.js && node --check scripts/sync-version.js && node --check scripts/build.js",
+    "lint": "node --check src/main.js && node --check src/preload.js && node --check src/find-preload.js && node --check src/lib/shortcuts.js && node --check src/lib/windowState.js && node --check src/lib/downloads.js && node --check src/lib/windowOpen.js && node --check src/lib/faultLog.js && node --check src/lib/recovery.js && node --check scripts/sync-version.js && node --check scripts/build.js",
     "build": "node scripts/build.js --win",
     "build:mac": "node scripts/build.js --mac --universal",
     "build:mac-check": "node scripts/build.js --mac --dir"

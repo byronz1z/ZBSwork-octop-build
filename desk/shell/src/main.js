@@ -2,10 +2,20 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.json');
-const { routeWindowOpen } = require('./lib/windowOpen');
+const { routeWindowOpen, isSameOrigin } = require('./lib/windowOpen');
 const { mapShortcut } = require('./lib/shortcuts');
 const { clampBounds } = require('./lib/windowState');
-const { uniqueDownloadPath, downloadToast } = require('./lib/downloads');
+const { downloadToast, reserveDownloadPath } = require('./lib/downloads');
+const { createFaultLogger } = require('./lib/faultLog');
+const {
+  isPermissionAllowed,
+  decideReloadAction,
+  decideRetryAction,
+  isBlankDomSnapshot,
+  shouldRecoverBlankScreen,
+  buildApplicationMenuTemplate,
+  createForceCrashCoordinator,
+} = require('./lib/recovery');
 
 // ---- 纯函数（供单测） ----
 function shouldBlockInput(input, platform) {
@@ -28,6 +38,11 @@ function shouldShowErrorPage(errorCode, isMainFrame) {
   return isMainFrame === true && errorCode !== -3;
 }
 
+function parsePositiveMs(raw, fallback) {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 module.exports = { routeWindowOpen, shouldBlockInput, shouldShowErrorPage };
 
 // ---- 主进程逻辑（被 require 时不跑） ----
@@ -35,7 +50,6 @@ if (!process.env.NODE_TEST) {
   const { app, BrowserWindow, Menu, shell, ipcMain, Notification, session, screen, dialog } = require('electron');
   // electron-context-menu v5 是 ESM 默认导出，CJS 里要取 .default
   const contextMenu = require('electron-context-menu').default;
-  Menu.setApplicationMenu(null);
 
   // 测试用：允许覆盖 userData 目录（跑完即删）。必须在单实例锁之前：Electron 的锁按 userData 路径算，
   // 否则测试实例会和已安装、正在运行的 ZBSwork 撞锁而直接退出（10-28 V10 实测）。
@@ -45,10 +59,37 @@ if (!process.env.NODE_TEST) {
   if (!gotLock) {
     app.quit();
   } else {
+    const NAV_TIMEOUT_MS = parsePositiveMs(process.env.ZBSWORK_NAV_TIMEOUT_MS, 20000);
+    const RETRY_STOP_AFTER_MS = parsePositiveMs(process.env.ZBSWORK_RETRY_STOP_AFTER_MS, 8000);
+    const UNRESPONSIVE_RECOVER_MS = parsePositiveMs(process.env.ZBSWORK_UNRESPONSIVE_MS, 3000);
+    const FORCE_CRASH_FALLBACK_MS = parsePositiveMs(process.env.ZBSWORK_FORCE_CRASH_FALLBACK_MS, 6000);
+    const BLANK_CHECK_DELAY_MS = parsePositiveMs(process.env.ZBSWORK_BLANK_CHECK_MS, 4000);
+    const MAX_BLANK_RECOVERIES = 1;
+
+    const faultLog = createFaultLogger(path.join(app.getPath('userData'), 'logs', 'main.log'));
+
     let mainWindow = null;
     let crashCount = 0;
     let crashTimer = null;
+    let navTimeoutTimer = null;
+    let blankCheckTimer = null;
+    let blankRecoveryCount = 0;
+    let navStartedAt = null;
+    let isUnresponsive = false;
     let findWindow = null;
+
+    const forceCrash = createForceCrashCoordinator({
+      fallbackMs: FORCE_CRASH_FALLBACK_MS,
+      forcefullyCrashRenderer: () => {
+        if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+          throw new Error('mainWindow 已销毁');
+        }
+        mainWindow.webContents.forcefullyCrashRenderer();
+      },
+      onReload: () => goServer(),
+      onErrorUnresponsive: () => showErrorPage('UNRESPONSIVE'),
+      onLog: (event, details) => faultLog.log(event, details),
+    });
 
     // Windows 通知中心按 AppUserModelId 认应用；须与 electron-builder.yml 的 appId 一致。
     // 开发态用 .dev 后缀，免得开发版 Electron 写的开始菜单快捷方式顶掉装好的客户端的图标
@@ -56,33 +97,41 @@ if (!process.env.NODE_TEST) {
       app.setAppUserModelId(app.isPackaged ? 'cn.zbswork.desktop' : 'cn.zbswork.desktop.dev');
     }
 
-    // 权限：只放行 serverUrl 来源的通知/麦克风/剪贴板，其他来源一律拒，其他权限走默认。
+    function clearPendingTimers() {
+      if (crashTimer) { clearTimeout(crashTimer); crashTimer = null; }
+      if (navTimeoutTimer) { clearTimeout(navTimeoutTimer); navTimeoutTimer = null; }
+      if (blankCheckTimer) { clearTimeout(blankCheckTimer); blankCheckTimer = null; }
+      forceCrash.clear();
+    }
+
+    // 权限：只放行 serverUrl 同源的通知/麦克风/剪贴板/全屏，其他来源一律拒。
     // session 要等 app ready 后才能取，移进 whenReady（createWindow 之前）执行。
     function installPermissionHandler() {
-      const serverOrigin = new URL(config.serverUrl).origin;
-      const allow = ['notifications', 'media', 'clipboard-read', 'clipboard-sanitized-write'];
-      const isAllowed = (permission, origin) => origin === serverOrigin && allow.includes(permission);
       session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
-        // Electron 45 的 details 只有 requestingUrl（旧版的 requestingOrigin 已不存在），自己算 origin
-        const origin = details && details.requestingUrl
-          ? new URL(details.requestingUrl).origin : null;
-        callback(isAllowed(permission, origin));
+        // Electron 45 的 details 只有 requestingUrl（旧版的 requestingOrigin 已不存在），用严格 origin 判定
+        const urlOrOrigin = details && details.requestingUrl ? details.requestingUrl : null;
+        callback(isPermissionAllowed(permission, urlOrOrigin, config.serverUrl));
       });
       // 权限检查处理器：网页 API（如 Notification.permission）同步探测时走这条路径，
-      // 与请求处理器共用同一个 isAllowed 判断，避免两处口径不一致。
+      // 与请求处理器共用同一个 isPermissionAllowed 判断，避免两处口径不一致。
       session.defaultSession.setPermissionCheckHandler((_wc, permission, requestingOrigin, details) => {
-        let origin = requestingOrigin || null;
-        if (!origin && details && details.requestingUrl) {
-          try { origin = new URL(details.requestingUrl).origin; } catch (_e) { origin = null; }
-        }
-        if (origin) { try { origin = new URL(origin).origin; } catch (_e) { /* 已是 origin */ } }
-        return isAllowed(permission, origin);
+        const urlOrOrigin = requestingOrigin || (details && details.requestingUrl) || null;
+        return isPermissionAllowed(permission, urlOrOrigin, config.serverUrl);
       });
+    }
+
+    // 平台菜单：macOS 保留最小应用菜单与标准 Edit 角色（恢复 Cmd+C/V/X/A/Z），Win/Linux 维持无菜单栏
+    function installApplicationMenu() {
+      const template = buildApplicationMenuTemplate(process.platform, {
+        appName: 'ZBSwork',
+        onAbout: showAbout,
+      });
+      Menu.setApplicationMenu(template ? Menu.buildFromTemplate(template) : null);
     }
 
     // 把窗口叫到前面（second-instance 与网页端 focusWindow 共用）
     function focusMainWindow() {
-      if (!mainWindow) return;
+      if (!mainWindow || mainWindow.isDestroyed()) return;
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
       mainWindow.focus();
@@ -96,7 +145,7 @@ if (!process.env.NODE_TEST) {
     app.on('second-instance', focusMainWindow);
     ipcMain.on('zbs:focus-window', focusMainWindow);
 
-    // 关于对话框（右键菜单也用它）
+    // 关于对话框（右键菜单与 macOS 应用菜单共用）
     function showAbout() {
       dialog.showMessageBox(mainWindow, {
         type: 'info',
@@ -108,10 +157,39 @@ if (!process.env.NODE_TEST) {
       });
     }
 
-    // 所有"去服务器页"的唯一入口：先取消未触发的崩溃重载定时器
+    // 所有"去服务器页"的唯一入口：清理所有待定定时器并启动导航超时保护
     function goServer() {
-      if (crashTimer) { clearTimeout(crashTimer); crashTimer = null; }
-      mainWindow.loadURL(config.serverUrl);
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+      clearPendingTimers();
+      navStartedAt = Date.now();
+      navTimeoutTimer = setTimeout(() => {
+        navTimeoutTimer = null;
+        if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+        if (mainWindow.webContents.isLoading()) {
+          faultLog.log('nav-timeout', { url: config.serverUrl, timeoutMs: NAV_TIMEOUT_MS });
+          try { mainWindow.webContents.stop(); } catch (_e) { /* 忽略 */ }
+          showErrorPage('TIMEOUT');
+        }
+      }, NAV_TIMEOUT_MS);
+      mainWindow.loadURL(config.serverUrl).catch((e) => {
+        // ERR_ABORTED(-3) 等由 did-fail-load 或超时逻辑处理，不抛未处理拒绝
+        if (e && e.errno !== -3 && e.code !== 'ERR_ABORTED') {
+          faultLog.log('load-url-error', { code: e.code || e.errno || 'unknown', message: e.message || String(e) });
+        }
+      });
+    }
+
+    // 无响应态恢复：先 forcefullyCrashRenderer() 强杀死锁渲染进程，
+    // 等 render-process-gone（或兜底超时 / 同步抛错）后再由状态机调 goServer() 重建新进程
+    function forceReloadServer(reason) {
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+      if (forceCrash.isPending()) {
+        forceCrash.upgradePendingToReload(reason);
+        return;
+      }
+      clearPendingTimers();
+      isUnresponsive = false;
+      forceCrash.trigger('reload', reason);
     }
 
     // ---- 窗口记忆（userData/window-state.json） ----
@@ -125,7 +203,7 @@ if (!process.env.NODE_TEST) {
     }
 
     function saveWindowState() {
-      if (!mainWindow) return;
+      if (!mainWindow || mainWindow.isDestroyed()) return;
       try {
         const p = path.join(app.getPath('userData'), 'window-state.json');
         fs.writeFileSync(p, JSON.stringify({
@@ -162,13 +240,13 @@ if (!process.env.NODE_TEST) {
 
     // ---- 页内查找窗口 ----
     function positionFindWindow() {
-      if (!mainWindow || !findWindow) return;
+      if (!mainWindow || mainWindow.isDestroyed() || !findWindow || findWindow.isDestroyed()) return;
       const b = mainWindow.getBounds();
       findWindow.setPosition(b.x + b.width - 368, b.y + 8);
     }
 
     function openFindWindow() {
-      if (findWindow) { findWindow.focus(); return; }
+      if (findWindow && !findWindow.isDestroyed()) { findWindow.focus(); return; }
       const owner = mainWindow; // 创建时绑定的主窗口：closed 回调里只对它操作，防止主窗口先销毁
       findWindow = new BrowserWindow({
         parent: mainWindow,
@@ -196,7 +274,7 @@ if (!process.env.NODE_TEST) {
     }
 
     function closeFindWindow() {
-      if (findWindow) findWindow.close(); // closed 事件里负责清状态
+      if (findWindow && !findWindow.isDestroyed()) findWindow.close(); // closed 事件里负责清状态
     }
 
     // 所有窗口统一加固：拦危险键 + 弹窗路由 + 弹出来的子窗口递归加固。
@@ -206,7 +284,9 @@ if (!process.env.NODE_TEST) {
         if (shouldBlockInput(input, process.platform)) event.preventDefault();
       });
       win.webContents.setWindowOpenHandler(({ url, disposition }) => {
-        const route = routeWindowOpen(url, config.serverUrl, disposition);
+        let currentUrl = '';
+        try { currentUrl = win.webContents.getURL(); } catch (_e) { currentUrl = ''; }
+        const route = routeWindowOpen(url, config.serverUrl, disposition, currentUrl);
         if (route === 'child') {
           return {
             action: 'allow',
@@ -219,32 +299,91 @@ if (!process.env.NODE_TEST) {
           };
         }
         if (route === 'external') {
-          // 本机没有对应程序（如 mailto:/tel: 无邮件/拨号程序）时 openExternal 会异步失败：只记录，不让未处理的拒绝冒出来（Codex 27 必须改）
+          // 本机没有对应程序（如 mailto:/tel: 无邮件/拨号程序）时 openExternal 会异步失败：只记录，不让未处理的拒绝冒出来
           shell.openExternal(url).catch((e) => {
-            console.error('[zbswork] 交系统程序打开失败：', url, e && e.message ? e.message : e);
+            const msg = e && e.message ? e.message : String(e);
+            console.error('[zbswork] 交系统程序打开失败：', url, msg);
+            faultLog.log('external-open-failed', { url, message: msg });
           });
           return { action: 'deny' };
         }
-        return { action: 'deny' }; // R3：其他协议什么都不发生，绝不 shell.openExternal
+        return { action: 'deny' }; // R2 重复/空链接 或 R3 其他协议：什么都不发生，绝不 shell.openExternal
       });
       win.webContents.on('did-create-window', (child) => hardenWindow(child));
     }
 
     function showErrorPage(errorCode) {
-      if (crashTimer) { clearTimeout(crashTimer); crashTimer = null; }
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+      clearPendingTimers();
+      navStartedAt = null;
       mainWindow.loadFile(path.join(__dirname, 'error.html'), {
         query: { code: String(errorCode || '') },
-      });
+      }).catch(() => {});
     }
 
-    function handleCrash() {
+    function handleCrash(reason) {
       crashCount += 1;
       if (crashCount >= 3) {
-        showErrorPage();
+        showErrorPage(reason);
         return;
       }
       if (crashTimer) clearTimeout(crashTimer);
-      crashTimer = setTimeout(() => goServer(), 1000);
+      crashTimer = setTimeout(() => {
+        crashTimer = null;
+        goServer();
+      }, 1000);
+    }
+
+    // 启动白屏探测自救（BUG-10 壳侧）：服务器页 did-finish-load 后延迟探测 #root 是否为空，
+    // 仍为空且未超次数上限时清 HTTP 缓存并重载一次，记录至本地故障日志
+    function scheduleBlankScreenCheck(loadedUrl) {
+      if (blankCheckTimer) { clearTimeout(blankCheckTimer); blankCheckTimer = null; }
+      blankCheckTimer = setTimeout(async () => {
+        blankCheckTimer = null;
+        if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+        if (isUnresponsive) return;
+        let currentUrl = '';
+        try { currentUrl = mainWindow.webContents.getURL(); } catch (_e) { return; }
+        if (!isSameOrigin(currentUrl, config.serverUrl)) return;
+        let snap = null;
+        try {
+          snap = await mainWindow.webContents.executeJavaScript(`(() => {
+            const root = document.getElementById('root');
+            const body = document.body;
+            return {
+              hasRoot: Boolean(root),
+              rootChildCount: root ? root.childElementCount : 0,
+              rootTextLength: root ? (root.textContent || '').trim().length : 0,
+              bodyChildCount: body ? body.childElementCount : 0,
+              bodyTextLength: body ? (body.textContent || '').trim().length : 0,
+            };
+          })()`, true);
+        } catch (_e) {
+          return;
+        }
+        if (!isBlankDomSnapshot(snap)) {
+          blankRecoveryCount = 0;
+          return;
+        }
+        if (shouldRecoverBlankScreen(blankRecoveryCount, MAX_BLANK_RECOVERIES)) {
+          blankRecoveryCount += 1;
+          faultLog.log('blank-screen-recovery', {
+            attempt: blankRecoveryCount,
+            max: MAX_BLANK_RECOVERIES,
+            url: currentUrl || loadedUrl,
+          });
+          try {
+            await mainWindow.webContents.session.clearCache();
+          } catch (_e) { /* 清缓存失败仍尝试无缓存重载 */ }
+          if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+          mainWindow.webContents.reloadIgnoringCache();
+        } else {
+          faultLog.log('blank-screen-give-up', {
+            attempts: blankRecoveryCount,
+            url: currentUrl || loadedUrl,
+          });
+        }
+      }, BLANK_CHECK_DELAY_MS);
     }
 
     function createWindow() {
@@ -269,7 +408,13 @@ if (!process.env.NODE_TEST) {
       mainWindow.on('close', saveWindowState);
       mainWindow.on('move', positionFindWindow);
       mainWindow.on('resize', positionFindWindow);
-      mainWindow.on('closed', () => { mainWindow = null; closeFindWindow(); });
+      mainWindow.on('closed', () => {
+        clearPendingTimers();
+        isUnresponsive = false;
+        navStartedAt = null;
+        mainWindow = null;
+        closeFindWindow();
+      });
 
       // 统一加固：拦危险键 + 弹窗路由（弹窗带显式安全参数，不带 preload）+ 子窗口递归
       hardenWindow(mainWindow, { parent: mainWindow, width: 720, height: 800 });
@@ -277,8 +422,27 @@ if (!process.env.NODE_TEST) {
       // 主窗口专属：mapShortcut（重载/缩放/全屏/后退/查找/收查找条）。危险键拦截在 hardenWindow 里。
       mainWindow.webContents.on('before-input-event', (event, input) => {
         const action = mapShortcut(input, process.platform);
-        if (action === 'reload') { event.preventDefault(); mainWindow.webContents.reload(); }
-        else if (action === 'zoomIn' || action === 'zoomOut') {
+        if (action === 'reload') {
+          event.preventDefault();
+          if (forceCrash.isPending()) {
+            forceCrash.upgradePendingToReload('user-reload-while-force-crashing');
+            return;
+          }
+          const wc = mainWindow.webContents;
+          let currentUrl = '';
+          try { currentUrl = wc.getURL(); } catch (_e) { currentUrl = ''; }
+          const decision = decideReloadAction({ isUnresponsive, currentUrl });
+          if (decision === 'force-crash-and-go-server') {
+            forceReloadServer('user-reload-while-unresponsive');
+          } else if (decision === 'stop-and-go-server') {
+            if (wc.isLoading()) {
+              try { wc.stop(); } catch (_e) { /* 忽略 */ }
+            }
+            goServer();
+          } else {
+            wc.reload();
+          }
+        } else if (action === 'zoomIn' || action === 'zoomOut') {
           event.preventDefault();
           const wc = mainWindow.webContents;
           const z = Math.max(-3, Math.min(3, wc.getZoomLevel() + (action === 'zoomIn' ? 0.5 : -0.5)));
@@ -298,13 +462,84 @@ if (!process.env.NODE_TEST) {
         } else if (action === 'find') { event.preventDefault(); openFindWindow(); }
         else if (action === 'escape') { if (findWindow) { event.preventDefault(); closeFindWindow(); } }
       });
-      mainWindow.webContents.on('render-process-gone', handleCrash);
-      mainWindow.webContents.on('unresponsive', handleCrash);
-      mainWindow.webContents.on('did-finish-load', () => {
-        // 自动重载成功（回到服务器页面）→ 崩溃计数清零
-        if (mainWindow.webContents.getURL().startsWith(config.serverUrl)) crashCount = 0;
+
+      mainWindow.webContents.on('render-process-gone', (_e, details) => {
+        const reason = details && details.reason ? details.reason : 'unknown';
+        const exitCode = details && typeof details.exitCode === 'number' ? details.exitCode : null;
+        if (forceCrash.onRenderProcessGone({ reason, exitCode })) {
+          return;
+        }
+        isUnresponsive = false;
+        faultLog.log('render-process-gone', { reason, exitCode });
+        handleCrash(reason);
       });
-      mainWindow.webContents.on('did-fail-load', (_e, errorCode, _desc, _url, isMainFrame) => {
+
+      mainWindow.webContents.on('unresponsive', () => {
+        if (forceCrash.isPending()) return;
+        isUnresponsive = true;
+        faultLog.log('unresponsive', { crashCount });
+        if (crashTimer) clearTimeout(crashTimer);
+        crashTimer = setTimeout(() => {
+          crashTimer = null;
+          if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+          if (!isUnresponsive || forceCrash.isPending()) return;
+          crashCount += 1;
+          if (crashCount >= 3) {
+            isUnresponsive = false;
+            clearPendingTimers();
+            forceCrash.trigger('error-unresponsive', `unresponsive-give-up-${crashCount}`);
+            return;
+          }
+          forceReloadServer('unresponsive-timeout');
+        }, UNRESPONSIVE_RECOVER_MS);
+      });
+
+      mainWindow.webContents.on('responsive', () => {
+        const wasUnresponsive = isUnresponsive;
+        const cancelledTimer = Boolean(crashTimer);
+        isUnresponsive = false;
+        if (crashTimer) { clearTimeout(crashTimer); crashTimer = null; }
+        faultLog.log('responsive', { wasUnresponsive, cancelledTimer });
+      });
+
+      mainWindow.webContents.on('did-start-loading', () => {
+        if (blankCheckTimer) { clearTimeout(blankCheckTimer); blankCheckTimer = null; }
+      });
+
+      mainWindow.webContents.on('did-finish-load', () => {
+        if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+        if (navTimeoutTimer) { clearTimeout(navTimeoutTimer); navTimeoutTimer = null; }
+        navStartedAt = null;
+        isUnresponsive = false;
+        const currentUrl = mainWindow.webContents.getURL();
+        // 自动重载成功（回到严格同源服务器页面）→ 崩溃计数清零 + 延迟白屏探测
+        if (isSameOrigin(currentUrl, config.serverUrl)) {
+          crashCount = 0;
+          scheduleBlankScreenCheck(currentUrl);
+        }
+      });
+
+      mainWindow.webContents.on('did-fail-load', (_e, errorCode, desc, url, isMainFrame) => {
+        if (forceCrash.isPending()) {
+          if (errorCode !== -3) {
+            faultLog.log('did-fail-load', {
+              errorCode,
+              errorDescription: desc,
+              url,
+              isMainFrame,
+              ignored: 'force-crash-pending',
+            });
+          }
+          return;
+        }
+        if (errorCode !== -3) {
+          faultLog.log('did-fail-load', { errorCode, errorDescription: desc, url, isMainFrame });
+        }
+        if (isMainFrame && navTimeoutTimer) {
+          clearTimeout(navTimeoutTimer);
+          navTimeoutTimer = null;
+          navStartedAt = null;
+        }
         if (shouldShowErrorPage(errorCode, isMainFrame)) showErrorPage(errorCode);
       });
 
@@ -318,10 +553,22 @@ if (!process.env.NODE_TEST) {
       goServer();
     }
 
-    // 出错页的 retry 只认主窗口；正在加载时忽略，避免和 10 秒自动重试叠加
-    ipcMain.on('zbswork:retry', (event) => {
-      if (!mainWindow || event.sender !== mainWindow.webContents) return;
-      if (mainWindow.webContents.isLoading()) return;
+    // 出错页的 retry 只认主窗口；打破 isLoading() 死扣：手动重试或卡住超阈值时先 stop() 再 goServer()
+    ipcMain.on('zbswork:retry', (event, opts) => {
+      if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
+      if (forceCrash.isPending()) return;
+      const wc = mainWindow.webContents;
+      const elapsed = navStartedAt === null ? null : Date.now() - navStartedAt;
+      const decision = decideRetryAction({
+        isLoading: wc.isLoading(),
+        elapsedSinceNavStartMs: elapsed,
+        retryStopAfterMs: RETRY_STOP_AFTER_MS,
+        manual: Boolean(opts && opts.manual),
+      });
+      if (decision === 'wait') return;
+      if (decision === 'stop-and-go') {
+        try { wc.stop(); } catch (_e) { /* 忽略 */ }
+      }
       goServer();
     });
 
@@ -332,6 +579,7 @@ if (!process.env.NODE_TEST) {
 
     app.whenReady().then(() => {
       installPermissionHandler();
+      installApplicationMenu();
       // 中文右键菜单；不带 Google 搜索/查词/开发者工具项
       contextMenu({
         showCopyImageAddress: true,
@@ -360,15 +608,26 @@ if (!process.env.NODE_TEST) {
         if (findWindow && event.sender === findWindow.webContents) closeFindWindow();
       });
 
-      // 下载提示：存到系统下载目录，重名按 "名 (1).扩展名" 递增
+      // 下载提示：存到系统下载目录，重名按 "名 (1).扩展名" 递增；并发同名用内存预留集合防相互覆盖
       // completedDownloads：已完成下载的 savePath 白名单，"打开文件夹"只认这里面的路径，
       // 网页伪造消息不能借这条通道打开任意路径
       const completedDownloads = new Set();
+      const reservedDownloads = new Set();
       session.defaultSession.on('will-download', (_e, item) => {
         const dir = app.getPath('downloads');
-        const savePath = uniqueDownloadPath(dir, item.getFilename(), (p) => fs.existsSync(p));
+        const { savePath: rawSavePath, release } = reserveDownloadPath(
+          dir,
+          item.getFilename(),
+          reservedDownloads,
+          (p) => fs.existsSync(p),
+          process.platform,
+        );
+        const savePath = path.normalize(rawSavePath);
         item.setSavePath(savePath);
         item.once('done', (_ev, state) => {
+          release();
+          // 用户主动取消：不弹"下载失败"系统通知与窗口提示条
+          if (state === 'cancelled') return;
           if (state === 'completed') {
             completedDownloads.add(savePath);
             const n = new Notification({ title: '下载完成', body: path.basename(savePath) });
@@ -378,9 +637,10 @@ if (!process.env.NODE_TEST) {
             new Notification({ title: '下载失败', body: item.getFilename() }).show();
           }
           // 窗口内也弹提示条（preload 里渲染）；成功才带 savePath 供"打开文件夹"用
-          if (mainWindow && !mainWindow.webContents.isDestroyed()) {
+          const toast = downloadToast(state, path.basename(savePath));
+          if (toast && mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
             mainWindow.webContents.send('zbs:download-done', {
-              ...downloadToast(state, path.basename(savePath)),
+              ...toast,
               savePath: state === 'completed' ? savePath : null,
             });
           }
@@ -389,7 +649,7 @@ if (!process.env.NODE_TEST) {
 
       // 提示条里"打开文件夹"按钮：只认主窗口发来的、且路径在完成白名单里
       ipcMain.on('zbs:open-download', (event, savePath) => {
-        if (!mainWindow || event.sender !== mainWindow.webContents) return;
+        if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
         if (typeof savePath !== 'string' || !completedDownloads.has(savePath)) return;
         shell.showItemInFolder(savePath);
       });

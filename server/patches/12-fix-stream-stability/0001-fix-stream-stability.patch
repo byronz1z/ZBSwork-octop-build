@@ -1,0 +1,1068 @@
+diff --git a/dashboard/src/main.tsx b/dashboard/src/main.tsx
+index 359b775753cfb8c929ed7cbfe09641378cc6acf3..420daee69ecb6c6d000c94b2f52d2886ef7df487 100644
+--- a/dashboard/src/main.tsx
++++ b/dashboard/src/main.tsx
+@@ -12,6 +12,7 @@ import {
+   isChunkLoadError,
+   tryReloadOnStaleChunk,
+ } from "./utils/reloadOnStaleChunk";
++import { renderBootFallback } from "./utils/bootFallback";
+ 
+ if (typeof window !== "undefined") {
+   // Recover from post-deploy stale hashed chunks (white screen → soft reload).
+@@ -69,6 +70,7 @@ void initI18n()
+   .catch((err: unknown) => {
+     if (tryReloadOnStaleChunk(err)) return;
+     console.error("[initI18n]", err);
++    renderBootFallback(err);
+   });
+ 
+ // Register SW as early as possible so beforeinstallprompt can fire before the
+diff --git a/dashboard/src/pages/Chat/hooks/chatStore.streamStability.test.ts b/dashboard/src/pages/Chat/hooks/chatStore.streamStability.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e33e4fb953c63545ecc048cdfdda8b7e352c0d78
+--- /dev/null
++++ b/dashboard/src/pages/Chat/hooks/chatStore.streamStability.test.ts
+@@ -0,0 +1,258 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import {
++  STREAM_PAINT_MS,
++  appendUserMessage,
++  cancelStream,
++  getSnapshot,
++  ingestHarnessChunk,
++  removeSession,
++  sendTurn,
++  setHistoryPage,
++  subscribe,
++  type ChatMessage,
++} from "./chatStore";
++
++const SESSION = "test-stream-stability";
++
++function makeMessage(id: string, content: string): ChatMessage {
++  return {
++    id,
++    role: "user",
++    content,
++    timestamp: Date.now(),
++  };
++}
++
++describe("chatStore streaming frame coalescing", () => {
++  beforeEach(() => {
++    vi.useFakeTimers();
++    vi.setSystemTime(new Date("2026-11-27T10:00:00.000Z"));
++  });
++
++  afterEach(() => {
++    removeSession(SESSION);
++    vi.useRealTimers();
++    vi.unstubAllGlobals();
++  });
++
++  it("coalesces rapid streaming deltas into at most one paint per STREAM_PAINT_MS", () => {
++    expect(STREAM_PAINT_MS).toBe(50);
++
++    const listener = vi.fn();
++    const unsub = subscribe(SESSION, listener);
++    try {
++      // First token paints on leading edge (zero added TTFT latency).
++      ingestHarnessChunk(SESSION, { type: "token", content: "A" });
++      expect(listener).toHaveBeenCalledTimes(1);
++      expect(getSnapshot(SESSION).messages[0]?.content).toBe("A");
++
++      // Burst of 10 deltas within the same 50ms window must coalesce.
++      for (let i = 0; i < 10; i++) {
++        vi.advanceTimersByTime(3);
++        ingestHarnessChunk(SESSION, { type: "token", content: String(i) });
++      }
++      expect(listener).toHaveBeenCalledTimes(1);
++      expect(getSnapshot(SESSION).messages[0]?.content).toBe("A");
++
++      // Advancing to the 50ms boundary flushes all 10 deltas in one paint.
++      vi.advanceTimersByTime(20);
++      expect(listener).toHaveBeenCalledTimes(2);
++      expect(getSnapshot(SESSION).messages[0]?.content).toBe("A0123456789");
++
++      // No extra trailing paint when idle.
++      vi.advanceTimersByTime(200);
++      expect(listener).toHaveBeenCalledTimes(2);
++    } finally {
++      unsub();
++    }
++  });
++
++  it("flushes immediately on done without dropping the tail characters", () => {
++    const listener = vi.fn();
++    const unsub = subscribe(SESSION, listener);
++    try {
++      ingestHarnessChunk(SESSION, { type: "token", content: "你好" });
++      expect(listener).toHaveBeenCalledTimes(1);
++
++      vi.advanceTimersByTime(10);
++      ingestHarnessChunk(SESSION, { type: "token", content: "，世界" });
++      ingestHarnessChunk(SESSION, { type: "token", content: "！" });
++      // Still within 50ms window — throttled.
++      expect(listener).toHaveBeenCalledTimes(1);
++
++      // Terminal done must flush immediately with all pending tail tokens.
++      ingestHarnessChunk(SESSION, { type: "done" });
++      expect(listener).toHaveBeenCalledTimes(2);
++      const snap = getSnapshot(SESSION);
++      expect(snap.messages[0]?.content).toBe("你好，世界！");
++      expect(snap.messages[0]?.status).toBe("done");
++
++      // Pending timer was cancelled — advancing timers must not fire again.
++      vi.advanceTimersByTime(100);
++      expect(listener).toHaveBeenCalledTimes(2);
++    } finally {
++      unsub();
++    }
++  });
++
++  it("flushes immediately on error without losing buffered tail text", () => {
++    const listener = vi.fn();
++    const unsub = subscribe(SESSION, listener);
++    try {
++      ingestHarnessChunk(SESSION, { type: "token", content: "前半段" });
++      vi.advanceTimersByTime(5);
++      ingestHarnessChunk(SESSION, { type: "token", content: "尾字" });
++      expect(listener).toHaveBeenCalledTimes(1);
++
++      ingestHarnessChunk(SESSION, {
++        type: "error",
++        message: "upstream timeout",
++      });
++      expect(listener).toHaveBeenCalledTimes(2);
++      const msgs = getSnapshot(SESSION).messages;
++      expect(msgs[0]?.content).toBe("前半段尾字");
++      expect(msgs[1]?.status).toBe("error");
++      expect(msgs[1]?.content).toBe("upstream timeout");
++    } finally {
++      unsub();
++    }
++  });
++
++  it("flushes immediately on cancelStream without losing buffered text", () => {
++    const listener = vi.fn();
++    const unsub = subscribe(SESSION, listener);
++    try {
++      ingestHarnessChunk(SESSION, { type: "token", content: "生成中" });
++      vi.advanceTimersByTime(5);
++      ingestHarnessChunk(SESSION, { type: "token", content: "最后一句" });
++      expect(listener).toHaveBeenCalledTimes(1);
++
++      cancelStream(SESSION);
++      expect(listener).toHaveBeenCalledTimes(2);
++      const afterCancel = getSnapshot(SESSION).messages;
++      expect(afterCancel[0]?.content).toBe("生成中最后一句");
++      expect(afterCancel[0]?.status).toBe("done");
++
++      vi.advanceTimersByTime(100);
++      expect(listener).toHaveBeenCalledTimes(2);
++    } finally {
++      unsub();
++    }
++  });
++
++  it("cancels pending paint timers on removeSession", () => {
++    const listener = vi.fn();
++    const unsub = subscribe(SESSION, listener);
++    try {
++      ingestHarnessChunk(SESSION, { type: "token", content: "start" });
++      vi.advanceTimersByTime(5);
++      ingestHarnessChunk(SESSION, { type: "token", content: "pending" });
++      expect(listener).toHaveBeenCalledTimes(1);
++
++      removeSession(SESSION);
++      vi.advanceTimersByTime(100);
++      expect(listener).toHaveBeenCalledTimes(1);
++    } finally {
++      unsub();
++    }
++  });
++});
++
++describe("chatStore protects streaming replies from history overwrite", () => {
++  afterEach(() => {
++    removeSession(SESSION);
++    vi.unstubAllGlobals();
++  });
++
++  it("blocks setHistoryPage while a streaming assistant message is active", () => {
++    appendUserMessage(SESSION, makeMessage("u1", "请帮我写代码"));
++    ingestHarnessChunk(SESSION, { type: "token", content: "正在生成回复..." });
++    ingestHarnessChunk(SESSION, {
++      type: "usage",
++      usage: { input_tokens: 100, output_tokens: 20 },
++    });
++
++    // Unpersisted server history (only has the user message, no streaming reply)
++    setHistoryPage(SESSION, [makeMessage("u1", "请帮我写代码")], {
++      hasMore: false,
++      nextOffset: 1,
++    });
++
++    const snap = getSnapshot(SESSION);
++    expect(snap.messages).toHaveLength(2);
++    expect(snap.messages[1]?.content).toBe("正在生成回复...");
++    expect(snap.messages[1]?.status).toBe("streaming");
++    expect(snap.runUsage?.output_tokens).toBe(20);
++
++    // After stream finishes, normal history refresh succeeds.
++    ingestHarnessChunk(SESSION, { type: "done" });
++    setHistoryPage(
++      SESSION,
++      [
++        makeMessage("u1", "请帮我写代码"),
++        {
++          id: "a1-persisted",
++          role: "assistant",
++          content: "完整落库回复",
++          status: "done",
++          timestamp: Date.now(),
++        },
++      ],
++      { hasMore: false, nextOffset: 2 },
++    );
++
++    const afterDone = getSnapshot(SESSION);
++    expect(afterDone.messages).toHaveLength(2);
++    expect(afterDone.messages[1]?.content).toBe("完整落库回复");
++    expect(afterDone.historyHydrated).toBe(true);
++  });
++
++  it("blocks setHistoryPage while sendTurn is in flight before first token arrives", async () => {
++    class HangingSocket {
++      static readonly CONNECTING = 0;
++      static readonly OPEN = 1;
++      static readonly CLOSING = 2;
++      static readonly CLOSED = 3;
++      readyState = HangingSocket.CONNECTING;
++      onopen: (() => void) | null = null;
++      onmessage: ((event: { data: string }) => void) | null = null;
++      onerror: (() => void) | null = null;
++      onclose: (() => void) | null = null;
++      constructor(_url: string) {
++        queueMicrotask(() => {
++          this.readyState = HangingSocket.OPEN;
++          this.onopen?.();
++        });
++      }
++      send(_data: string) {}
++      close() {
++        this.readyState = HangingSocket.CLOSED;
++        this.onclose?.();
++      }
++    }
++    vi.stubGlobal("WebSocket", HangingSocket);
++
++    appendUserMessage(SESSION, makeMessage("u-live", "长任务"));
++    const turn = sendTurn(SESSION, "长任务", "agent-1", "", undefined, undefined, null, SESSION);
++    expect(getSnapshot(SESSION).isStreaming).toBe(true);
++
++    // Pull-to-refresh returns stale history missing the new user turn.
++    setHistoryPage(SESSION, [makeMessage("u-old", "旧消息")], {
++      hasMore: false,
++      nextOffset: 1,
++    });
++
++    expect(getSnapshot(SESSION).messages.map((m) => m.id)).toEqual(["u-live"]);
++
++    cancelStream(SESSION);
++    await turn;
++
++    // Once cancelled / idle, normal history loading works again.
++    setHistoryPage(SESSION, [makeMessage("u-old", "旧消息")], {
++      hasMore: true,
++      nextOffset: 25,
++    });
++    expect(getSnapshot(SESSION).messages.map((m) => m.id)).toEqual(["u-old"]);
++    expect(getSnapshot(SESSION).historyHasMore).toBe(true);
++  });
++});
+diff --git a/dashboard/src/pages/Chat/hooks/chatStore.ts b/dashboard/src/pages/Chat/hooks/chatStore.ts
+index 2a0623def5c3b4388a4881d943cc0edcacda290d..b32a8f652534e72e6fcc62709bfd92871ac9dfeb 100644
+--- a/dashboard/src/pages/Chat/hooks/chatStore.ts
++++ b/dashboard/src/pages/Chat/hooks/chatStore.ts
+@@ -492,7 +492,39 @@ function getOrCreate(sessionId: string): SessionStreamState {
+   return state;
+ }
+ 
++/** Coalesce high-frequency stream deltas (token/reasoning/tool args) to <= 20fps. */
++export const STREAM_PAINT_MS = 50;
++
++type StreamPaintState = {
++  timer: ReturnType<typeof setTimeout> | null;
++  lastPaintAt: number;
++  pending: boolean;
++};
++
++const streamPaintStates = new WeakMap<SessionStreamState, StreamPaintState>();
++
++function getStreamPaintState(state: SessionStreamState): StreamPaintState {
++  let entry = streamPaintStates.get(state);
++  if (!entry) {
++    entry = { timer: null, lastPaintAt: 0, pending: false };
++    streamPaintStates.set(state, entry);
++  }
++  return entry;
++}
++
++function clearPendingPaint(state: SessionStreamState): void {
++  const entry = streamPaintStates.get(state);
++  if (!entry) return;
++  if (entry.timer !== null) {
++    clearTimeout(entry.timer);
++    entry.timer = null;
++  }
++  entry.pending = false;
++}
++
+ function notify(state: SessionStreamState) {
++  clearPendingPaint(state);
++  getStreamPaintState(state).lastPaintAt = Date.now();
+   // Rebuild the snapshot reference so useSyncExternalStore sees the change.
+   state._snapshot = buildSnapshot(state);
+   for (const fn of state.listeners) {
+@@ -504,6 +536,29 @@ function notify(state: SessionStreamState) {
+   }
+ }
+ 
++function scheduleStreamNotify(state: SessionStreamState) {
++  // No UI subscriber attached: keep snapshot synchronously fresh with zero render cost.
++  if (state.listeners.size === 0) {
++    clearPendingPaint(state);
++    state._snapshot = buildSnapshot(state);
++    return;
++  }
++  const entry = getStreamPaintState(state);
++  const elapsed = Date.now() - entry.lastPaintAt;
++  if (entry.timer === null && elapsed >= STREAM_PAINT_MS) {
++    notify(state);
++    return;
++  }
++  entry.pending = true;
++  if (entry.timer !== null) return;
++  const delay = Math.max(0, STREAM_PAINT_MS - elapsed);
++  entry.timer = setTimeout(() => {
++    entry.timer = null;
++    if (!entry.pending) return;
++    notify(state);
++  }, delay);
++}
++
+ function beginStream(state: SessionStreamState, sessionId: string): void {
+   clearAllLiveSpeakers(state);
+   state.thinkingStartedAt = Date.now();
+@@ -652,6 +707,13 @@ export function subscribe(sessionId: string, listener: () => void): () => void {
+   state.listeners.add(listener);
+   return () => {
+     state.listeners.delete(listener);
++    if (state.listeners.size === 0) {
++      const entry = streamPaintStates.get(state);
++      if (entry?.pending) {
++        clearPendingPaint(state);
++        state._snapshot = buildSnapshot(state);
++      }
++    }
+   };
+ }
+ 
+@@ -690,6 +752,11 @@ export function setHistoryPage(
+   opts: { hasMore: boolean; nextOffset: number; nextCursor?: string | null },
+ ) {
+   const state = getOrCreate(sessionId);
++  // Protect in-flight streaming replies from being clobbered by unpersisted
++  // server history (e.g. pull-to-refresh or a stale loadHistory response).
++  if (state.isStreaming || hasStreamingMessages(state)) {
++    return;
++  }
+   state.messages = messages;
+   state.runUsage = null;
+   usageSamplesByState.delete(state);
+@@ -906,7 +973,8 @@ export function cancelStream(sessionId: string) {
+       m.status === "streaming" ? { ...m, status: "done" as const } : m,
+     );
+   }
+-  if (hadAbort || hadStreaming || hadStreamingMsgs || hadLive) {
++  const hadPendingPaint = Boolean(streamPaintStates.get(state)?.pending);
++  if (hadAbort || hadStreaming || hadStreamingMsgs || hadLive || hadPendingPaint) {
+     notify(state);
+   }
+ }
+@@ -915,6 +983,7 @@ export function cancelStream(sessionId: string) {
+ export function removeSession(sessionId: string) {
+   const state = sessionStates.get(sessionId);
+   if (state) {
++    clearPendingPaint(state);
+     state.abortController?.abort();
+     sessionStates.delete(sessionId);
+   }
+@@ -1418,7 +1487,19 @@ function handleHarnessChunk(
+       );
+       break;
+   }
+-  notify(state);
++  const shouldCoalesce =
++    (chunk.type === "token" &&
++      !(Boolean(chunk.team_snapshot) && !chunk.team_live)) ||
++    chunk.type === "reasoning" ||
++    chunk.type === "tool_call_chunk" ||
++    chunk.type === "usage" ||
++    chunk.type === "state_update" ||
++    chunk.type === "state_snapshot";
++  if (shouldCoalesce) {
++    scheduleStreamNotify(state);
++  } else {
++    notify(state);
++  }
+ }
+ 
+ /** Attach the latest decision result to this turn. One chip, updated in place. */
+diff --git a/dashboard/src/utils/bootFallback.test.ts b/dashboard/src/utils/bootFallback.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..280826c754f917e8c9291faf34479691a116ed01
+--- /dev/null
++++ b/dashboard/src/utils/bootFallback.test.ts
+@@ -0,0 +1,101 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { BOOT_FALLBACK_ID, renderBootFallback } from "./bootFallback";
++import {
++  CHUNK_RECOVERY_BANNER_ID,
++  clearChunkReloadFlag,
++  renderChunkRecoveryBanner,
++} from "./reloadOnStaleChunk";
++
++function stubReload() {
++  const reload = vi.fn();
++  Object.defineProperty(window, "location", {
++    configurable: true,
++    value: { reload },
++  });
++  return reload;
++}
++
++describe("renderBootFallback", () => {
++  let reload: ReturnType<typeof vi.fn>;
++
++  beforeEach(() => {
++    document.body.innerHTML = '<div id="root"><div id="octop-boot">加载中…</div></div>';
++    sessionStorage.clear();
++    clearChunkReloadFlag();
++    reload = stubReload();
++  });
++
++  afterEach(() => {
++    clearChunkReloadFlag();
++    document.body.innerHTML = "";
++    vi.restoreAllMocks();
++  });
++
++  it("replaces #root boot splash with Chinese fallback UI and reload button", async () => {
++    renderBootFallback(new Error("i18n bundle fetch failed"));
++
++    expect(document.getElementById("octop-boot")).toBeNull();
++    const fallback = document.getElementById(BOOT_FALLBACK_ID);
++    expect(fallback).not.toBeNull();
++    expect(fallback?.textContent).toContain("页面初始化失败");
++    expect(fallback?.textContent).toContain("i18n bundle fetch failed");
++
++    const btn = fallback?.querySelector("button");
++    expect(btn?.textContent).toBe("重新加载");
++    btn?.click();
++    await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
++  });
++
++  it("escapes error detail safely via textContent (no HTML injection)", () => {
++    renderBootFallback(new Error('<img src=x onerror="alert(1)">'));
++    const fallback = document.getElementById(BOOT_FALLBACK_ID);
++    expect(fallback?.querySelector("img")).toBeNull();
++    expect(fallback?.textContent).toContain('<img src=x onerror="alert(1)">');
++  });
++
++  it("removes duplicate chunk-recovery banner when full boot fallback renders", () => {
++    renderChunkRecoveryBanner();
++    expect(document.getElementById(CHUNK_RECOVERY_BANNER_ID)).not.toBeNull();
++
++    renderBootFallback(new Error("init failed"));
++    expect(document.getElementById(CHUNK_RECOVERY_BANNER_ID)).toBeNull();
++    expect(document.getElementById(BOOT_FALLBACK_ID)).not.toBeNull();
++  });
++
++  it("triggers fallback page from main.tsx when initI18n rejects", async () => {
++    vi.resetModules();
++    const errorSpy = vi
++      .spyOn(console, "error")
++      .mockImplementation(() => undefined);
++    vi.doMock("../i18n", () => ({
++      initI18n: () => Promise.reject(new Error("network down")),
++    }));
++    vi.doMock("../App.tsx", () => ({
++      default: () => null,
++    }));
++    vi.doMock("../sw-register", () => ({
++      registerSW: vi.fn(),
++    }));
++    vi.doMock("../pwa-prompt", () => ({}));
++
++    try {
++      await import("../main");
++      await vi.waitFor(() => {
++        expect(document.getElementById(BOOT_FALLBACK_ID)).not.toBeNull();
++      });
++      expect(document.getElementById(BOOT_FALLBACK_ID)?.textContent).toContain(
++        "页面初始化失败",
++      );
++      expect(document.getElementById(BOOT_FALLBACK_ID)?.textContent).toContain(
++        "network down",
++      );
++    } finally {
++      errorSpy.mockRestore();
++      vi.doUnmock("../i18n");
++      vi.doUnmock("../App.tsx");
++      vi.doUnmock("../sw-register");
++      vi.doUnmock("../pwa-prompt");
++      vi.resetModules();
++    }
++  });
++});
+diff --git a/dashboard/src/utils/bootFallback.ts b/dashboard/src/utils/bootFallback.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..fa0529079ac469d9def4477a63e9ac94307fe467
+--- /dev/null
++++ b/dashboard/src/utils/bootFallback.ts
+@@ -0,0 +1,125 @@
++import {
++  bustServiceWorkerAndReload,
++  CHUNK_RECOVERY_BANNER_ID,
++  clearChunkReloadFlag,
++} from "./reloadOnStaleChunk";
++
++export const BOOT_FALLBACK_ID = "zbs-boot-fallback";
++
++function formatBootError(error: unknown): string {
++  if (!error) return "";
++  if (error instanceof Error && error.message) return error.message.slice(0, 240);
++  if (typeof error === "string") return error.slice(0, 240);
++  try {
++    return String(error).slice(0, 240);
++  } catch {
++    return "";
++  }
++}
++
++/**
++ * Render a visible Chinese fallback page when early startup (e.g. initI18n)
++ * fails so the user is never stranded on an infinite spinner or blank screen.
++ */
++export function renderBootFallback(
++  error?: unknown,
++  container?: HTMLElement | null,
++): void {
++  if (typeof document === "undefined") return;
++
++  // Avoid stacking the top chunk-recovery banner on top of the full fallback page.
++  document.getElementById(CHUNK_RECOVERY_BANNER_ID)?.remove();
++
++  const target =
++    container ?? document.getElementById("root") ?? document.body ?? null;
++  if (!target) return;
++
++  const isDark =
++    document.documentElement?.getAttribute("data-theme") === "dark";
++
++  const wrapper = document.createElement("div");
++  wrapper.id = BOOT_FALLBACK_ID;
++  wrapper.setAttribute("role", "alert");
++  wrapper.style.cssText = [
++    "min-height:100vh",
++    "box-sizing:border-box",
++    "display:flex",
++    "flex-direction:column",
++    "align-items:center",
++    "justify-content:center",
++    "padding:24px",
++    `background:${isDark ? "#12141c" : "#f7f8fa"}`,
++    `color:${isDark ? "#f3f4f6" : "#1f2937"}`,
++    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif',
++    "text-align:center",
++  ].join(";");
++
++  const card = document.createElement("div");
++  card.style.cssText = [
++    "max-width:420px",
++    "width:100%",
++    "padding:28px 24px",
++    "border-radius:14px",
++    `background:${isDark ? "#1f2230" : "#ffffff"}`,
++    `border:1px solid ${isDark ? "rgba(255,255,255,0.12)" : "#e5e7eb"}`,
++    "box-shadow:0 8px 24px rgba(0,0,0,0.08)",
++  ].join(";");
++
++  const title = document.createElement("h1");
++  title.textContent = "页面初始化失败";
++  title.style.cssText = "margin:0 0 10px;font-size:18px;font-weight:600;";
++
++  const desc = document.createElement("p");
++  desc.textContent =
++    "语言资源或启动脚本未能正常加载，请检查网络连接后点击下方按钮重新加载。";
++  desc.style.cssText = [
++    "margin:0 0 16px",
++    "font-size:14px",
++    "line-height:1.6",
++    `color:${isDark ? "rgba(255,255,255,0.72)" : "#4b5563"}`,
++  ].join(";");
++
++  card.appendChild(title);
++  card.appendChild(desc);
++
++  const detail = formatBootError(error);
++  if (detail) {
++    const code = document.createElement("p");
++    code.textContent = detail;
++    code.style.cssText = [
++      "margin:0 0 18px",
++      "padding:8px 10px",
++      "border-radius:6px",
++      "font-size:12px",
++      "line-height:1.4",
++      "word-break:break-word",
++      `background:${isDark ? "rgba(255,255,255,0.06)" : "#f3f4f6"}`,
++      `color:${isDark ? "rgba(255,255,255,0.65)" : "#6b7280"}`,
++    ].join(";");
++    card.appendChild(code);
++  }
++
++  const button = document.createElement("button");
++  button.type = "button";
++  button.textContent = "重新加载";
++  button.style.cssText = [
++    "padding:8px 20px",
++    "border:none",
++    "border-radius:8px",
++    "background:#e85d75",
++    "color:#ffffff",
++    "font-size:14px",
++    "font-weight:500",
++    "cursor:pointer",
++  ].join(";");
++  button.addEventListener("click", () => {
++    clearChunkReloadFlag();
++    void bustServiceWorkerAndReload();
++  });
++
++  card.appendChild(button);
++  wrapper.appendChild(card);
++
++  target.textContent = "";
++  target.appendChild(wrapper);
++}
+diff --git a/dashboard/src/utils/reloadOnStaleChunk.test.ts b/dashboard/src/utils/reloadOnStaleChunk.test.ts
+index 65f2796cb85502b28de999dc4d46f60c7ec7a765..48b7c9ba0212a82d3c7110689d336f37b883a6be 100644
+--- a/dashboard/src/utils/reloadOnStaleChunk.test.ts
++++ b/dashboard/src/utils/reloadOnStaleChunk.test.ts
+@@ -3,6 +3,7 @@ import { resolve } from "node:path";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import {
+   bustServiceWorkerAndReload,
++  CHUNK_RECOVERY_BANNER_ID,
+   clearChunkReloadFlag,
+   isChunkLoadError,
+   isStylesheetAssetLink,
+@@ -126,6 +127,25 @@ describe("tryReloadOnStaleChunk", () => {
+     expect(mod.tryReloadOnStaleChunk(err)).toBe(false);
+     expect(reload).not.toHaveBeenCalled();
+     expect(sessionStorage.getItem("octop:chunk-reload")).toBeNull();
++
++    // Renders a visible Chinese recovery banner instead of silently stranding on white screen.
++    const banner = document.getElementById(mod.CHUNK_RECOVERY_BANNER_ID);
++    expect(banner).not.toBeNull();
++    expect(banner?.textContent).toContain("页面资源加载失败");
++
++    // A third error in the same document must not re-arm auto-reload or duplicate the banner.
++    expect(mod.tryReloadOnStaleChunk(err)).toBe(false);
++    expect(reload).not.toHaveBeenCalled();
++    expect(
++      document.querySelectorAll(`#${mod.CHUNK_RECOVERY_BANNER_ID}`).length,
++    ).toBe(1);
++
++    // Clicking the manual reload button clears the guard and reloads.
++    const button = banner?.querySelector("button");
++    expect(button?.textContent).toBe("重新加载");
++    button?.click();
++    await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
++    expect(document.getElementById(CHUNK_RECOVERY_BANNER_ID)).toBeNull();
+   });
+ 
+   it("ignores concurrent chunk errors without clearing the one-shot flag", async () => {
+diff --git a/dashboard/src/utils/reloadOnStaleChunk.ts b/dashboard/src/utils/reloadOnStaleChunk.ts
+index c8502b6e791cf4b9bd6389f362dccfe4aaa8be5a..d299ee6b4399835fd92914708486c97659e81542 100644
+--- a/dashboard/src/utils/reloadOnStaleChunk.ts
++++ b/dashboard/src/utils/reloadOnStaleChunk.ts
+@@ -5,6 +5,8 @@
+ 
+ const RELOAD_FLAG_KEY = "octop:chunk-reload";
+ 
++export const CHUNK_RECOVERY_BANNER_ID = "zbs-chunk-recovery-banner";
++
+ // A stale hashed chunk can also surface as a MIME rejection: the SPA fallback
+ // answers the deleted `/assets/*.js` with `index.html`, and the browser refuses
+ // to evaluate HTML as a module. WebKit (macOS desktop shell), Chrome and Firefox
+@@ -22,6 +24,70 @@ let navigatingAway = false;
+ /** In-memory guard: concurrent asset errors must not clear-and-rearm the flag. */
+ let reloadScheduled = false;
+ 
++/** Set once one-shot auto-reload has been exhausted so later errors do not loop. */
++let recoveryExhausted = false;
++
++/** Render a visible Chinese recovery bar when auto-reload already failed once. */
++export function renderChunkRecoveryBanner(): void {
++  if (typeof document === "undefined") return;
++  if (document.getElementById(CHUNK_RECOVERY_BANNER_ID)) return;
++
++  const isDark =
++    document.documentElement?.getAttribute("data-theme") === "dark";
++  const banner = document.createElement("div");
++  banner.id = CHUNK_RECOVERY_BANNER_ID;
++  banner.setAttribute("role", "alert");
++  banner.setAttribute("aria-live", "assertive");
++  banner.style.cssText = [
++    "position:fixed",
++    "top:16px",
++    "left:50%",
++    "transform:translateX(-50%)",
++    "z-index:2147483647",
++    "display:flex",
++    "align-items:center",
++    "gap:12px",
++    "max-width:min(560px,calc(100vw - 32px))",
++    "padding:12px 16px",
++    "border-radius:10px",
++    `background:${isDark ? "#1f2230" : "#ffffff"}`,
++    `color:${isDark ? "#f3f4f6" : "#1f2937"}`,
++    `border:1px solid ${isDark ? "rgba(255,255,255,0.14)" : "#e5e7eb"}`,
++    "box-shadow:0 8px 24px rgba(0,0,0,0.18)",
++    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif',
++    "font-size:14px",
++    "line-height:1.5",
++  ].join(";");
++
++  const text = document.createElement("span");
++  text.textContent =
++    "页面资源加载失败，可能是版本更新或网络波动导致，请点击重新加载。";
++  text.style.flex = "1";
++
++  const button = document.createElement("button");
++  button.type = "button";
++  button.textContent = "重新加载";
++  button.style.cssText = [
++    "flex:none",
++    "padding:6px 14px",
++    "border:none",
++    "border-radius:6px",
++    "background:#e85d75",
++    "color:#ffffff",
++    "font-size:13px",
++    "font-weight:500",
++    "cursor:pointer",
++  ].join(";");
++  button.addEventListener("click", () => {
++    clearChunkReloadFlag();
++    void bustServiceWorkerAndReload();
++  });
++
++  banner.appendChild(text);
++  banner.appendChild(button);
++  (document.body ?? document.documentElement)?.appendChild(banner);
++}
++
+ export function markNavigatingAway(): void {
+   navigatingAway = true;
+ }
+@@ -69,10 +135,17 @@ export function tryReloadOnStaleChunk(error: unknown): boolean {
+   if (reloadScheduled) return true;
+   if (!isChunkLoadError(error)) return false;
+ 
++  if (recoveryExhausted) {
++    renderChunkRecoveryBanner();
++    return false;
++  }
++
+   try {
+     if (sessionStorage.getItem(RELOAD_FLAG_KEY) === "1") {
+-      // Already reloaded once this cycle — give up (do not loop).
++      // Already reloaded once this cycle — show manual recovery bar instead of looping.
+       sessionStorage.removeItem(RELOAD_FLAG_KEY);
++      recoveryExhausted = true;
++      renderChunkRecoveryBanner();
+       return false;
+     }
+     sessionStorage.setItem(RELOAD_FLAG_KEY, "1");
+@@ -89,6 +162,10 @@ export function tryReloadOnStaleChunk(error: unknown): boolean {
+ /** Clear the one-shot flag after a successful boot so a later deploy can recover again. */
+ export function clearChunkReloadFlag(): void {
+   reloadScheduled = false;
++  recoveryExhausted = false;
++  if (typeof document !== "undefined") {
++    document.getElementById(CHUNK_RECOVERY_BANNER_ID)?.remove();
++  }
+   if (typeof window === "undefined") return;
+   try {
+     sessionStorage.removeItem(RELOAD_FLAG_KEY);
+diff --git a/src/octop/launch.py b/src/octop/launch.py
+index cabf5c5a863834530e78aa50b94e3b7c5b783e5e..eb9858dfc993df3e0581d9bc1de53740d2659a82 100644
+--- a/src/octop/launch.py
++++ b/src/octop/launch.py
+@@ -13,6 +13,11 @@ from octop.infra.utils.accept_errors import coalesce_accept_errors
+ 
+ logger = logging.getLogger(__name__)
+ 
++# Disable uvicorn protocol-level WebSocket pong timeout (upstream #2920):
++# long-running agent tasks and backgrounded tabs already rely on Octop's
++# application-level ping/pong and must not be dropped after 20s idle pong.
++WS_PING_TIMEOUT: float | None = None
++
+ 
+ def _ensure_linux_bubblewrap() -> None:
+     """Best-effort startup provisioning; never fail the ``octop run`` process."""
+@@ -115,6 +120,7 @@ async def run_foreground(
+             ssl_certfile=plan.ssl_certfile,
+             ssl_keyfile=plan.ssl_keyfile,
+             ws_max_size=BRIDGE_WS_MAX_BYTES,
++            ws_ping_timeout=WS_PING_TIMEOUT,
+         )
+         companion = build_http_companion_app(https_port=plan.https_port)
+         http_config = uvicorn.Config(
+@@ -145,6 +151,7 @@ async def run_foreground(
+             ssl_certfile=plan.ssl_certfile,
+             ssl_keyfile=plan.ssl_keyfile,
+             ws_max_size=BRIDGE_WS_MAX_BYTES,
++            ws_ping_timeout=WS_PING_TIMEOUT,
+         )
+         servers.append(uvicorn.Server(single_config))
+ 
+diff --git a/tests/unit/test_launch_ws_ping.py b/tests/unit/test_launch_ws_ping.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a83fabfc6d8a632d2ad35af5088b9a0ee178478a
+--- /dev/null
++++ b/tests/unit/test_launch_ws_ping.py
+@@ -0,0 +1,217 @@
++"""Tests for WebSocket keepalive ping timeout configuration in ``octop.launch``."""
++
++from __future__ import annotations
++
++import importlib
++import sys
++from pathlib import Path
++from types import ModuleType, SimpleNamespace
++from typing import Any
++
++import pytest
++import uvicorn
++
++EXPECTED_WS_MAX_BYTES = 64 * 1024 * 1024
++
++
++def _load_launch_module(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
++    """Import real ``octop.launch``; stub transitive runtime deps only when absent."""
++    try:
++        importlib.import_module("octop.infra.bridge.transport")
++        return importlib.import_module("octop.launch")
++    except ModuleNotFoundError:
++        pass
++
++    # Lightweight host test environment without full server wheels (e.g. octop-harness):
++    # keep real ``octop.launch`` + ``uvicorn.Config`` execution while stubbing
++    # only the transitive modules that ``run_foreground`` mocks out anyway.
++    class _PlaceholderServer:
++        pass
++
++    stub_modules: dict[str, dict[str, Any]] = {
++        "octop.infra.server": {"OctopServer": _PlaceholderServer},
++        "octop.api": {},
++        "octop.api.app": {"build_app": lambda _srv: None},
++        "octop.infra.bridge": {},
++        "octop.infra.bridge.transport": {
++            "BRIDGE_WS_MAX_BYTES": EXPECTED_WS_MAX_BYTES,
++        },
++        "octop.infra.setup": {},
++        "octop.infra.setup.tls": {},
++        "octop.infra.setup.tls.http_companion": {
++            "build_http_companion_app": lambda https_port: None,
++        },
++        "octop.infra.setup.tls.listeners": {
++            "build_listen_plan": lambda *a, **kw: None,
++        },
++        "octop.infra.setup.tls.store": {
++            "resolve_tls_paths": lambda _root, _tls: (None, None),
++        },
++        "octop.infra.agents": {},
++        "octop.infra.agents.memory": {},
++        "octop.infra.agents.memory.slim_control": {
++            "MemorySlimControl": object,
++        },
++    }
++    for name, attrs in stub_modules.items():
++        if name not in sys.modules:
++            mod = ModuleType(name)
++            for k, v in attrs.items():
++                setattr(mod, k, v)
++            monkeypatch.setitem(sys.modules, name, mod)
++
++    monkeypatch.delitem(sys.modules, "octop.launch", raising=False)
++    return importlib.import_module("octop.launch")
++
++
++def _install_launch_fakes(
++    monkeypatch: pytest.MonkeyPatch,
++    *,
++    dual_listeners: bool,
++) -> tuple[ModuleType, list[uvicorn.Config], int]:
++    launch = _load_launch_module(monkeypatch)
++    transport = importlib.import_module("octop.infra.bridge.transport")
++    ws_max_bytes: int = transport.BRIDGE_WS_MAX_BYTES
++
++    captured_configs: list[uvicorn.Config] = []
++
++    class FakeServer:
++        def __init__(self, config: uvicorn.Config) -> None:
++            self.config = config
++            captured_configs.append(config)
++
++        async def serve(self) -> None:
++            return None
++
++    class FakeOctopServer:
++        def __init__(self) -> None:
++            self.services = None
++            self.paths = SimpleNamespace(root=Path("/tmp/octop-test"))
++            self.config = SimpleNamespace(
++                bind_host="127.0.0.1",
++                port=8787,
++                log_level="info",
++                tls=SimpleNamespace(),
++            )
++
++        async def start(self) -> None:
++            return None
++
++        async def stop(self) -> None:
++            return None
++
++    class FakeMemorySlimControl:
++        def __init__(self, _srv: Any) -> None:
++            pass
++
++        async def start(self) -> None:
++            return None
++
++        async def close(self) -> None:
++            return None
++
++    async def dummy_app(scope: Any, receive: Any, send: Any) -> None:
++        return None
++
++    plan = (
++        SimpleNamespace(
++            dual_listeners=True,
++            bind_host="0.0.0.0",
++            https_port=8443,
++            http_port=8080,
++            ssl_certfile="/tmp/cert.pem",
++            ssl_keyfile="/tmp/key.pem",
++        )
++        if dual_listeners
++        else SimpleNamespace(
++            dual_listeners=False,
++            bind_host="127.0.0.1",
++            https_port=None,
++            http_port=8787,
++            ssl_certfile=None,
++            ssl_keyfile=None,
++        )
++    )
++
++    monkeypatch.setattr(launch, "OctopServer", FakeOctopServer)
++    monkeypatch.setattr(launch, "_schedule_linux_bubblewrap_ensure", lambda: None)
++    monkeypatch.setattr(uvicorn, "Server", FakeServer)
++    monkeypatch.setattr(
++        importlib.import_module("octop.api.app"),
++        "build_app",
++        lambda _srv: dummy_app,
++    )
++    monkeypatch.setattr(
++        importlib.import_module("octop.infra.setup.tls.http_companion"),
++        "build_http_companion_app",
++        lambda https_port: dummy_app,
++    )
++    monkeypatch.setattr(
++        importlib.import_module("octop.infra.setup.tls.listeners"),
++        "build_listen_plan",
++        lambda *args, **kwargs: plan,
++    )
++    monkeypatch.setattr(
++        importlib.import_module("octop.infra.setup.tls.store"),
++        "resolve_tls_paths",
++        lambda _root, _tls: (None, None),
++    )
++    monkeypatch.setattr(
++        importlib.import_module("octop.infra.agents.memory.slim_control"),
++        "MemorySlimControl",
++        FakeMemorySlimControl,
++    )
++    return launch, captured_configs, ws_max_bytes
++
++
++def test_ws_ping_timeout_constant_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
++    launch = _load_launch_module(monkeypatch)
++    assert launch.WS_PING_TIMEOUT is None
++
++
++@pytest.mark.asyncio
++async def test_single_listener_disables_ws_ping_timeout(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    launch, configs, ws_max_bytes = _install_launch_fakes(
++        monkeypatch, dual_listeners=False
++    )
++
++    await launch.run_foreground(
++        host=None,
++        port=None,
++        reload=False,
++        workers=1,
++        log_level="info",
++        ssl_certfile=None,
++        ssl_keyfile=None,
++    )
++
++    assert len(configs) == 1
++    assert configs[0].ws_ping_timeout is None
++    assert configs[0].ws_max_size == ws_max_bytes
++
++
++@pytest.mark.asyncio
++async def test_dual_listener_https_disables_ws_ping_timeout(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    launch, configs, ws_max_bytes = _install_launch_fakes(
++        monkeypatch, dual_listeners=True
++    )
++
++    await launch.run_foreground(
++        host=None,
++        port=None,
++        reload=False,
++        workers=1,
++        log_level="info",
++        ssl_certfile="/tmp/cert.pem",
++        ssl_keyfile="/tmp/key.pem",
++    )
++
++    assert len(configs) == 2
++    https_cfg = configs[0]
++    assert https_cfg.port == 8443
++    assert https_cfg.ws_ping_timeout is None
++    assert https_cfg.ws_max_size == ws_max_bytes

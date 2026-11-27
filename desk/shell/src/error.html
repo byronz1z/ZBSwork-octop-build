@@ -20,12 +20,12 @@
 <div class="box">
   <h1>连不上服务器，正在重试…</h1>
   <div class="code" id="errcode"></div>
-  <button onclick="window.zbswork.retry()">立即重试</button>
+  <button onclick="window.zbswork.retry({ manual: true })">立即重试</button>
 </div>
 <script>
   const code = new URLSearchParams(location.search).get('code');
   if (code) document.getElementById('errcode').textContent = '错误码：' + code;
-  setInterval(() => window.zbswork.retry(), 10000);
+  setInterval(() => window.zbswork.retry({ manual: false }), 10000);
 </script>
 </body>
 </html>

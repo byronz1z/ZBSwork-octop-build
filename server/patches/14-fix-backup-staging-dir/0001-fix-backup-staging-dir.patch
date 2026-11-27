@@ -1,0 +1,485 @@
+diff --git a/src/octop/api/routers/backup.py b/src/octop/api/routers/backup.py
+index 9749909c607b754bd5e01774b32e88621edd95c5..790ffbcce764fa314185c616bb8a5fe95b7a56bc 100644
+--- a/src/octop/api/routers/backup.py
++++ b/src/octop/api/routers/backup.py
+@@ -27,6 +27,7 @@ from octop.infra.backup.auto import (
+ )
+ from octop.infra.backup.store import (
+     BackupFileInfo,
++    backup_staging_dir,
+     delete_backup_file,
+     list_backup_files,
+     normalize_backup_filename,
+@@ -107,7 +108,7 @@ def _create_and_store_manual_backup(
+     options: CreateBackupBody,
+ ) -> BackupFileInfo:
+     """Sync create + place for ``asyncio.to_thread`` (keeps the event loop free)."""
+-    with tempfile.TemporaryDirectory() as tmp:
++    with tempfile.TemporaryDirectory(dir=backup_staging_dir(paths)) as tmp:
+         tmp_path = Path(tmp) / "backup.tar.gz"
+         filename = create_system_backup(
+             paths=paths,
+@@ -155,7 +156,11 @@ def _create_ephemeral_backup(
+     options: CreateBackupBody,
+ ) -> tuple[Path, str]:
+     """Write a backup to a temp file; caller must delete after the response is sent."""
+-    fd, name = tempfile.mkstemp(prefix="octop-export-", suffix=".tar.gz")
++    fd, name = tempfile.mkstemp(
++        prefix="octop-export-",
++        suffix=".tar.gz",
++        dir=backup_staging_dir(paths),
++    )
+     os.close(fd)
+     tmp_path = Path(name)
+     try:
+diff --git a/src/octop/infra/backup/auto.py b/src/octop/infra/backup/auto.py
+index 960869d95fe5a04b8959d331d6bf98f3c2a7662a..e0086b7a89676beec660146c9e4294f13b225280 100644
+--- a/src/octop/infra/backup/auto.py
++++ b/src/octop/infra/backup/auto.py
+@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
+ from octop.config import BackupConfig, OctopConfig, load_config
+ from octop.infra.backup.store import (
+     BackupFileInfo,
++    backup_staging_dir,
+     is_auto_backup_filename,
+     place_backup_file,
+     prune_auto_backups,
+@@ -163,7 +164,7 @@ def create_and_store_auto_backup(
+     include_chats: bool = False,
+ ) -> tuple[BackupFileInfo, list[str]]:
+     """Create a selected-content system backup with the auto prefix and prune."""
+-    with tempfile.TemporaryDirectory() as tmp:
++    with tempfile.TemporaryDirectory(dir=backup_staging_dir(paths)) as tmp:
+         tmp_path = Path(tmp) / "backup.tar.gz"
+         suggested = create_system_backup(
+             paths=paths,
+diff --git a/src/octop/infra/backup/store.py b/src/octop/infra/backup/store.py
+index 556251816c1fd6517200a619adce525fa7df5acb..f7ea401e87a8e4c0a4a9d04f615f85bc25b885cb 100644
+--- a/src/octop/infra/backup/store.py
++++ b/src/octop/infra/backup/store.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import json
++import os
+ import re
+ import shutil
+ import tarfile
+@@ -20,6 +21,32 @@ _BACKUP_CREATED_RE = re.compile(
+     r"octop-(?:auto-)?backup-(\d{8}T\d{6}Z)",
+ )
+ _AUTO_BACKUP_PREFIX = "octop-auto-backup-"
++BACKUP_STAGING_DIR_ENV = "OCTOP_BACKUP_STAGING_DIR"
++_BACKUP_STAGING_SUBDIR = ".staging"
++
++
++def backup_staging_dir(paths: PathLayout | None = None) -> Path | None:
++    """Resolve and ensure the staging directory for backup/restore temp files.
++
++    Precedence:
++    1. ``OCTOP_BACKUP_STAGING_DIR`` environment variable (when non-empty).
++    2. ``paths.backups_dir / ".staging"`` (keeps staging on the same filesystem
++       as stored archives for atomic moves and avoids container ``/tmp`` spikes).
++    3. ``None`` when neither is available (falls back to OS default temp dir).
++    """
++    raw = os.environ.get(BACKUP_STAGING_DIR_ENV, "").strip()
++    if raw:
++        staging = Path(raw).expanduser()
++    elif paths is not None:
++        staging = paths.backups_dir / _BACKUP_STAGING_SUBDIR
++    else:
++        return None
++    staging.mkdir(parents=True, exist_ok=True)
++    try:
++        os.chmod(staging, 0o700)
++    except OSError:
++        pass
++    return staging
+ 
+ 
+ def _iso_utc_from_timestamp(ts: float) -> str:
+diff --git a/src/octop/infra/backup/system_archive.py b/src/octop/infra/backup/system_archive.py
+index 41ee773038a120ef1b9ba8ef88448f31fb775c1b..4744ff815a9c48852ebbd9219d4c6343d3e98bc4 100644
+--- a/src/octop/infra/backup/system_archive.py
++++ b/src/octop/infra/backup/system_archive.py
+@@ -28,6 +28,7 @@ from octop.infra.backup.chats import (
+ )
+ from octop.infra.backup.manifest import MANIFEST_VERSION, AgentBackupEntry, BackupManifest
+ from octop.infra.backup.pg_dump import dump_postgres, restore_postgres
++from octop.infra.backup.store import backup_staging_dir
+ from octop.infra.backup.snapshot import (
+     capture_jwt_secret_from_pool,
+     capture_users_from_pool,
+@@ -244,7 +245,7 @@ def create_system_backup(
+     partial = dest.with_name(dest.name + ".partial")
+ 
+     try:
+-        with tempfile.TemporaryDirectory() as tmp:
++        with tempfile.TemporaryDirectory(dir=backup_staging_dir(paths)) as tmp:
+             root = Path(tmp)
+             db_dest = root / db_arc
+             history_path = paths.root / "history_v2.sqlite"
+@@ -446,7 +447,7 @@ def restore_system_backup(
+     performing the restore) receives all imported ``user_id`` ownership. When
+     omitted, the first preserved admin (else first preserved user) is used.
+     """
+-    with tempfile.TemporaryDirectory() as tmp:
++    with tempfile.TemporaryDirectory(dir=backup_staging_dir(paths)) as tmp:
+         extracted = Path(tmp) / "extracted"
+         _extract_archive(source, extracted)
+         manifest = _extract_manifest_from_dir(extracted)
+diff --git a/tests/unit/backup/test_staging_dir.py b/tests/unit/backup/test_staging_dir.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7bde25307c0f25a4a8a582bd36142ec9dfe0a6d7
+--- /dev/null
++++ b/tests/unit/backup/test_staging_dir.py
+@@ -0,0 +1,349 @@
++"""Unit tests for configurable backup staging directory resolution and usage."""
++
++from __future__ import annotations
++
++import importlib
++import os
++import stat
++import sys
++import tempfile
++from pathlib import Path
++from types import ModuleType, SimpleNamespace
++from typing import Any
++
++import pytest
++
++from octop.infra.utils.paths import PathLayout
++
++
++def _load_backup_modules(
++    monkeypatch: pytest.MonkeyPatch,
++) -> tuple[ModuleType, ModuleType, ModuleType, ModuleType]:
++    """Import real backup modules; stub transitive runtime deps only when absent."""
++    try:
++        store = importlib.import_module("octop.infra.backup.store")
++        auto = importlib.import_module("octop.infra.backup.auto")
++        system_archive = importlib.import_module("octop.infra.backup.system_archive")
++        router = importlib.import_module("octop.api.routers.backup")
++        return store, auto, system_archive, router
++    except ModuleNotFoundError:
++        pass
++
++    class _StubOctopError(Exception):
++        def __init__(self, code: Any, message: str = "", **kwargs: Any) -> None:
++            super().__init__(message)
++            self.code = code
++            self.message = message
++            self.kwargs = kwargs
++
++    class _StubErrorCode:
++        SLASH_BAD_ARGS = "SLASH_BAD_ARGS"
++        NOT_FOUND = "NOT_FOUND"
++        INTERNAL_ERROR = "INTERNAL_ERROR"
++        BACKUP_IN_PROGRESS = "BACKUP_IN_PROGRESS"
++        BACKUP_DRIVER_MISMATCH = "BACKUP_DRIVER_MISMATCH"
++        BACKUP_SCHEMA_INCOMPATIBLE = "BACKUP_SCHEMA_INCOMPATIBLE"
++
++    class _StubSqlitePool:
++        dialect = "sqlite"
++
++        def __init__(self, path: Path) -> None:
++            self.path = path
++
++    class _StubDatabaseConfig:
++        def postgresql_conninfo(self) -> str:
++            return ""
++
++    stub_modules: dict[str, dict[str, Any]] = {
++        "octop.infra.errors": {
++            "ErrorCode": _StubErrorCode,
++            "OctopError": _StubOctopError,
++        },
++        "octop.config": {
++            "BackupConfig": SimpleNamespace,
++            "DatabaseConfig": _StubDatabaseConfig,
++            "OctopConfig": SimpleNamespace,
++            "load_config": lambda *_a, **_kw: SimpleNamespace(),
++        },
++        "octop.infra.cron": {},
++        "octop.infra.cron.trigger": {"build_trigger": lambda *_a, **_kw: None},
++        "octop.infra.db": {},
++        "octop.infra.db.migrate": {
++            "_current_version": lambda *_a, **_kw: 1,
++            "_max_discovered_version": lambda *_a, **_kw: 1,
++            "run_migrations": lambda *_a, **_kw: None,
++        },
++        "octop.infra.db.pool": {
++            "DatabasePool": object,
++            "SqlitePool": _StubSqlitePool,
++        },
++        "octop.infra.db.repos": {},
++        "octop.infra.db.repos.agents": {
++            "AgentRepo": lambda _pool: SimpleNamespace(get=lambda _id: None),
++        },
++        "octop.infra.db.repos.audit": {"ACTOR_ADMIN": "admin", "ACTOR_SYSTEM": "system"},
++        "octop.infra.db.repos.secrets": {
++            "SecretRepo": lambda _pool: SimpleNamespace(get_or_create=lambda *_a, **_kw: None),
++        },
++        "octop.infra.agents": {},
++        "octop.infra.agents.workspace": {},
++        "octop.infra.agents.workspace.dir": {
++            "system_files_path_from_config": lambda *_a, **_kw: "",
++            "workspace_dir_from_config_json": lambda *_a, **_kw: Path("."),
++        },
++        "octop.infra.backup.chats": {
++            "CHAT_TABLES_CHILD_FIRST": (),
++            "capture_chat_tables": lambda *_a, **_kw: None,
++            "is_chat_workspace_rel": lambda *_a, **_kw: False,
++            "restore_preserved_chats": lambda *_a, **_kw: (0, 0),
++            "strip_chat_tables_from_sqlite_file": lambda *_a, **_kw: None,
++        },
++        "octop.infra.backup.pg_dump": {
++            "dump_postgres": lambda *_a, **_kw: None,
++            "restore_postgres": lambda *_a, **_kw: None,
++        },
++        "octop.infra.backup.workspace_archive": {
++            "export_workspace_zip": lambda *_a, **_kw: None,
++            "import_workspace_zip": lambda *_a, **_kw: None,
++        },
++        "octop.infra.backup.snapshot": {
++            "capture_jwt_secret_from_pool": lambda *_a, **_kw: None,
++            "capture_users_from_pool": lambda *_a, **_kw: [],
++            "infer_owner_user_id": lambda *_a, **_kw: None,
++            "prune_users_not_in": lambda *_a, **_kw: None,
++            "remap_ownership_to_user": lambda *_a, **_kw: None,
++            "restore_jwt_secret_into_pool": lambda *_a, **_kw: None,
++            "restore_sqlite_into_pool": lambda *_a, **_kw: None,
++            "snapshot_sqlite_file": lambda src, dst: (
++                Path(dst).parent.mkdir(parents=True, exist_ok=True),
++                Path(dst).write_bytes(Path(src).read_bytes()),
++            ),
++            "upsert_users_into_pool": lambda *_a, **_kw: None,
++        },
++        "octop.api.deps": {
++            "get_server": lambda: None,
++            "require_permission": lambda _perm: (lambda: None),
++        },
++    }
++    for name, attrs in stub_modules.items():
++        if name not in sys.modules:
++            mod = ModuleType(name)
++            for k, v in attrs.items():
++                setattr(mod, k, v)
++            monkeypatch.setitem(sys.modules, name, mod)
++
++    for mod_name in (
++        "octop.infra.backup.store",
++        "octop.infra.backup.system_archive",
++        "octop.infra.backup.auto",
++        "octop.api.routers.backup",
++    ):
++        monkeypatch.delitem(sys.modules, mod_name, raising=False)
++
++    store = importlib.import_module("octop.infra.backup.store")
++    system_archive = importlib.import_module("octop.infra.backup.system_archive")
++    auto = importlib.import_module("octop.infra.backup.auto")
++    router = importlib.import_module("octop.api.routers.backup")
++    return store, auto, system_archive, router
++
++
++def test_backup_staging_dir_prefers_env_override(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    store, _, _, _ = _load_backup_modules(monkeypatch)
++    layout = PathLayout(tmp_path / ".octop")
++    custom = tmp_path / "custom-staging"
++    monkeypatch.setenv("OCTOP_BACKUP_STAGING_DIR", str(custom))
++
++    chmod_calls: list[tuple[Path, int]] = []
++    real_chmod = os.chmod
++
++    def spy_chmod(path: os.PathLike[str] | str, mode: int, *args: Any, **kwargs: Any) -> None:
++        chmod_calls.append((Path(path), mode))
++        real_chmod(path, mode, *args, **kwargs)
++
++    monkeypatch.setattr(os, "chmod", spy_chmod)
++
++    resolved = store.backup_staging_dir(layout)
++    assert resolved == custom
++    assert custom.is_dir()
++    assert not (layout.backups_dir / ".staging").exists()
++    assert (custom, 0o700) in chmod_calls
++    if os.name == "posix":
++        assert stat.S_IMODE(custom.stat().st_mode) == 0o700
++
++    # Env override also works when paths is None.
++    assert store.backup_staging_dir(None) == custom
++
++
++def test_backup_staging_dir_derives_from_backups_dir_with_0700(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    store, _, _, _ = _load_backup_modules(monkeypatch)
++    monkeypatch.delenv("OCTOP_BACKUP_STAGING_DIR", raising=False)
++    layout = PathLayout(tmp_path / ".octop")
++
++    chmod_calls: list[tuple[Path, int]] = []
++    real_chmod = os.chmod
++
++    def spy_chmod(path: os.PathLike[str] | str, mode: int, *args: Any, **kwargs: Any) -> None:
++        chmod_calls.append((Path(path), mode))
++        real_chmod(path, mode, *args, **kwargs)
++
++    monkeypatch.setattr(os, "chmod", spy_chmod)
++
++    resolved = store.backup_staging_dir(layout)
++    expected = layout.backups_dir / ".staging"
++    assert resolved == expected
++    assert expected.is_dir()
++    assert (expected, 0o700) in chmod_calls
++    if os.name == "posix":
++        assert stat.S_IMODE(expected.stat().st_mode) == 0o700
++
++    # Whitespace-only env var falls back to backups_dir/.staging.
++    monkeypatch.setenv("OCTOP_BACKUP_STAGING_DIR", "   ")
++    assert store.backup_staging_dir(layout) == expected
++
++    # .staging directory must never show up in list_backup_files.
++    assert store.list_backup_files(layout) == []
++
++
++def test_backup_staging_dir_returns_none_when_neither_set(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    store, _, _, _ = _load_backup_modules(monkeypatch)
++    monkeypatch.delenv("OCTOP_BACKUP_STAGING_DIR", raising=False)
++    assert store.backup_staging_dir(None) is None
++    monkeypatch.setenv("OCTOP_BACKUP_STAGING_DIR", "  ")
++    assert store.backup_staging_dir(None) is None
++
++
++def test_auto_and_manual_and_export_backup_never_use_system_tmp(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    store, auto, _, router = _load_backup_modules(monkeypatch)
++    monkeypatch.delenv("OCTOP_BACKUP_STAGING_DIR", raising=False)
++    layout = PathLayout(tmp_path / ".octop")
++    expected_staging = (layout.backups_dir / ".staging").resolve()
++    system_tmp = Path(tempfile.gettempdir()).resolve()
++    assert expected_staging != system_tmp
++
++    observed_dests: list[Path] = []
++
++    def fake_create_system_backup(*, dest: Path, **_kwargs: Any) -> str:
++        observed_dests.append(Path(dest).resolve())
++        Path(dest).write_bytes(b"fake-archive")
++        return "octop-backup-20261127T000000Z.tar.gz"
++
++    monkeypatch.setattr(auto, "create_system_backup", fake_create_system_backup)
++    monkeypatch.setattr(router, "create_system_backup", fake_create_system_backup)
++
++    # 1. Auto backup
++    entry, deleted = auto.create_and_store_auto_backup(
++        paths=layout,
++        agent_rows=[],
++        pool=SimpleNamespace(),
++        db_config=SimpleNamespace(),
++        retention_count=5,
++    )
++    assert deleted == []
++    assert entry.name == "octop-auto-backup-20261127T000000Z.tar.gz"
++    assert observed_dests[-1].is_relative_to(expected_staging)
++
++    # 2. Manual backup
++    manual_entry = router._create_and_store_manual_backup(
++        paths=layout,
++        agent_rows=[],
++        pool=SimpleNamespace(),
++        db_config=SimpleNamespace(),
++        options=router.CreateBackupBody(),
++    )
++    assert manual_entry.name == "octop-backup-20261127T000000Z.tar.gz"
++    assert observed_dests[-1].is_relative_to(expected_staging)
++
++    # 3. Ephemeral export
++    export_path, export_name = router._create_ephemeral_backup(
++        paths=layout,
++        agent_rows=[],
++        pool=SimpleNamespace(),
++        db_config=SimpleNamespace(),
++        options=router.CreateBackupBody(),
++    )
++    try:
++        assert export_name == "octop-backup-20261127T000000Z.tar.gz"
++        assert export_path.resolve().is_relative_to(expected_staging)
++        assert observed_dests[-1].is_relative_to(expected_staging)
++    finally:
++        export_path.unlink(missing_ok=True)
++
++    # 4. Env override routes temp dirs to OCTOP_BACKUP_STAGING_DIR
++    env_staging = (tmp_path / "env-staging").resolve()
++    monkeypatch.setenv("OCTOP_BACKUP_STAGING_DIR", str(env_staging))
++    router._create_and_store_manual_backup(
++        paths=layout,
++        agent_rows=[],
++        pool=SimpleNamespace(),
++        db_config=SimpleNamespace(),
++        options=router.CreateBackupBody(),
++    )
++    assert observed_dests[-1].is_relative_to(env_staging)
++    assert store.backup_staging_dir(layout) == env_staging
++
++
++def test_system_archive_create_and_restore_stage_outside_system_tmp(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    _, _, system_archive, _ = _load_backup_modules(monkeypatch)
++    monkeypatch.delenv("OCTOP_BACKUP_STAGING_DIR", raising=False)
++    layout = PathLayout(tmp_path / ".octop")
++    layout.ensure_root()
++    expected_staging = (layout.backups_dir / ".staging").resolve()
++
++    recorded_dirs: list[Path] = []
++    real_tempdir = tempfile.TemporaryDirectory
++
++    def spy_tempdir(*args: Any, **kwargs: Any) -> tempfile.TemporaryDirectory[str]:
++        if kwargs.get("dir") is not None:
++            recorded_dirs.append(Path(kwargs["dir"]).resolve())
++        return real_tempdir(*args, **kwargs)
++
++    monkeypatch.setattr(system_archive.tempfile, "TemporaryDirectory", spy_tempdir)
++
++    db_cfg_mod = importlib.import_module("octop.config")
++    pool = system_archive.SqlitePool(layout.db)
++    if not layout.db.is_file():
++        layout.db.write_bytes(b"sqlite-stub")
++    archive = tmp_path / "out.tar.gz"
++
++    try:
++        system_archive.create_system_backup(
++            paths=layout,
++            agent_rows=[],
++            pool=pool,
++            db_config=db_cfg_mod.DatabaseConfig(),
++            dest=archive,
++            include_config=False,
++            include_workspaces=False,
++            include_skill_packages=False,
++            include_plugins=False,
++            include_knowledge=False,
++            include_chats=False,
++        )
++        assert recorded_dirs == [expected_staging]
++        assert archive.is_file()
++
++        # Restore also stages inside expected_staging / env override rather than system /tmp.
++        custom_env = (tmp_path / "restore-staging").resolve()
++        monkeypatch.setenv("OCTOP_BACKUP_STAGING_DIR", str(custom_env))
++        system_archive.restore_system_backup(
++            archive,
++            paths=layout,
++            pool=pool,
++            db_config=db_cfg_mod.DatabaseConfig(),
++            restore_config=False,
++        )
++        assert recorded_dirs[-1] == custom_env
++    finally:
++        close = getattr(pool, "close", None)
++        if callable(close):
++            close()

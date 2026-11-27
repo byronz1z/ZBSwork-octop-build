@@ -1,0 +1,148 @@
+diff --git a/src/octop/infra/db/pool.py b/src/octop/infra/db/pool.py
+index 3d1e30d3a046b604bdc1cab1e6e12ce137c4999e..23fdc3624ff60adaa6ba5b92013e648672f3fc49 100644
+--- a/src/octop/infra/db/pool.py
++++ b/src/octop/infra/db/pool.py
+@@ -113,7 +113,7 @@ def _compat_row_factory(cursor: Any) -> Any:
+ 
+ 
+ class _PgConnectionProxy:
+-    """Expose sqlite-like ``execute`` / ``executescript`` on a psycopg connection."""
++    """Expose sqlite-like ``execute`` / ``executemany`` / ``executescript`` on a psycopg connection."""
+ 
+     def __init__(self, conn: Any) -> None:
+         self._conn = conn
+@@ -121,6 +121,11 @@ class _PgConnectionProxy:
+     def execute(self, sql: str, params: Any = None) -> Any:
+         return self._conn.execute(qmark_to_pyformat(sql), params)
+ 
++    def executemany(self, sql: str, params_seq: Any) -> None:
++        pg_sql = qmark_to_pyformat(sql)
++        with self._conn.cursor() as cur:
++            cur.executemany(pg_sql, params_seq)
++
+     def executescript(self, sql: str) -> None:
+         # Used only if something still calls it; prefer migrate splitter.
+         for stmt in _split_sql_statements(sql):
+diff --git a/tests/unit/infra/db/test_pg_executemany.py b/tests/unit/infra/db/test_pg_executemany.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5530377cfab3e7e168044f0fc00e46bc95e9f23e
+--- /dev/null
++++ b/tests/unit/infra/db/test_pg_executemany.py
+@@ -0,0 +1,117 @@
++from __future__ import annotations
++
++from typing import Any
++
++import pytest
++
++from octop.infra.db.pool import _PgConnectionProxy
++
++
++class _FakeCursor:
++    def __init__(self, calls: list[tuple[str, list[Any]]], *, fail: Exception | None = None) -> None:
++        self._calls = calls
++        self._fail = fail
++        self.entered = False
++        self.exited = False
++
++    def __enter__(self) -> _FakeCursor:
++        self.entered = True
++        return self
++
++    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
++        self.exited = True
++        return False
++
++    def executemany(self, sql: str, params_seq: Any) -> None:
++        if self._fail is not None:
++            raise self._fail
++        self._calls.append((sql, list(params_seq)))
++
++
++class _FakePsycopgConnection:
++    """Mimics psycopg v3 Connection which exposes cursor().executemany() but NOT conn.executemany()."""
++
++    def __init__(self, *, fail: Exception | None = None) -> None:
++        self.calls: list[tuple[str, list[Any]]] = []
++        self.cursors: list[_FakeCursor] = []
++        self._fail = fail
++
++    def cursor(self) -> _FakeCursor:
++        cur = _FakeCursor(self.calls, fail=self._fail)
++        self.cursors.append(cur)
++        return cur
++
++
++def test_pg_connection_proxy_executemany_converts_qmark_and_closes_cursor() -> None:
++    raw = _FakePsycopgConnection()
++    assert not hasattr(raw, "executemany")
++    proxy = _PgConnectionProxy(raw)
++
++    rows = [
++        ("t1", "Chat 1", "2026-01-01T00:00:00Z"),
++        ("t2", "Chat 2", "2026-01-02T00:00:00Z"),
++    ]
++    proxy.executemany(
++        'INSERT INTO "threads"("id", "title", "created_at") VALUES (?, ?, ?)',
++        rows,
++    )
++
++    assert len(raw.cursors) == 1
++    assert raw.cursors[0].entered is True
++    assert raw.cursors[0].exited is True
++    assert raw.calls == [
++        (
++            'INSERT INTO "threads"("id", "title", "created_at") VALUES (%s, %s, %s)',
++            rows,
++        )
++    ]
++
++
++def test_pg_connection_proxy_executemany_supports_generator_and_empty_seq() -> None:
++    raw = _FakePsycopgConnection()
++    proxy = _PgConnectionProxy(raw)
++
++    gen = ((f"id-{i}", i) for i in range(3))
++    proxy.executemany("INSERT INTO care_push(id, count) VALUES (?, ?)", gen)
++    proxy.executemany("INSERT INTO care_push(id, count) VALUES (?, ?)", [])
++
++    assert raw.calls == [
++        ("INSERT INTO care_push(id, count) VALUES (%s, %s)", [("id-0", 0), ("id-1", 1), ("id-2", 2)]),
++        ("INSERT INTO care_push(id, count) VALUES (%s, %s)", []),
++    ]
++    assert all(c.entered and c.exited for c in raw.cursors)
++
++
++def test_pg_connection_proxy_executemany_matches_care_push_upsert_sql() -> None:
++    raw = _FakePsycopgConnection()
++    proxy = _PgConnectionProxy(raw)
++
++    rows = [
++        ("r1", "u1", "c1", "2026-01-01T00:00:00Z"),
++        ("r2", "u1", "c2", "2026-01-01T00:00:00Z"),
++    ]
++    proxy.executemany(
++        "INSERT INTO care_push_records (id, user_id, candidate_id, created_at) "
++        "VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
++        rows,
++    )
++
++    assert raw.calls == [
++        (
++            "INSERT INTO care_push_records (id, user_id, candidate_id, created_at) "
++            "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
++            rows,
++        ),
++    ]
++
++
++def test_pg_connection_proxy_executemany_closes_cursor_on_error() -> None:
++    raw = _FakePsycopgConnection(fail=RuntimeError("boom"))
++    proxy = _PgConnectionProxy(raw)
++
++    with pytest.raises(RuntimeError, match="boom"):
++        proxy.executemany("INSERT INTO t(a) VALUES (?)", [(1,)])
++
++    assert len(raw.cursors) == 1
++    assert raw.cursors[0].entered is True
++    assert raw.cursors[0].exited is True

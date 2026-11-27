@@ -4,10 +4,11 @@ const assert = require('node:assert');
 
 process.env.NODE_TEST = '1';
 const { routeWindowOpen, shouldBlockInput, shouldShowErrorPage } = require('../src/main.js');
+const { isSameOrigin, isSamePageUrl } = require('../src/lib/windowOpen');
 
 const SERVER = 'https://zbsworkoctoplink.api.zhangbaoshan.cn:8443';
 
-test('routeWindowOpen: 同源前缀 -> child', () => {
+test('routeWindowOpen: 严格同源 -> child', () => {
   assert.strictEqual(routeWindowOpen(SERVER + '/oauth/callback', SERVER), 'child');
 });
 
@@ -15,14 +16,32 @@ test('routeWindowOpen: 外站 -> external', () => {
   assert.strictEqual(routeWindowOpen('https://example.com/x', SERVER), 'external');
 });
 
-test('routeWindowOpen: serverUrl 为 https://127.0.0.1:18443 时同前缀 -> child', () => {
+test('routeWindowOpen: serverUrl 为 https://127.0.0.1:18443 时严格同源 -> child，不同协议 -> external', () => {
   const local = 'https://127.0.0.1:18443';
   assert.strictEqual(routeWindowOpen(local + '/page', local), 'child');
   assert.strictEqual(routeWindowOpen('http://127.0.0.1:18443/page', local), 'external');
 });
 
-test('routeWindowOpen: 脚本弹窗（new-window）about:blank -> child（连接器授权）', () => {
+test('routeWindowOpen & isSameOrigin: 防范 https://域名:8443@evil.com 伪造前缀绕过（BUG-11）', () => {
+  const spoofAt = SERVER + '@evil.com/phish';
+  assert.strictEqual(isSameOrigin(spoofAt, SERVER), false);
+  // 不是同源，绝不打开为壳内子窗口（按外站走系统浏览器，或非法 URL 直接 deny）
+  assert.strictEqual(routeWindowOpen(spoofAt, SERVER, 'foreground-tab'), 'external');
+  assert.strictEqual(routeWindowOpen(spoofAt, SERVER), 'external');
+
+  const spoofSub = SERVER + '.evil.com/phish';
+  assert.strictEqual(isSameOrigin(spoofSub, SERVER), false);
+  assert.strictEqual(routeWindowOpen(spoofSub, SERVER, 'foreground-tab'), 'deny');
+
+  // 即使不带端口的 serverUrl，也要防前缀域名绕过（https://example.com.evil.com）
+  assert.strictEqual(isSameOrigin('https://example.com.evil.com/x', 'https://example.com'), false);
+  assert.strictEqual(routeWindowOpen('https://example.com.evil.com/x', 'https://example.com', 'foreground-tab'), 'external');
+});
+
+test('routeWindowOpen: 脚本弹窗（new-window）about:blank / 空串 -> child（R1 连接器/OAuth 授权不受影响）', () => {
   assert.strictEqual(routeWindowOpen('about:blank', SERVER, 'new-window'), 'child');
+  assert.strictEqual(routeWindowOpen('', SERVER, 'new-window'), 'child');
+  assert.strictEqual(routeWindowOpen(SERVER + '/chat/1', SERVER, 'new-window', SERVER + '/chat/1'), 'child');
 });
 
 test('routeWindowOpen: 脚本弹窗（new-window）第三方授权站 -> child', () => {
@@ -33,8 +52,23 @@ test('routeWindowOpen: 链接新开（foreground-tab）外站 -> external', () =
   assert.strictEqual(routeWindowOpen('https://example.com/x', SERVER, 'foreground-tab'), 'external');
 });
 
-test('routeWindowOpen: 链接新开（foreground-tab）同源 -> child', () => {
-  assert.strictEqual(routeWindowOpen(SERVER + '/experts', SERVER, 'foreground-tab'), 'child');
+test('routeWindowOpen: 链接新开（foreground-tab）同源不同页 -> child', () => {
+  assert.strictEqual(routeWindowOpen(SERVER + '/experts', SERVER, 'foreground-tab', SERVER + '/chat/1'), 'child');
+});
+
+test('routeWindowOpen: R2 拦截空链接与无意义跳向完全相同当前页 URL 的重复子窗口（BUG-11）', () => {
+  assert.strictEqual(routeWindowOpen('', SERVER, 'foreground-tab', SERVER + '/chat/1'), 'deny');
+  assert.strictEqual(routeWindowOpen('   ', SERVER, 'foreground-tab', SERVER + '/chat/1'), 'deny');
+  assert.strictEqual(routeWindowOpen('about:blank', SERVER, 'foreground-tab', SERVER + '/chat/1'), 'deny');
+  assert.strictEqual(routeWindowOpen('about:blank', SERVER), 'deny');
+  assert.strictEqual(routeWindowOpen(SERVER + '/chat/1', SERVER, 'foreground-tab', SERVER + '/chat/1'), 'deny');
+  assert.strictEqual(routeWindowOpen(SERVER + '/chat/1#', SERVER, 'foreground-tab', SERVER + '/chat/1'), 'deny');
+  assert.strictEqual(routeWindowOpen(SERVER, SERVER, 'foreground-tab', SERVER + '/'), 'deny');
+  // 带不同路径或有效锚点的同源页仍放行 child
+  assert.strictEqual(routeWindowOpen(SERVER + '/chat/2', SERVER, 'foreground-tab', SERVER + '/chat/1'), 'child');
+  assert.strictEqual(routeWindowOpen(SERVER + '/chat/1#sec-2', SERVER, 'foreground-tab', SERVER + '/chat/1'), 'child');
+  assert.strictEqual(isSamePageUrl(SERVER + '/a', SERVER + '/a#'), true);
+  assert.strictEqual(isSamePageUrl(SERVER + '/a#1', SERVER + '/a#2'), false);
 });
 
 test('routeWindowOpen: 链接新开（foreground-tab）file: 协议 -> deny', () => {
@@ -51,10 +85,6 @@ test('routeWindowOpen: mailto: 链接新开 -> external（r4 放行）', () => {
 
 test('routeWindowOpen: tel: 不传 disposition -> external（r4 放行）', () => {
   assert.strictEqual(routeWindowOpen('tel:13800000000', SERVER), 'external');
-});
-
-test('routeWindowOpen: 不传 disposition 时 about:blank -> child', () => {
-  assert.strictEqual(routeWindowOpen('about:blank', SERVER), 'child');
 });
 
 test('shouldBlockInput: win32 的 Ctrl+W / Ctrl+Shift+I / F12 -> true', () => {
