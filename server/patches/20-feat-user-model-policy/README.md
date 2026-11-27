@@ -2,11 +2,26 @@
 
 | 项 | 内容 |
 |---|---|
-| 层级 | L3 核心补丁（后端 16 个官方文件 + 前端 5 个官方文件；另 7 个测试文件，其中 1 个新文件 `tests/unit/agents/test_memory_model_policy.py` 为 ZT-030 加） |
+| 层级 | L3 核心补丁（后端 16 个官方文件 + 前端 7 个官方文件；另 6 个测试文件，其中 `tests/unit/agents/test_memory_model_policy.py` 等为本补丁维护） |
 | 状态 | enabled |
-| 实测 | v1.0.2b6：10 → 20 → 21 → 60 + 品牌包 严格套上（2026-10-16 ZT-030，prepare.py 全量建树 + brand_check 通过）；ZT-026 时的测试见 `_work\ZT-026\step2\报告-补丁20.md`，ZT-030 的测试见指挥部 ZT-030 任务单"结果" |
+| 实测 | v1.0.2：11/12/13/14/15/20/21/23/24/60 + 品牌包 严格套上（2026-11-28 ZT-040 补丁 20 减法迭代，prepare.py 全量建树 + check_ownership + brand_check + 前后端测试全过）；历史记录见 ZT-026 / ZT-030 / ZT-036 |
 | 上游 PR | 否——ZBS 自有的权限收紧策略，上游官方无意向 |
-| 依据 | 指挥部任务 ZT-026 任务单（2026-10-13 重写版）第二节功能点 F8–F10（旧稿 F7–F11，见文末对照；日志 10-12 #190 #195 #198）；ZT-030 修正（日志 10-16 #332–#371，见下"ZT-030 修正"一节） |
+| 依据 | 指挥部任务 ZT-026、ZT-030、ZT-036；ZT-040 减法还原（2026-11-28，见下"ZT-040 减法还原"一节） |
+
+## ZT-040 减法还原（2026-11-28）
+
+为遵循第一性原理与最小侵入边界，本轮直接在补丁 20 内做减法迭代（不另起新补丁号），把此前过度收紧的两处逻辑 100% 还原回官方 `v1.0.2`，并把健康切换名单改为实时查询：
+
+1. **后台记忆整理 100% 不设模型限制**：
+   - `src/octop/infra/agents/manager.py`：删除 `_build_harness_config` 中调用 `memory_model_settings_for_agent()` 的补丁段，100% 还原官方 `default_model` 与 `**_memory_extract_settings(...)`；
+   - `src/octop/infra/users/resource_policy.py`：彻底删除 `memory_model_settings_for_agent()`（保留 `allowed_models_for_agent_owner()` 供健康切换使用）；
+   - `src/octop/api/routers/providers.py`：`GET /api/providers/resolved` 新增可选查询参数 `unrestricted: bool = False`（默认 `False` 维持对话/定时任务白名单过滤；`True` 返回全站全部启用模型，仍不含 `api_key`）；
+   - `dashboard/src/api/modules/provider.ts` 与 `dashboard/src/pages/Agent/Memory/MemorySettings.tsx`：`listResolvedModels` 支持 `{ unrestricted: true }` 传 `?unrestricted=true`，记忆设置页「记忆提取模型」下拉直接请求全站启用模型，选名单外模型后后端与执行层均完整保留、不剥离、不关闭记忆整理。
+2. **识图自动升级 100% 还原回官方 `v1.0.2`**：
+   - `src/octop/infra/agents/providers/store.py`：`resolve_multimodal_model_ref()` 与 `resolve_model_for_multimodal_turn()` 100% 还原回官方实现；
+   - `src/octop/infra/gateway/process/processor.py`：同步还原为 `providers.resolve_model_for_multimodal_turn(model_ref, needs_multimodal=needs_multimodal)`（删掉 `allowed_models` 透传及随后的死分支）；纯文本对话与基础路由仍严格执行 `allowed_models` 白名单拦截，识图回合按官方逻辑自动升级全站视觉模型或回退不报错中断。
+3. **健康切换改为实时查名单（无需重启 Agent）**：
+   - `src/octop/infra/agents/manager.py`：`SafeModelFailoverMiddleware` 的 `candidates` 回调内部每次实时调用 `allowed_models_for_agent_owner(...)`，管理员增删收回白名单后对运行中的 Agent 立即生效，不再依赖重启。
 
 ## ZT-030 修正（2026-10-16，决策人 10-16 #332–#371）
 

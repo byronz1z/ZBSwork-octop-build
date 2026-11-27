@@ -135,7 +135,7 @@ index e5e551016dda29f4348c673debb18cce8b3b4963..d1db62f353cd9c52c31c0b07c59b375a
          if body.model_reasoning is not None:
              reasoning = {
 diff --git a/src/octop/api/routers/providers.py b/src/octop/api/routers/providers.py
-index 639069a3915781f18d1565b2b0db9b64cc92eaf9..fe5e65e29826d13568e182bf645d51597f7a0f14 100644
+index 639069a3915781f18d1565b2b0db9b64cc92eaf9..33769e4d318b9a689577e033a151a9ab168d1b5a 100644
 --- a/src/octop/api/routers/providers.py
 +++ b/src/octop/api/routers/providers.py
 @@ -169,7 +169,7 @@ async def _maybe_refresh_codex_row(server: Any, row: Any) -> Any:
@@ -194,11 +194,12 @@ index 639069a3915781f18d1565b2b0db9b64cc92eaf9..fe5e65e29826d13568e182bf645d5159
  @router.get("/presets")
  async def list_provider_presets(
      _: Any = Depends(current_user),
-@@ -202,14 +233,17 @@ async def list_provider_presets(
+@@ -202,14 +233,23 @@ async def list_provider_presets(
  
  @router.get("/resolved")
  async def list_resolved_models(
 -    _: Any = Depends(current_user),
++    unrestricted: bool = False,
 +    user: Any = Depends(current_user),
      server: Any = Depends(get_server),
  ) -> list[dict[str, Any]]:
@@ -206,15 +207,20 @@ index 639069a3915781f18d1565b2b0db9b64cc92eaf9..fe5e65e29826d13568e182bf645d5159
  
      Used by the Agent model selector to show available candidates.
 +    ZBS: non-admin users only see models inside their ``allowed_models``
-+    whitelist (no policy set = unrestricted, official behavior).
++    whitelist (no policy set = unrestricted, official behavior). Passing
++    ``unrestricted=true`` returns all enabled models across the site (e.g.
++    for background memory extraction settings); raw API keys are never
++    included in this payload.
      """
 -    return _list_resolved_models(server.services.provider_repo.list_all())
 +    resolved = _list_resolved_models(server.services.provider_repo.list_all())
++    if unrestricted:
++        return resolved
 +    return _filter_resolved_by_allowlist(resolved, _user_allowed_models(user, server))
  
  
  class ActiveModelBody(BaseModel):
-@@ -242,11 +276,21 @@ async def set_active_model(
+@@ -242,11 +282,21 @@ async def set_active_model(
  
  @router.get("")
  async def list_providers(
@@ -488,7 +494,7 @@ index 0b18fc4817a2b9af6a02665100137b1df783df43..cf4e7230bf40b9d22f7c55592b968cfe
      "AVATAR_TOO_LARGE": "头像超过 5 MB 大小限制。",
      "INVITE_INVALID": "邀请码无效。",
 diff --git a/src/octop/infra/agents/manager.py b/src/octop/infra/agents/manager.py
-index 87a2b2524578ab6f4a882ac087a5741ee0abc93d..d608e3fce8c02dbc13c0456af42d524e1fa79182 100644
+index 87a2b2524578ab6f4a882ac087a5741ee0abc93d..be5f56475d05baefb9233dcefb065c2faf02ea2c 100644
 --- a/src/octop/infra/agents/manager.py
 +++ b/src/octop/infra/agents/manager.py
 @@ -28,6 +28,7 @@ from octop.infra.agents.memory.backend import memory_backend_from_agent_config
@@ -545,89 +551,45 @@ index 87a2b2524578ab6f4a882ac087a5741ee0abc93d..d608e3fce8c02dbc13c0456af42d524e
              if self._model_health.is_routable(candidate.ref):
                  return candidate.ref
          return None
-@@ -4015,6 +4033,30 @@ class AgentManager:
-         if "decision" in _HARNESS_AGENT_CONFIG_FIELDS:
-             harness_fields["decision"] = self._decision.harness_config()
- 
-+        # ZBS patch 20 (feature 4): memory distillation must respect the agent
-+        # owner's model whitelist; policy lives in resource_policy, here only
-+        # the call (below patch 21's changes in this file, no overlap).
-+        from octop.infra.users.resource_policy import (  # noqa: PLC0415
-+            allowed_models_for_agent_owner,
-+            memory_model_settings_for_agent,
-+        )
-+
-+        memory_kwargs = _memory_extract_settings(
-+            cfg, is_ref_usable=self._providers.is_model_ref_usable
-+        )
-+        if "memory_aux_model_enabled" not in _HARNESS_AGENT_CONFIG_FIELDS:
-+            memory_kwargs.pop("memory_aux_model_enabled", None)
-+        default_model, memory_kwargs = memory_model_settings_for_agent(
-+            user_id=row.user_id,
-+            allowed_models=allowed_models_for_agent_owner(
-+                self._repos.user_policy_repo, self._repos.user_repo, row.user_id
-+            ),
-+            explicit_default_model=lambda: self._providers.resolve_explicit_default_model(row, cfg),
-+            fallback_model_ref=self._resolve_configured_fallback_model_ref,
-+            memory_kwargs=memory_kwargs,
-+            log_warning=logger.warning,
-+        )
-+
-         harness_cfg = HarnessAgentConfig(
-             name=_memory_namespace(row.agent_id),
-             workspace_dir=harness_workspace,
-@@ -4024,10 +4066,8 @@ class AgentManager:
-             # first, else first usable) — so promotion works whenever chat does.
-             # Per-turn AUTO routing is unaffected: the gateway resolves models via
-             # ``resolve_explicit_default_model`` directly.
--            default_model=(
--                self._providers.resolve_explicit_default_model(row, cfg)
--                or self._resolve_configured_fallback_model_ref()
--            ),
-+            default_model=default_model,
-+            **memory_kwargs,
-             system_prompt=system_prompt,
-             memory=memory,
-             backend=harness_backend,  # spec, or live OpenSandbox instance
-@@ -4042,7 +4082,6 @@ class AgentManager:
-             default_timezone=self._config.default_timezone,
-             media_generation=self._media_generation.harness_config(),
-             **harness_fields,
--            **_memory_extract_settings(cfg, is_ref_usable=self._providers.is_model_ref_usable),
-             **_resolve_memory_backend_kwargs(cfg, workspace_dir=workspace_dir, config=self._config),
-         )
-         if "tools_disabled" in _HARNESS_AGENT_CONFIG_FIELDS:
-@@ -4075,13 +4114,25 @@ class AgentManager:
+@@ -4075,13 +4093,31 @@ class AgentManager:
                      SafeModelFailoverMiddleware,
                  )
  
-+                # ZBS patch 20 (decision log 10-20 #436): health-aware model
-+                # failover may only switch to models the agent owner has
-+                # authorized. ``allowed_models_for_agent_owner`` returns
-+                # ``None`` for admins and owners without a whitelist — those
-+                # keep the official site-wide candidate list unchanged. When
-+                # the whitelist admits no candidate, the list is empty and the
-+                # official middleware just retries on the current model.
-+                failover_allowed_models = allowed_models_for_agent_owner(
-+                    self._repos.user_policy_repo, self._repos.user_repo, row.user_id
-+                )
-                 retry_middleware: Any = SafeModelFailoverMiddleware(
-                     health=self._model_health,
+-                retry_middleware: Any = SafeModelFailoverMiddleware(
+-                    health=self._model_health,
 -                    candidates=lambda _current_ref, needs_multimodal: (
 -                        self._providers.list_auto_route_candidates(
-+                    candidates=lambda _current_ref, needs_multimodal: [
++                # ZBS patch 20 (decision log 10-20 #436; ZT-040 live lookup):
++                # health-aware model failover may only switch to models the
++                # agent owner has authorized, evaluated live on each failover
++                # so whitelist changes take effect without restarting the agent.
++                from octop.infra.users.resource_policy import (  # noqa: PLC0415
++                    allowed_models_for_agent_owner,
++                )
++
++                def _failover_candidates(
++                    _current_ref: str, needs_multimodal: bool
++                ) -> list[Any]:
++                    failover_allowed_models = allowed_models_for_agent_owner(
++                        self._repos.user_policy_repo, self._repos.user_repo, row.user_id
++                    )
++                    return [
 +                        candidate
 +                        for candidate in self._providers.list_auto_route_candidates(
                              needs_multimodal=needs_multimodal
                          )
 -                    ),
 +                        if model_ref_passes_allowlist(candidate.ref, failover_allowed_models)
-+                    ],
++                    ]
++
++                retry_middleware: Any = SafeModelFailoverMiddleware(
++                    health=self._model_health,
++                    candidates=_failover_candidates,
                      model_for_ref=get_chat_model,
                      max_retries=applied.model_retry_max_retries,
                      initial_delay=applied.model_retry_initial_delay,
 diff --git a/src/octop/infra/agents/providers/store.py b/src/octop/infra/agents/providers/store.py
-index a18eb88dda41e296d9bde8343ce8183b0c110bc3..44b1b37b63775fec77317328dd29b734eeb33264 100644
+index a18eb88dda41e296d9bde8343ce8183b0c110bc3..c3d47db13937f3cabb4cd006e62a9c416bbbe54f 100644
 --- a/src/octop/infra/agents/providers/store.py
 +++ b/src/octop/infra/agents/providers/store.py
 @@ -3,7 +3,7 @@
@@ -656,91 +618,21 @@ index a18eb88dda41e296d9bde8343ce8183b0c110bc3..44b1b37b63775fec77317328dd29b734
  class ProviderStore:
      """Maps persisted provider rows to harness runtime provider configs."""
  
-@@ -266,16 +276,25 @@ class ProviderStore:
-                 return _model_dict_supports_image(model)
-         return False
- 
--    def resolve_multimodal_model_ref(self) -> str | None:
--        """First enabled image-capable model across usable providers."""
-+    def resolve_multimodal_model_ref(
-+        self, allowed_models: Sequence[str] | None = None
-+    ) -> str | None:
-+        """First enabled image-capable model across usable providers.
-+
-+        ZBS: when *allowed_models* is set, only whitelisted refs are eligible.
-+        """
-         for row in self.iter_usable_rows():
-             for model in row.get_models():
-                 if not is_chat_eligible_model(
-                     model, provider_name=row.name, provider_api_key=row.api_key
-                 ):
-                     continue
--                if _model_dict_supports_image(model):
--                    return f"{row.name}/{model['id']}"
-+                if not _model_dict_supports_image(model):
-+                    continue
-+                ref = f"{row.name}/{model['id']}"
-+                if not model_ref_passes_allowlist(ref, allowed_models):
-+                    continue
-+                return ref
-         return None
- 
-     def resolve_model_for_multimodal_turn(
-@@ -283,18 +302,46 @@ class ProviderStore:
-         model_ref: str | None,
-         *,
-         needs_multimodal: bool,
-+        allowed_models: Sequence[str] | None = None,
-     ) -> str | None:
--        """Keep explicit ref when it supports vision; else upgrade to a vision model."""
-+        """Keep explicit ref when it supports vision; else upgrade to a vision ref.
-+
-+        ZBS: with no allowlist set this is exactly the official method
-+        (``return upgraded or ref``). When *allowed_models* is set, the
-+        explicit ref must be whitelisted and the vision upgrade only picks
-+        a whitelisted model. An explicit ref outside the whitelist is
-+        dropped (returns ``None``), never silently swapped for a
-+        non-whitelisted upgrade.
-+        """
-+        if allowed_models is None:
-+            # Official path — unchanged, including the fallback to the
-+            # original ref when no vision model exists site-wide.
-+            if not needs_multimodal:
-+                return model_ref
-+            ref = (model_ref or "").strip() or None
-+            if ref and self.is_model_ref_multimodal(ref):
-+                return ref
-+            upgraded = self.resolve_multimodal_model_ref()
-+            return upgraded or ref
-         if not needs_multimodal:
--            return model_ref
-+            if model_ref is None or model_ref_passes_allowlist(model_ref, allowed_models):
-+                return model_ref
-+            return None
-         ref = (model_ref or "").strip() or None
--        if ref and self.is_model_ref_multimodal(ref):
-+        if (
-+            ref
-+            and self.is_model_ref_multimodal(ref)
-+            and model_ref_passes_allowlist(ref, allowed_models)
-+        ):
-             return ref
--        upgraded = self.resolve_multimodal_model_ref()
--        return upgraded or ref
-+        upgraded = self.resolve_multimodal_model_ref(allowed_models)
-+        return upgraded or None
-+
-+    def resolve_first_model_ref(self, allowed_models: Sequence[str] | None = None) -> str | None:
-+        """First chat-eligible enabled model across usable providers.
+@@ -293,8 +303,11 @@ class ProviderStore:
+         upgraded = self.resolve_multimodal_model_ref()
+         return upgraded or ref
  
 -    def resolve_first_model_ref(self) -> str | None:
 -        """First chat-eligible enabled model across usable providers."""
++    def resolve_first_model_ref(self, allowed_models: Sequence[str] | None = None) -> str | None:
++        """First chat-eligible enabled model across usable providers.
++
 +        ZBS: when *allowed_models* is set, only whitelisted refs are eligible.
 +        """
          for row in self.iter_usable_rows():
              for model in row.get_models():
                  if not is_chat_eligible_model(
-@@ -302,8 +349,12 @@ class ProviderStore:
+@@ -302,8 +315,12 @@ class ProviderStore:
                  ):
                      continue
                  model_id = str(model.get("id") or "").strip()
@@ -853,7 +745,7 @@ index c0be64eaf513af1d7de4b40cc95a05c0ff76f24a..eb1bec23b8503401f70b100e9f3facd7
      ErrorCode.AVATAR_TOO_LARGE: 413,
      ErrorCode.INVITE_INVALID: 400,
 diff --git a/src/octop/infra/gateway/process/processor.py b/src/octop/infra/gateway/process/processor.py
-index 71efc3fac27d2fad9892e3d40521e91da740db29..f5c0edbff1410de3257994da79443f599676e5dd 100644
+index 71efc3fac27d2fad9892e3d40521e91da740db29..b096041de153416f49fb095a22f115b1b75c21cc 100644
 --- a/src/octop/infra/gateway/process/processor.py
 +++ b/src/octop/infra/gateway/process/processor.py
 @@ -23,6 +23,7 @@ from octop_harness.teams.util import PeerCall, PeerSession
@@ -873,17 +765,18 @@ index 71efc3fac27d2fad9892e3d40521e91da740db29..f5c0edbff1410de3257994da79443f59
  from octop.infra.gateway.cli.events import message_event_to_cli_chunks
  from octop.infra.gateway.hitl.coordinator import (
      HitlAnswerOutcome,
-@@ -555,8 +556,17 @@ class GlobalProcessor:
+@@ -555,8 +556,18 @@ class GlobalProcessor:
          - Stale overrides (deleted / disabled catalog refs) are dropped so routing
            falls through to a usable expert default or harness AUTO.
          - When a model is passed and the turn needs vision, upgrade to a vision ref.
 +        - ZBS: candidates outside the user's ``allowed_models`` whitelist are
-+          dropped at every priority level; the vision upgrade and the global
-+          fallback also only pick whitelisted models. When a whitelist is set
-+          and none of its models resolves, ``NO_ALLOWED_MODEL_AVAILABLE`` is
-+          raised so the turn stops with a clear, localized reason — never a
-+          non-whitelisted model. Without a whitelist ``None`` is returned
-+          (harness AUTO) exactly as official.
++          dropped at every priority level; the global fallback also only picks
++          whitelisted models. When a whitelist is set and none of its models
++          resolves, ``NO_ALLOWED_MODEL_AVAILABLE`` is raised so the turn stops
++          with a clear, localized reason — never a non-whitelisted model.
++          Without a whitelist ``None`` is returned (harness AUTO) exactly as
++          official. Multimodal vision upgrade follows official site-wide
++          routing (``resolve_model_for_multimodal_turn``).
          """
          providers = self._agent_manager.providers
 +        allowed_models = self._allowed_models_for_user(user_id)
@@ -891,7 +784,7 @@ index 71efc3fac27d2fad9892e3d40521e91da740db29..f5c0edbff1410de3257994da79443f59
          thread_model = self._agent_manager.get_thread_model(agent_id, thread_id)
          thread_row = self._thread_registry.get_thread(thread_id)
          model_ref = self._model_ref_from_meta(
-@@ -567,6 +577,8 @@ class GlobalProcessor:
+@@ -567,6 +578,8 @@ class GlobalProcessor:
          automatic = False
          if model_ref and not providers.is_model_ref_usable(model_ref):
              model_ref = None
@@ -900,7 +793,7 @@ index 71efc3fac27d2fad9892e3d40521e91da740db29..f5c0edbff1410de3257994da79443f59
          if not model_ref:
              row = self._agent_repo.get(agent_id)
              if row is not None:
-@@ -574,6 +586,8 @@ class GlobalProcessor:
+@@ -574,6 +587,8 @@ class GlobalProcessor:
                      row,
                      self._agent_manager.get_config(agent_id),
                  )
@@ -909,7 +802,7 @@ index 71efc3fac27d2fad9892e3d40521e91da740db29..f5c0edbff1410de3257994da79443f59
          if not model_ref:
              user_row = self._user_repo.get(user_id)
              preferred = get_preferred_model_from_json(
-@@ -582,20 +596,48 @@ class GlobalProcessor:
+@@ -582,11 +597,18 @@ class GlobalProcessor:
              if preferred and self._agent_manager.is_auto_route_model_available(preferred):
                  model_ref = preferred
                  automatic = True
@@ -929,15 +822,7 @@ index 71efc3fac27d2fad9892e3d40521e91da740db29..f5c0edbff1410de3257994da79443f59
              return _ResolvedModelRoute(None, automatic=True)
          resolved = providers.resolve_model_for_multimodal_turn(
              model_ref,
-             needs_multimodal=needs_multimodal,
-+            allowed_models=allowed_models,
-         )
-+        if resolved is None and allowed_models is not None:
-+            raise OctopError(
-+                ErrorCode.NO_ALLOWED_MODEL_AVAILABLE,
-+                "no usable model in the user's allowed_models whitelist",
-+            )
-         if resolved != model_ref:
+@@ -596,6 +618,21 @@ class GlobalProcessor:
              automatic = True
          return _ResolvedModelRoute(resolved, automatic=automatic)
  
@@ -959,7 +844,7 @@ index 71efc3fac27d2fad9892e3d40521e91da740db29..f5c0edbff1410de3257994da79443f59
      def _resolve_reasoning_overrides(
          self,
          *,
-@@ -794,13 +836,20 @@ class GlobalProcessor:
+@@ -794,13 +831,20 @@ class GlobalProcessor:
              media_backend=media_backend,
              locale=locale,
          )
@@ -987,7 +872,7 @@ index 71efc3fac27d2fad9892e3d40521e91da740db29..f5c0edbff1410de3257994da79443f59
          model_ref = model_route.model_ref
          mcp_servers = await self._resolve_turn_mcp_servers(
              agent_id=agent_id,
-@@ -1141,14 +1190,31 @@ class GlobalProcessor:
+@@ -1141,14 +1185,31 @@ class GlobalProcessor:
  
          self._hitl.expire_pending_for_thread(thread_id, agent_id=agent_id, user_id=user_id)
          self.teams.cancel_member_hitl(thread_id)
@@ -1092,19 +977,18 @@ index 206523ee73b0525b72e6849f0ae03604fd23115f..08323c60755e43349295cfd01cb5882f
          row = self._services.user_repo.get_by_username(username)
          if row is None:
 diff --git a/src/octop/infra/users/resource_policy.py b/src/octop/infra/users/resource_policy.py
-index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..193f5587d563033c9c8720331676281e72d622c7 100644
+index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..4cd8c7ba44a84b8b7af1534fce9a9f5483f41a4e 100644
 --- a/src/octop/infra/users/resource_policy.py
 +++ b/src/octop/infra/users/resource_policy.py
-@@ -2,6 +2,8 @@
+@@ -2,6 +2,7 @@
  
  from __future__ import annotations
  
-+import collections.abc
 +import json
  import os
  from collections.abc import Mapping, Sequence
  from typing import Any
-@@ -89,6 +91,84 @@ def max_agents_of(raw: Any) -> int | None:
+@@ -89,6 +90,84 @@ def max_agents_of(raw: Any) -> int | None:
          return None
  
  
@@ -1189,7 +1073,7 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..193f5587d563033c9c8720331676281e
  def public_policy_fields(rows: Sequence[Any] | Mapping[str, str] | None) -> dict[str, Any]:
      """HTTP-facing subset of known policies (disabled / missing = unlimited)."""
      by_name: dict[str, str] = {}
-@@ -104,6 +184,7 @@ def public_policy_fields(rows: Sequence[Any] | Mapping[str, str] | None) -> dict
+@@ -104,6 +183,7 @@ def public_policy_fields(rows: Sequence[Any] | Mapping[str, str] | None) -> dict
          "workspace_root_dir": workspace_root_dir_of(by_name),
          "token_quota": token_quota_of(by_name.get(POLICY_TOKEN_QUOTA)),
          "max_agents": max_agents_of(by_name.get(POLICY_MAX_AGENTS)),
@@ -1197,7 +1081,7 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..193f5587d563033c9c8720331676281e
      }
  
  
-@@ -205,3 +286,129 @@ def assert_agent_quota_available(policy_repo: Any, agent_repo: Any, user_id: int
+@@ -205,3 +285,79 @@ def assert_agent_quota_available(policy_repo: Any, agent_repo: Any, user_id: int
              "agent quota exceeded",
              details={"used": owned, "quota": limit},
          )
@@ -1268,56 +1152,6 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..193f5587d563033c9c8720331676281e
 +    return exc.localized_message(locale_from_user_row(user_row))
 +
 +
-+# ZBS patch 20 (feature 4): background memory distillation must respect the
-+# agent owner's model whitelist. Called from AgentManager's harness-config
-+# builder; all agent-side inputs arrive as callables so this module keeps no
-+# dependency on the agents package.
-+def memory_model_settings_for_agent(
-+    *,
-+    user_id: int | None,
-+    allowed_models: Sequence[str] | None,
-+    explicit_default_model: collections.abc.Callable[[], str | None],
-+    fallback_model_ref: collections.abc.Callable[[Sequence[str] | None], str | None],
-+    memory_kwargs: dict[str, Any],
-+    log_warning: collections.abc.Callable[[str, object], None] | None = None,
-+) -> tuple[str | None, dict[str, Any]]:
-+    """Whitelist-aware ``(default_model, memory kwargs)`` for the harness config.
-+
-+    No whitelist (``None``, admin / unknown owner) keeps official behavior
-+    unchanged: explicit default first, else the site-wide fallback. With a
-+    whitelist:
-+
-+    - the default model is picked inside the whitelist (explicit default when
-+      whitelisted, else the whitelist-restricted fallback);
-+    - when none of the whitelisted models is usable, an empty default_model
-+      would make the harness silently fall back to the first enabled model of
-+      ANY provider (``HarnessAgentConfig.pick_default_model_ref``), so the aux
-+      memory LLM is switched off instead — distillation is skipped, capture
-+      and raw recall still work;
-+    - a non-whitelisted ``memory.aux_model`` override is dropped so extraction
-+      cannot escape the whitelist via the aux tier.
-+    """
-+    default_model = explicit_default_model()
-+    if allowed_models is None:
-+        return default_model or fallback_model_ref(None), memory_kwargs
-+    if not model_ref_is_allowed(default_model or "", allowed_models):
-+        default_model = None
-+    default_model = default_model or fallback_model_ref(allowed_models)
-+    if default_model is None:
-+        memory_kwargs["memory_aux_model_enabled"] = False
-+    aux_ref = memory_kwargs.get("memory_aux_light_model")
-+    if aux_ref is not None and not model_ref_is_allowed(aux_ref, allowed_models):
-+        if log_warning is not None:
-+            log_warning(
-+                "memory aux_model %r is outside the agent owner's model "
-+                "whitelist; dropping it so extraction stays whitelisted",
-+                aux_ref,
-+            )
-+        memory_kwargs.pop("memory_aux_light_model", None)
-+        memory_kwargs.pop("memory_aux_heavy_model", None)
-+    return default_model, memory_kwargs
-+
-+
 +def allowed_models_for_agent_owner(
 +    policy_repo: Any,
 +    user_repo: Any,
@@ -1329,10 +1163,10 @@ index 2d97b93b2a654f7857bbbd60a0e88d814a4a4450..193f5587d563033c9c8720331676281e
 +    return allowed_models_for_user_id(policy_repo, user_repo, user_id)
 diff --git a/tests/integration/test_model_policy_api.py b/tests/integration/test_model_policy_api.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4e70e2cb3d71569cc7c59d691bef755b4965385c
+index 0000000000000000000000000000000000000000..71b3aa0278cca9eb2891fa5d4a1b2ac641f18ee3
 --- /dev/null
 +++ b/tests/integration/test_model_policy_api.py
-@@ -0,0 +1,537 @@
+@@ -0,0 +1,545 @@
 +"""ZBS patch 20 — allowed_models HTTP surface (F7/F9/F11 + F8 entry checks)."""
 +
 +from __future__ import annotations
@@ -1513,7 +1347,7 @@ index 0000000000000000000000000000000000000000..4e70e2cb3d71569cc7c59d691bef755b
 +    all_refs = {f"{m['provider_name']}/{m['model']}" for m in r.json()}
 +    assert all_refs == {"openai/gpt-4o", "second/m2"}
 +
-+    # Restricted user only sees whitelisted models.
++    # Restricted user only sees whitelisted models by default.
 +    r = await c.patch(
 +        f"/api/users/{alice_id}", headers=auth, json={"allowed_models": ["second/m2"]}
 +    )
@@ -1522,6 +1356,14 @@ index 0000000000000000000000000000000000000000..4e70e2cb3d71569cc7c59d691bef755b
 +    assert r.status_code == 200
 +    refs = {f"{m['provider_name']}/{m['model']}" for m in r.json()}
 +    assert refs == {"second/m2"}
++
++    # With unrestricted=true (used by memory extraction settings), restricted user
++    # sees all enabled site-wide models and still receives no api_key field.
++    r = await c.get("/api/providers/resolved?unrestricted=true", headers=alice)
++    assert r.status_code == 200
++    unrestricted_rows = r.json()
++    assert {f"{m['provider_name']}/{m['model']}" for m in unrestricted_rows} == all_refs
++    assert all("api_key" not in m for m in unrestricted_rows)
 +
 +    # Admin always sees everything.
 +    r = await c.get("/api/providers/resolved", headers=auth)
@@ -1872,23 +1714,22 @@ index 0000000000000000000000000000000000000000..4e70e2cb3d71569cc7c59d691bef755b
 +    assert "你可用的模型当前都无法使用" in (row.get("last_error") or ""), row
 diff --git a/tests/unit/agents/test_memory_model_policy.py b/tests/unit/agents/test_memory_model_policy.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..801327dcd935205098e5171f2870a68475f119ba
+index 0000000000000000000000000000000000000000..16d1c25d0eebc6e1898e2ffd066e2ec1bf4032fe
 --- /dev/null
 +++ b/tests/unit/agents/test_memory_model_policy.py
-@@ -0,0 +1,238 @@
-+"""ZBS patch 20 (feature 4): memory distillation respects the owner's model whitelist.
+@@ -0,0 +1,191 @@
++"""ZBS patch 20: memory distillation stays unrestricted; failover obeys owner whitelist live.
 +
 +Covers ``AgentManager._build_harness_config``:
 +
-+- whitelisted owner: harness ``default_model`` picked inside the whitelist
-+  (pinned explicit default when whitelisted, else whitelist-restricted fallback);
-+- whitelisted owner, no usable whitelisted model: ``memory_aux_model_enabled``
-+  is switched off instead of falling back to a non-whitelisted model
-+  (harness ``pick_default_model_ref`` would otherwise pick the first enabled
-+  model of ANY provider);
-+- non-whitelisted ``memory.aux_model`` override is dropped so extraction
-+  cannot escape the whitelist via the aux tier;
-+- no whitelist / admin owner: official behavior unchanged.
++- background memory distillation (``default_model``, ``memory_aux_light_model``,
++  ``memory_aux_heavy_model``, ``memory_aux_model_enabled``) keeps official
++  v1.0.2 behavior and is never stripped or disabled by the owner's
++  ``allowed_models`` whitelist;
++- ``SafeModelFailoverMiddleware`` filters failover candidates by the agent
++  owner's ``allowed_models`` whitelist dynamically on each call (live lookup,
++  no agent restart required), while admins and owners without a whitelist keep
++  the official site-wide candidate list.
 +"""
 +
 +from __future__ import annotations
@@ -1958,96 +1799,34 @@ index 0000000000000000000000000000000000000000..801327dcd935205098e5171f2870a684
 +    )
 +
 +
-+def test_whitelisted_owner_gets_whitelisted_default_model(manager: AgentManager) -> None:
-+    _add_provider(manager, "a", ["m1", "m2"])
-+    _add_provider(manager, "b", ["m3"])
-+    manager._repos.settings_repo.set_active_model("b", "m3")  # site-wide default
-+    uid = _seed_user(manager, role="user")
-+    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m2"]))
-+
-+    cfg = manager._build_harness_config(_row(uid))
-+
-+    assert cfg.default_model == "a/m2"  # inside the whitelist, not b/m3
-+    assert cfg.memory_aux_model_enabled is True
-+    assert cfg.memory_aux_light_model is None
-+
-+
-+def test_whitelisted_owner_pinned_default_outside_whitelist_falls_back_inside(
++def test_restricted_owner_memory_aux_model_outside_whitelist_is_preserved(
 +    manager: AgentManager,
 +) -> None:
++    """Memory extraction model outside allowed_models must NOT be stripped or disabled."""
 +    _add_provider(manager, "a", ["m1"])
 +    _add_provider(manager, "b", ["m3"])
-+    uid = _seed_user(manager, role="user")
-+    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1"]))
-+
-+    cfg = manager._build_harness_config(_row(uid, default_model="b/m3"))
-+
-+    assert cfg.default_model == "a/m1"
-+
-+
-+def test_whitelisted_owner_no_usable_model_disables_memory_distillation(
-+    manager: AgentManager,
-+) -> None:
-+    _add_provider(manager, "a", ["m1"])
-+    _add_provider(manager, "b", ["m3"])
-+    uid = _seed_user(manager, role="user")
-+    # Whitelist points only at a provider that does not exist.
-+    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["x/none"]))
-+
-+    cfg = manager._build_harness_config(_row(uid))
-+
-+    assert cfg.default_model is None
-+    assert cfg.memory_aux_model_enabled is False
-+
-+
-+def test_whitelisted_owner_non_whitelisted_aux_model_dropped(manager: AgentManager) -> None:
-+    _add_provider(manager, "a", ["m1"])
-+    _add_provider(manager, "b", ["m3"])
++    manager._repos.settings_repo.set_active_model("b", "m3")
 +    uid = _seed_user(manager, role="user")
 +    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1"]))
 +    config_json = json.dumps({"memory": {"aux_model": "b/m3"}})
 +
 +    cfg = manager._build_harness_config(_row(uid, config_json=config_json))
 +
-+    assert cfg.default_model == "a/m1"
-+    assert cfg.memory_aux_light_model is None
-+    assert cfg.memory_aux_heavy_model is None
++    assert cfg.default_model == "b/m3"
++    assert cfg.memory_aux_light_model == "b/m3"
++    assert cfg.memory_aux_heavy_model == "b/m3"
 +    assert cfg.memory_aux_model_enabled is True
 +
 +
-+def test_whitelisted_owner_whitelisted_aux_model_kept(manager: AgentManager) -> None:
-+    _add_provider(manager, "a", ["m1"])
-+    uid = _seed_user(manager, role="user")
-+    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1"]))
-+    config_json = json.dumps({"memory": {"aux_model": "a/m1"}})
-+
-+    cfg = manager._build_harness_config(_row(uid, config_json=config_json))
-+
-+    assert cfg.memory_aux_light_model == "a/m1"
-+    assert cfg.memory_aux_heavy_model == "a/m1"
-+
-+
-+def test_no_whitelist_owner_behavior_unchanged(manager: AgentManager) -> None:
-+    _add_provider(manager, "a", ["m1"])
-+    _add_provider(manager, "b", ["m3"])
-+    manager._repos.settings_repo.set_active_model("b", "m3")
-+    uid = _seed_user(manager, role="user")
-+
-+    cfg = manager._build_harness_config(_row(uid))
-+
-+    assert cfg.default_model == "b/m3"  # official: site-wide active model
-+    assert cfg.memory_aux_model_enabled is True
-+
-+
-+def test_admin_owner_behavior_unchanged_even_with_whitelist_entry(
++def test_restricted_owner_unusable_whitelist_does_not_disable_memory_distillation(
 +    manager: AgentManager,
 +) -> None:
++    """Even if allowed_models has no usable chat model, background memory stays enabled."""
 +    _add_provider(manager, "a", ["m1"])
 +    _add_provider(manager, "b", ["m3"])
 +    manager._repos.settings_repo.set_active_model("b", "m3")
-+    uid = _seed_user(manager, role="admin")
-+    # Admins are never restricted; a stale policy row must not apply.
-+    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1"]))
++    uid = _seed_user(manager, role="user")
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["x/none"]))
 +
 +    cfg = manager._build_harness_config(_row(uid))
 +
@@ -2055,12 +1834,7 @@ index 0000000000000000000000000000000000000000..801327dcd935205098e5171f2870a684
 +    assert cfg.memory_aux_model_enabled is True
 +
 +
-+# --- ZT-036: health-aware model failover only switches inside the whitelist ---
-+# Decision log 10-20 #436: only models the agent owner has authorized may be
-+# used for the automatic failover switch. The candidates callback installed by
-+# ``_build_harness_config`` must therefore filter ``SafeModelFailoverMiddleware``
-+# candidates by the owner's ``allowed_models``; admins and owners without a
-+# whitelist keep the official site-wide candidate list.
++# --- Health-aware model failover respects owner whitelist (live lookup) ---
 +
 +
 +async def _boot_failover_config(manager: AgentManager, row: AgentRow) -> Any:
@@ -2090,6 +1864,27 @@ index 0000000000000000000000000000000000000000..801327dcd935205098e5171f2870a684
 +    assert _failover_refs(middleware) == ["a/m2"]  # b/m3 filtered out
 +
 +
++async def test_whitelisted_owner_failover_candidates_update_live_without_restart(
++    manager: AgentManager,
++) -> None:
++    """Updating allowed_models takes effect on running middleware without agent restart."""
++    _add_provider(manager, "a", ["m1", "m2"])
++    _add_provider(manager, "b", ["m3"])
++    uid = _seed_user(manager, role="user")
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m1", "b/m3"]))
++
++    middleware = await _boot_failover_config(manager, _row(uid))
++    assert _failover_refs(middleware) == ["a/m1", "b/m3"]
++
++    # Shrink whitelist without rebuilding harness config or restarting agent.
++    manager._repos.user_policy_repo.set(uid, "allowed_models", json.dumps(["a/m2"]))
++    assert _failover_refs(middleware) == ["a/m2"]
++
++    # Clear whitelist — immediately sees full site-wide candidate list again.
++    manager._repos.user_policy_repo.set(uid, "allowed_models", None)
++    assert _failover_refs(middleware) == ["a/m1", "a/m2", "b/m3"]
++
++
 +async def test_no_whitelist_owner_failover_candidates_unchanged(
 +    manager: AgentManager,
 +) -> None:
@@ -2116,11 +1911,11 @@ index 0000000000000000000000000000000000000000..801327dcd935205098e5171f2870a684
 +    assert _failover_refs(middleware) == ["a/m1", "b/m3"]  # official order
 diff --git a/tests/unit/agents/test_model_policy_store.py b/tests/unit/agents/test_model_policy_store.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7db7ee1896351cdff5699a5cc4706f41d90f6074
+index 0000000000000000000000000000000000000000..d811d9e208f69bb6d0232593dc308cca879cf7c1
 --- /dev/null
 +++ b/tests/unit/agents/test_model_policy_store.py
-@@ -0,0 +1,141 @@
-+"""ZBS patch 20 — ProviderStore allowlist filtering (F8: vision upgrade, fallback)."""
+@@ -0,0 +1,91 @@
++"""ZBS patch 20 — ProviderStore allowlist fallback & official multimodal routing."""
 +
 +from __future__ import annotations
 +
@@ -2175,115 +1970,45 @@ index 0000000000000000000000000000000000000000..7db7ee1896351cdff5699a5cc4706f41
 +    assert store.resolve_first_model_ref(["c/none"]) is None
 +
 +
-+def test_resolve_multimodal_model_ref_respects_allowlist(store: ProviderStore) -> None:
++def test_multimodal_upgrade_follows_official_site_wide_resolution(
++    store: ProviderStore,
++) -> None:
++    """Multimodal upgrade keeps official v1.0.2 site-wide vision routing."""
 +    _add_provider(store, "a", [_model("text-only"), _model("vision", image=True)])
 +    _add_provider(store, "b", [_model("other-vision", image=True)])
++
 +    assert store.resolve_multimodal_model_ref() == "a/vision"
-+    assert store.resolve_multimodal_model_ref(["b/other-vision"]) == "b/other-vision"
-+    # Whitelist without any vision-capable entry → no upgrade available.
-+    assert store.resolve_multimodal_model_ref(["a/text-only"]) is None
-+
-+
-+def test_resolve_model_for_multimodal_turn_allowlist(store: ProviderStore) -> None:
-+    _add_provider(store, "a", [_model("text-only"), _model("vision", image=True)])
-+    _add_provider(store, "b", [_model("other-vision", image=True)])
-+
-+    # Text turn: whitelisted ref passes through, non-whitelisted dropped.
 +    assert store.resolve_model_for_multimodal_turn("a/text-only", needs_multimodal=False) == (
 +        "a/text-only"
 +    )
-+    assert (
-+        store.resolve_model_for_multimodal_turn(
-+            "a/text-only", needs_multimodal=False, allowed_models=["b/other-vision"]
-+        )
-+        is None
++    assert store.resolve_model_for_multimodal_turn("a/text-only", needs_multimodal=True) == (
++        "a/vision"
 +    )
-+
-+    # Vision turn: whitelisted multimodal ref kept.
-+    assert (
-+        store.resolve_model_for_multimodal_turn(
-+            "a/vision", needs_multimodal=True, allowed_models=["a/vision"]
-+        )
-+        == "a/vision"
-+    )
-+    # Vision turn: non-whitelisted text ref is NOT silently upgraded to the
-+    # first global vision model; upgrade only happens inside the whitelist.
-+    assert (
-+        store.resolve_model_for_multimodal_turn(
-+            "a/text-only", needs_multimodal=True, allowed_models=["a/vision"]
-+        )
-+        == "a/vision"
-+    )
-+    assert (
-+        store.resolve_model_for_multimodal_turn(
-+            "a/text-only", needs_multimodal=True, allowed_models=["b/other-vision"]
-+        )
-+        == "b/other-vision"
-+    )
-+    # Nothing whitelisted is vision-capable and the ref itself is not
-+    # whitelisted → None (clear failure, no silent non-whitelist swap).
-+    assert (
-+        store.resolve_model_for_multimodal_turn(
-+            "a/text-only", needs_multimodal=True, allowed_models=["a/text-only"]
-+        )
-+        is None
-+    )
-+
-+    # No allowlist → official behavior (upgrade to first vision model).
-+    assert (
-+        store.resolve_model_for_multimodal_turn("a/text-only", needs_multimodal=True) == "a/vision"
++    assert store.resolve_model_for_multimodal_turn("b/other-vision", needs_multimodal=True) == (
++        "b/other-vision"
 +    )
 +
 +
-+def test_resolve_model_for_multimodal_turn_no_allowlist_no_vision_returns_ref(
++def test_multimodal_turn_without_site_vision_falls_back_to_original_ref(
 +    store: ProviderStore,
 +) -> None:
-+    """ZBS round 4: no allowlist set + no vision model site-wide → original ref.
-+
-+    Official code returns ``upgraded or ref`` — with no vision model anywhere
-+    that falls back to the original ref. Must not become ``None`` (which
-+    would reroute to AUTO) when no allowlist is configured.
-+    """
++    """When no vision model exists site-wide, official fallback returns the original ref."""
 +    _add_provider(store, "a", [_model("text-only")])
 +    _add_provider(store, "b", [_model("also-text")])
 +
-+    # Sanity: no vision model exists anywhere.
 +    assert store.resolve_multimodal_model_ref() is None
-+
 +    assert (
 +        store.resolve_model_for_multimodal_turn("a/text-only", needs_multimodal=True)
 +        == "a/text-only"
 +    )
-+    # None ref with no allowlist stays None (official behavior).
 +    assert store.resolve_model_for_multimodal_turn(None, needs_multimodal=True) is None
-+    # Text turns pass through unchanged with no allowlist.
 +    assert (
 +        store.resolve_model_for_multimodal_turn("a/text-only", needs_multimodal=False)
 +        == "a/text-only"
 +    )
-diff --git a/tests/unit/gateway/test_global_processor_team.py b/tests/unit/gateway/test_global_processor_team.py
-index d046fdb99aed5502605dcffc6759b2dc9f08fc85..a14e229533dd2ea68c6344e8757d59254cc187bb 100644
---- a/tests/unit/gateway/test_global_processor_team.py
-+++ b/tests/unit/gateway/test_global_processor_team.py
-@@ -2172,6 +2172,7 @@ def test_resolve_harness_model_uses_agent_default_and_upgrades_vision() -> None:
-     processor._agent_manager.providers.resolve_model_for_multimodal_turn.assert_called_once_with(
-         "p/text-only",
-         needs_multimodal=True,
-+        allowed_models=None,
-     )
- 
- 
-@@ -2202,6 +2203,7 @@ def test_resolve_harness_model_dashboard_override_wins() -> None:
-     processor._agent_manager.providers.resolve_model_for_multimodal_turn.assert_called_once_with(
-         "p/picked",
-         needs_multimodal=False,
-+        allowed_models=None,
-     )
- 
- 
 diff --git a/tests/unit/gateway/test_model_policy_processor.py b/tests/unit/gateway/test_model_policy_processor.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f83b424d573ff88e4def404c726cc6a0cae7e431
+index 0000000000000000000000000000000000000000..b959966acc4a6708e66695d4427b73fb518d0682
 --- /dev/null
 +++ b/tests/unit/gateway/test_model_policy_processor.py
 @@ -0,0 +1,155 @@
@@ -2330,11 +2055,9 @@ index 0000000000000000000000000000000000000000..f83b424d573ff88e4def404c726cc6a0
 +    providers.resolve_explicit_default_model.side_effect = (
 +        None if agent_default_model is None else lambda row, cfg: agent_default_model
 +    )
-+    # Pass-through unless the test overrides it.
++    # Pass-through matching official v1.0.2 signature unless the test overrides it.
 +    providers.resolve_model_for_multimodal_turn.side_effect = (
-+        lambda ref, *, needs_multimodal, allowed_models=None: (
-+            ref if allowed_models is None or ref in allowed_models else None
-+        )
++        lambda ref, *, needs_multimodal: ref
 +    )
 +
 +    user_row = MagicMock(preferences_json="{}")
@@ -2411,30 +2134,32 @@ index 0000000000000000000000000000000000000000..f83b424d573ff88e4def404c726cc6a0
 +    assert p._resolve_harness_model("a1", "t1", None, needs_multimodal=False) is None
 +
 +
-+def test_multimodal_upgrade_receives_allowlist() -> None:
-+    p = _processor(allowed_models=["p/ok"])
++def test_multimodal_upgrade_uses_official_site_wide_vision_route() -> None:
++    """Vision turn delegates to official site-wide upgrade without allowlist blocking."""
++    p = _processor(allowed_models=["p/text-only"])
 +    providers = p._agent_manager.providers
 +    providers.resolve_model_for_multimodal_turn.side_effect = None
-+    providers.resolve_model_for_multimodal_turn.return_value = "p/ok"
-+    resolved = p._resolve_harness_model("a1", "t1", {"model": "p/ok"}, needs_multimodal=True)
-+    assert resolved == "p/ok"
++    providers.resolve_model_for_multimodal_turn.return_value = "site/vision"
++    resolved = p._resolve_harness_model("a1", "t1", {"model": "p/text-only"}, needs_multimodal=True)
++    assert resolved == "site/vision"
 +    providers.resolve_model_for_multimodal_turn.assert_called_once_with(
-+        "p/ok",
++        "p/text-only",
 +        needs_multimodal=True,
-+        allowed_models=["p/ok"],
 +    )
 +
 +
-+def test_multimodal_upgrade_blocked_by_allowlist_raises() -> None:
-+    """Whitelist set and the vision upgrade picks nothing → NO_ALLOWED_MODEL_AVAILABLE."""
-+    p = _processor(allowed_models=["p/ok"])
++def test_multimodal_turn_falls_back_to_whitelisted_ref_when_no_vision_exists() -> None:
++    """When official multimodal routing keeps the original ref, turn proceeds without error."""
++    p = _processor(allowed_models=["p/text-only"])
 +    providers = p._agent_manager.providers
-+    providers.resolve_model_for_multimodal_turn.side_effect = (
-+        lambda ref, *, needs_multimodal, allowed_models=None: None
++    providers.resolve_model_for_multimodal_turn.side_effect = None
++    providers.resolve_model_for_multimodal_turn.return_value = "p/text-only"
++    resolved = p._resolve_harness_model("a1", "t1", {"model": "p/text-only"}, needs_multimodal=True)
++    assert resolved == "p/text-only"
++    providers.resolve_model_for_multimodal_turn.assert_called_once_with(
++        "p/text-only",
++        needs_multimodal=True,
 +    )
-+    with pytest.raises(OctopError) as exc:
-+        p._resolve_harness_model("a1", "t1", {"model": "p/ok"}, needs_multimodal=True)
-+    assert exc.value.code is ErrorCode.NO_ALLOWED_MODEL_AVAILABLE
 +
 +
 +def test_admin_policy_row_is_ignored() -> None:

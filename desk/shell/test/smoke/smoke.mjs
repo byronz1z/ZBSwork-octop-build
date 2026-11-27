@@ -1,4 +1,4 @@
-// 自动冒烟：起本机测试服务 → 启动壳 → 十条断言 → 清理
+// 自动冒烟：起本机测试服务 → 启动壳 → 十三条断言 → 清理
 // 用法：在 desk/shell 下 npm run smoke。任一断言失败退出码非 0，输出写明第几条。
 'use strict';
 import http from 'node:http';
@@ -18,6 +18,7 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>ZBSwork �
 <a id="dl" href="/file.bin" download="冒烟下载.bin">下载</a>
 <button id="popup">授权</button>
 <a id="ext" href="https://example.com/x" target="_blank" rel="noreferrer">外站</a>
+<a id="same" href="#" target="_blank">同页空锚</a>
 <script>
 Notification.requestPermission().then(function (p) {
   document.getElementById('perm').textContent = p;
@@ -30,10 +31,19 @@ document.getElementById('popup').onclick = function(){ window.open('about:blank'
 const stripSlash = (u) => u.replace(/\/+$/, '');
 
 async function main() {
+  let blankHits = 0;
   const server = http.createServer((_req, res) => {
     if (stripSlash(_req.url) === '/file.bin') {
       res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
       res.end(Buffer.alloc(1024, 0x61)); // 1 KiB 的 a
+      return;
+    }
+    if (stripSlash(_req.url) === '/blank') {
+      blankHits += 1;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(blankHits === 1
+        ? '<!doctype html><html><head><meta charset="utf-8"><title>白屏测试</title></head><body><div id="root"></div></body></html>'
+        : '<!doctype html><html><head><meta charset="utf-8"><title>白屏测试</title></head><body><div id="root">recovered</div></body></html>');
       return;
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -58,7 +68,13 @@ async function main() {
     userData = fs.mkdtempSync(path.join(os.tmpdir(), 'zbswork-smoke-'));
     app = await electron.launch({
       args: [ROOT],
-      env: { ...process.env, ZBSWORK_SERVER_URL: serverUrl, ZBSWORK_USER_DATA: userData },
+      env: {
+        ...process.env,
+        ZBSWORK_SERVER_URL: serverUrl,
+        ZBSWORK_USER_DATA: userData,
+        ZBSWORK_BLANK_CHECK_MS: '600',
+        ZBSWORK_UNRESPONSIVE_MS: '500',
+      },
     });
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
@@ -204,6 +220,91 @@ async function main() {
       if (app.windows().length !== 1) throw new Error(`窗口数是 ${app.windows().length}，不是 1`);
       return true;
     });
+
+    // R2 同页空锚链接（target=_blank href="#"）：拦截，不开重复子窗口也不走系统浏览器（BUG-11）
+    await assert(11, '同页空锚链接不弹重复子窗口也不走外链', async () => {
+      const beforeExt = await app.evaluate(() => global.__ext.length);
+      await page.click('#same');
+      await new Promise((r) => setTimeout(r, 400));
+      const afterExt = await app.evaluate(() => global.__ext.length);
+      if (app.windows().length !== 1) throw new Error(`窗口数是 ${app.windows().length}，不是 1`);
+      if (afterExt !== beforeExt) throw new Error(`意外触发了 openExternal：${afterExt - beforeExt} 次`);
+      return true;
+    });
+
+    // 启动白屏探测自救与本地故障日志落盘（BUG-10 + BUG-11）
+    await assert(12, '空 #root 触发一次清缓存自救重载并落盘 userData/logs/main.log', async () => {
+      await page.goto(serverUrl + 'blank', { waitUntil: 'load' });
+      await page.waitForFunction(
+        () => {
+          const el = document.getElementById('root');
+          return el && el.textContent === 'recovered';
+        },
+        null,
+        { timeout: 10000 },
+      );
+      if (blankHits !== 2) throw new Error(`/blank 请求次数应为 2，实际为 ${blankHits}`);
+      const logFile = path.join(userData, 'logs', 'main.log');
+      if (!fs.existsSync(logFile)) throw new Error(`未生成故障日志：${logFile}`);
+      const logText = fs.readFileSync(logFile, 'utf8');
+      if (!logText.includes('[blank-screen-recovery]')) {
+        throw new Error(`故障日志未记录 blank-screen-recovery：${logText}`);
+      }
+      return true;
+    });
+
+    // 无响应异步强杀自救（Electron 45 BUG-02 竞态回归）：
+    // 触发 unresponsive → forcefullyCrashRenderer() → 等 render-process-gone 后重建新渲染进程 PID 并恢复主页
+    await assert(13, '无响应自救产生全新渲染进程 PID、恢复主页并写全 main.log 时序', async () => {
+      const pidBefore = await app.evaluate(({ BrowserWindow }) => {
+        const w = BrowserWindow.getAllWindows()[0];
+        return w.webContents.getOSProcessId();
+      });
+      if (!Number.isInteger(pidBefore) || pidBefore <= 0) {
+        throw new Error(`强杀前渲染进程 PID 异常：${pidBefore}`);
+      }
+      await app.evaluate(({ BrowserWindow }) => {
+        const w = BrowserWindow.getAllWindows()[0];
+        w.webContents.emit('unresponsive');
+      });
+      const deadline = Date.now() + 15000;
+      let recovered = null;
+      while (Date.now() < deadline) {
+        recovered = await app.evaluate(async ({ BrowserWindow }) => {
+          const w = BrowserWindow.getAllWindows()[0];
+          if (!w || w.isDestroyed() || w.webContents.isDestroyed()) return null;
+          const wc = w.webContents;
+          if (wc.isLoading()) return null;
+          const pid = wc.getOSProcessId();
+          const url = wc.getURL();
+          let title = '';
+          try { title = await wc.executeJavaScript('document.title'); } catch (_e) { title = ''; }
+          return { pid, url, title };
+        });
+        if (
+          recovered &&
+          Number.isInteger(recovered.pid) &&
+          recovered.pid > 0 &&
+          recovered.pid !== pidBefore &&
+          stripSlash(recovered.url) === stripSlash(serverUrl) &&
+          recovered.title.includes('ZBSwork 冒烟')
+        ) {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      if (!recovered || recovered.pid === pidBefore || !recovered.title.includes('ZBSwork 冒烟')) {
+        throw new Error(`无响应自救未产生新 PID 或未恢复主页：before=${pidBefore} after=${JSON.stringify(recovered)}`);
+      }
+      const logFile = path.join(userData, 'logs', 'main.log');
+      const logText = fs.readFileSync(logFile, 'utf8');
+      for (const marker of ['[unresponsive]', '[force-reload]', '[render-process-gone]', '[force-crash-resume]']) {
+        if (!logText.includes(marker)) {
+          throw new Error(`main.log 缺少关键事件 ${marker}：\n${logText}`);
+        }
+      }
+      return true;
+    });
   } finally {
     // 各恢复步骤独立 try/catch：任何一步失败不影响其他步骤；关壳等待上限 15 秒，超时强杀
     try {
@@ -225,7 +326,7 @@ async function main() {
     console.error(`冒烟失败：${failed} 条断言未通过`);
     process.exit(1);
   }
-  console.log('冒烟通过：10/10');
+  console.log('冒烟通过：13/13');
 }
 
 main().catch((e) => { console.error(e && e.stack ? e.stack : e); process.exit(1); });

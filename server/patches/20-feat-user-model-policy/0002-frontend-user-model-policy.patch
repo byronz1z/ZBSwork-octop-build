@@ -1,3 +1,37 @@
+diff --git a/dashboard/src/api/modules/provider.ts b/dashboard/src/api/modules/provider.ts
+index f30187f5fcaa8508da2f77ac52137608d769b037..06c80adbdd336046423900e376c24dcae87eb22c 100644
+--- a/dashboard/src/api/modules/provider.ts
++++ b/dashboard/src/api/modules/provider.ts
+@@ -24,10 +24,26 @@ export interface ModelTemplate {
+ export const providerApi = {
+   listProviders: () => request<ProviderInfo[]>("/models"),
+ 
+-  listResolvedModels: (agentId?: string | null) =>
+-    request<ResolvedModel[]>("/providers/resolved", {
++  listResolvedModels: (
++    agentIdOrOpts?:
++      | string
++      | null
++      | { agentId?: string | null; unrestricted?: boolean },
++    opts?: { unrestricted?: boolean },
++  ) => {
++    const isOptsObj =
++      agentIdOrOpts !== null && typeof agentIdOrOpts === "object";
++    const agentId = isOptsObj ? agentIdOrOpts.agentId : agentIdOrOpts;
++    const unrestricted = isOptsObj
++      ? Boolean(agentIdOrOpts.unrestricted)
++      : Boolean(opts?.unrestricted);
++    const path = unrestricted
++      ? "/providers/resolved?unrestricted=true"
++      : "/providers/resolved";
++    return request<ResolvedModel[]>(path, {
+       headers: bridgeAgentHeaders(agentId),
+-    }),
++    });
++  },
+ 
+   getActiveModel: (agentId?: string | null) =>
+     request<{ provider_name: string; model: string }>(
 diff --git a/dashboard/src/api/modules/userRoles.ts b/dashboard/src/api/modules/userRoles.ts
 index 456144d0d8bdf6d3a888848f18a58c9fb71ce493..fd04fb52b3f043ecee11127a65a24c1a44150ba1 100644
 --- a/dashboard/src/api/modules/userRoles.ts
@@ -560,3 +594,30 @@ index 280d27bf73d40f8c7966e419712409a42fa8b7d6..7329fbe728f93b53518571430e8c7b11
      </>
    );
  }
+diff --git a/dashboard/src/pages/Agent/Memory/ExtractTriggerConfig.test.tsx b/dashboard/src/pages/Agent/Memory/ExtractTriggerConfig.test.tsx
+index d4086cfd099214378e61b22d9834469b292bf36a..36b87108badf44b0ba18ba1f8131e7f0600bfa4d 100644
+--- a/dashboard/src/pages/Agent/Memory/ExtractTriggerConfig.test.tsx
++++ b/dashboard/src/pages/Agent/Memory/ExtractTriggerConfig.test.tsx
+@@ -102,6 +102,9 @@ describe("<MemorySettings />", () => {
+     const user = userEvent.setup();
+     render(<MemorySettings agentId="ZYWZTD" />);
+     await screen.findByText("记忆提取模型");
++    expect(providers.listResolvedModels).toHaveBeenCalledWith({
++      unrestricted: true,
++    });
+ 
+     await user.click(screen.getByRole("combobox", { name: "记忆提取模型" }));
+     await user.click(await screen.findByTitle("hai / Mini"));
+diff --git a/dashboard/src/pages/Agent/Memory/MemorySettings.tsx b/dashboard/src/pages/Agent/Memory/MemorySettings.tsx
+index ddb4d56c310fdd0e20e42512fdb6777a00f0cf7e..40502dd518b65fd43a7639b7e5dd74037b1e2181 100644
+--- a/dashboard/src/pages/Agent/Memory/MemorySettings.tsx
++++ b/dashboard/src/pages/Agent/Memory/MemorySettings.tsx
+@@ -80,7 +80,7 @@ export default function MemorySettings({ agentId }: Props) {
+     let cancelled = false;
+     setModelsLoading(true);
+     providerApi
+-      .listResolvedModels()
++      .listResolvedModels({ unrestricted: true })
+       .then((data) => {
+         if (!cancelled) setModels(data as ModelPickerOption[]);
+       })

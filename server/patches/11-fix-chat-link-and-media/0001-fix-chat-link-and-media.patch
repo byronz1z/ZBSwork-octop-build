@@ -1,0 +1,2084 @@
+diff --git a/dashboard/src/components/Markdown/ZbsChatLinkAndMedia.test.tsx b/dashboard/src/components/Markdown/ZbsChatLinkAndMedia.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..74df688ee706db3d58e54b66344c02ec24cac025
+--- /dev/null
++++ b/dashboard/src/components/Markdown/ZbsChatLinkAndMedia.test.tsx
+@@ -0,0 +1,360 @@
++import { fireEvent, render, screen, waitFor } from "@testing-library/react";
++import { MemoryRouter, useLocation } from "react-router-dom";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import Markdown from "./index";
++import { ChatFilePreviewProvider } from "../../pages/Chat/ChatFilePreviewContext";
++import { MessageFileCard } from "../../pages/Chat/components/MessageFileCard";
++
++const mocks = vi.hoisted(() => ({
++  requestBlob: vi.fn(),
++  downloadAuthFile: vi.fn(),
++  getActiveAgentId: vi.fn<() => string | null>(() => null),
++  msgError: vi.fn(),
++}));
++
++vi.mock("react-i18next", () => ({
++  useTranslation: () => ({
++    t: (_key: string, fallback?: string) => fallback || _key,
++  }),
++}));
++
++vi.mock("../../api/request", () => ({
++  requestBlob: (...args: unknown[]) => mocks.requestBlob(...args),
++  getActiveAgentId: () => mocks.getActiveAgentId(),
++}));
++
++vi.mock("../AuthFileDownloadLink", async (importOriginal) => {
++  const actual =
++    await importOriginal<typeof import("../AuthFileDownloadLink")>();
++  return {
++    ...actual,
++    downloadAuthFile: (...args: unknown[]) => mocks.downloadAuthFile(...args),
++  };
++});
++
++vi.mock("@/utils/antdMessage", () => ({
++  message: {
++    error: (...args: unknown[]) => mocks.msgError(...args),
++    success: vi.fn(),
++  },
++}));
++
++function LocationDisplay() {
++  const location = useLocation();
++  return <div data-testid="loc">{location.pathname + location.search}</div>;
++}
++
++describe("Markdown link routing and local media (ZBS patch 11)", () => {
++  let createObjectURLMock: ReturnType<typeof vi.fn>;
++  let revokeObjectURLMock: ReturnType<typeof vi.fn>;
++  let originalCreateObjectURL: typeof URL.createObjectURL | undefined;
++  let originalRevokeObjectURL: typeof URL.revokeObjectURL | undefined;
++  let originalMatchMedia: typeof window.matchMedia;
++
++  beforeEach(() => {
++    mocks.requestBlob.mockReset();
++    mocks.downloadAuthFile.mockReset();
++    mocks.getActiveAgentId.mockReset();
++    mocks.getActiveAgentId.mockReturnValue(null);
++    mocks.msgError.mockReset();
++
++    originalMatchMedia = window.matchMedia;
++    window.matchMedia = vi.fn().mockImplementation(() => ({
++      matches: false,
++      addEventListener: vi.fn(),
++      removeEventListener: vi.fn(),
++    }));
++
++    originalCreateObjectURL = URL.createObjectURL;
++    originalRevokeObjectURL = URL.revokeObjectURL;
++    createObjectURLMock = vi.fn().mockReturnValue("blob:mock-local-img");
++    revokeObjectURLMock = vi.fn();
++    URL.createObjectURL =
++      createObjectURLMock as unknown as typeof URL.createObjectURL;
++    URL.revokeObjectURL =
++      revokeObjectURLMock as unknown as typeof URL.revokeObjectURL;
++  });
++
++  afterEach(() => {
++    URL.createObjectURL =
++      originalCreateObjectURL as typeof URL.createObjectURL;
++    URL.revokeObjectURL =
++      originalRevokeObjectURL as typeof URL.revokeObjectURL;
++    window.matchMedia = originalMatchMedia;
++  });
++
++  it("opens previewable workspace/local/relative files in ChatFilePreview without target=_blank", () => {
++    const openFilePreview = vi.fn();
++    render(
++      <MemoryRouter initialEntries={["/chat/AG1"]}>
++        <ChatFilePreviewProvider
++          openFilePreview={openFilePreview}
++          openKnowledgeCitation={vi.fn()}
++        >
++          <Markdown
++            agentId="AG1"
++            content={[
++              "[Workspace Report](file:///data/.octop/users/u/.octop/workspaces/AG2/docs/q1.md)",
++              "[Local Bridge](/localoctop/spec.pdf)",
++              "[Relative Note](notes/summary.md)",
++            ].join("\n\n")}
++          />
++        </ChatFilePreviewProvider>
++      </MemoryRouter>,
++    );
++
++    const wsLink = screen.getByText("Workspace Report").closest("a")!;
++    const localLink = screen.getByText("Local Bridge").closest("a")!;
++    const relLink = screen.getByText("Relative Note").closest("a")!;
++
++    expect(wsLink.getAttribute("target")).toBeNull();
++    expect(localLink.getAttribute("target")).toBeNull();
++    expect(relLink.getAttribute("target")).toBeNull();
++
++    fireEvent.click(wsLink);
++    expect(openFilePreview).toHaveBeenCalledWith("docs/q1.md", "AG2");
++
++    fireEvent.click(localLink);
++    expect(openFilePreview).toHaveBeenCalledWith("/localoctop/spec.pdf", "AG1");
++
++    fireEvent.click(relLink);
++    expect(openFilePreview).toHaveBeenCalledWith("notes/summary.md", "AG1");
++    expect(mocks.downloadAuthFile).not.toHaveBeenCalled();
++  });
++
++  it("falls back to downloadAuthFile for non-previewable files or when preview context is absent", async () => {
++    mocks.downloadAuthFile.mockResolvedValue(undefined);
++    const openFilePreview = vi.fn();
++
++    const { rerender } = render(
++      <MemoryRouter>
++        <ChatFilePreviewProvider
++          openFilePreview={openFilePreview}
++          openKnowledgeCitation={vi.fn()}
++        >
++          <Markdown
++            agentId="AG1"
++            content="[Archive](/localoctop/release.zip)"
++          />
++        </ChatFilePreviewProvider>
++      </MemoryRouter>,
++    );
++
++    fireEvent.click(screen.getByText("Archive"));
++    await waitFor(() => {
++      expect(mocks.downloadAuthFile).toHaveBeenCalledWith(
++        "/api/agents/AG1/workspace/download?path=%2Flocaloctop%2Frelease.zip",
++        { filename: "release.zip" },
++      );
++    });
++    expect(openFilePreview).not.toHaveBeenCalled();
++
++    // Without ChatFilePreviewProvider, even previewable files fall back to downloadAuthFile.
++    mocks.downloadAuthFile.mockClear();
++    rerender(
++      <MemoryRouter>
++        <Markdown agentId="AG1" content="[Doc](docs/readme.md)" />
++      </MemoryRouter>,
++    );
++    fireEvent.click(screen.getByText("Doc"));
++    await waitFor(() => {
++      expect(mocks.downloadAuthFile).toHaveBeenCalledWith(
++        "/api/agents/AG1/workspace/download?path=docs%2Freadme.md",
++        { filename: "readme.md" },
++      );
++    });
++  });
++
++  it("routes anchors, SPA routes, external links, and blocks XSS javascript: links", () => {
++    render(
++      <MemoryRouter initialEntries={["/chat/AG1"]}>
++        <LocationDisplay />
++        <Markdown
++          agentId="AG1"
++          content={[
++            "[Jump](#part-2)",
++            "[Go Experts](/experts)",
++            "[Go Thread](/chat/AG2/T9)",
++            "[Ext Web](https://example.com/a)",
++            "[Mail](mailto:hi@example.com)",
++            "[Phone](tel:+8613800138000)",
++            "[Evil](javascript:alert(1))",
++            "[EvilVB](vbscript:msgbox(1))",
++          ].join("\n\n")}
++        />
++      </MemoryRouter>,
++    );
++
++    const anchor = screen.getByText("Jump").closest("a")!;
++    expect(anchor.getAttribute("href")).toBe("#part-2");
++    expect(anchor.getAttribute("target")).toBeNull();
++
++    const experts = screen.getByText("Go Experts").closest("a")!;
++    expect(experts.getAttribute("target")).toBeNull();
++    fireEvent.click(experts);
++    expect(screen.getByTestId("loc")).toHaveTextContent("/experts");
++
++    const thread = screen.getByText("Go Thread").closest("a")!;
++    expect(thread.getAttribute("target")).toBeNull();
++    fireEvent.click(thread);
++    expect(screen.getByTestId("loc")).toHaveTextContent("/chat/AG2/T9");
++
++    for (const [label, expectedHref] of [
++      ["Ext Web", "https://example.com/a"],
++      ["Mail", "mailto:hi@example.com"],
++      ["Phone", "tel:+8613800138000"],
++    ] as const) {
++      const link = screen.getByText(label).closest("a")!;
++      expect(link.getAttribute("href")).toBe(expectedHref);
++      expect(link.getAttribute("target")).toBe("_blank");
++      expect(link.getAttribute("rel")).toBe("noreferrer");
++    }
++
++    // Dangerous links must NOT render as clickable anchors.
++    expect(screen.getByText("Evil").closest("a")).toBeNull();
++    expect(screen.getByText("EvilVB").closest("a")).toBeNull();
++  });
++
++  it("loads local workspace images via authenticated workspace/download blob and revokes object URL on unmount", async () => {
++    mocks.requestBlob.mockResolvedValue(
++      new Blob(["fake-png"], { type: "application/octet-stream" }),
++    );
++
++    const { unmount } = render(
++      <MemoryRouter>
++        <Markdown
++          agentId="AG1"
++          content="![Sales Chart](file:///data/.octop/users/u/.octop/workspaces/AG9/charts/sales.png)"
++        />
++      </MemoryRouter>,
++    );
++
++    await waitFor(() => {
++      expect(mocks.requestBlob).toHaveBeenCalledWith(
++        "/agents/AG9/workspace/download?path=charts%2Fsales.png",
++        expect.objectContaining({ cache: "no-store" }),
++      );
++    });
++
++    const img = await screen.findByAltText("Sales Chart");
++    expect(img).toHaveAttribute("src", "blob:mock-local-img");
++    expect(createObjectURLMock).toHaveBeenCalledTimes(1);
++
++    unmount();
++    expect(revokeObjectURLMock).toHaveBeenCalledWith("blob:mock-local-img");
++  });
++
++  it("revokes previous blob URL when local image src changes and supports relative/singular workspace paths", async () => {
++    mocks.requestBlob.mockResolvedValue(
++      new Blob(["fake-jpg"], { type: "application/octet-stream" }),
++    );
++    createObjectURLMock
++      .mockReturnValueOnce("blob:img-1")
++      .mockReturnValueOnce("blob:img-2");
++
++    const { rerender, unmount } = render(
++      <MemoryRouter>
++        <Markdown agentId="AG1" content="![First](./images/a.jpg)" />
++      </MemoryRouter>,
++    );
++
++    const first = await screen.findByAltText("First");
++    expect(first).toHaveAttribute("src", "blob:img-1");
++    expect(mocks.requestBlob).toHaveBeenCalledWith(
++      "/agents/AG1/workspace/download?path=images%2Fa.jpg",
++      expect.objectContaining({ cache: "no-store" }),
++    );
++
++    rerender(
++      <MemoryRouter>
++        <Markdown
++          agentId="AG1"
++          content="![Second](file:///home/u/.octop/workspace/b.png)"
++        />
++      </MemoryRouter>,
++    );
++
++    const second = await screen.findByAltText("Second");
++    expect(second).toHaveAttribute("src", "blob:img-2");
++    expect(revokeObjectURLMock).toHaveBeenCalledWith("blob:img-1");
++
++    unmount();
++    expect(revokeObjectURLMock).toHaveBeenCalledWith("blob:img-2");
++  });
++
++  it("degrades gracefully to alt placeholder when local image fetch fails", async () => {
++    mocks.requestBlob.mockRejectedValue(new Error("404"));
++
++    render(
++      <MemoryRouter>
++        <Markdown agentId="AG1" content="![Missing Pic](/localoctop/missing.png)" />
++      </MemoryRouter>,
++    );
++
++    expect(await screen.findByText("[Missing Pic]")).toBeInTheDocument();
++    expect(revokeObjectURLMock).not.toHaveBeenCalled();
++  });
++
++  it("MessageFileCard routes relative/local non-auth links via auth download instead of target=_blank", async () => {
++    mocks.downloadAuthFile.mockResolvedValue(undefined);
++    const openFilePreview = vi.fn();
++
++    render(
++      <MemoryRouter>
++        <ChatFilePreviewProvider
++          openFilePreview={openFilePreview}
++          openKnowledgeCitation={vi.fn()}
++        >
++          <MessageFileCard
++            url="/localoctop/reports/q3.pdf"
++            filename="q3.pdf"
++            agentId="AG1"
++          />
++        </ChatFilePreviewProvider>
++      </MemoryRouter>,
++    );
++
++    // Preview button works for resolved workspace path.
++    fireEvent.click(screen.getByLabelText("common.preview"));
++    expect(openFilePreview).toHaveBeenCalledWith(
++      "/localoctop/reports/q3.pdf",
++      "AG1",
++    );
++
++    // Download button uses authenticated downloadAuthFile, never target=_blank.
++    fireEvent.click(screen.getByLabelText("common.download"));
++    await waitFor(() => {
++      expect(mocks.downloadAuthFile).toHaveBeenCalledWith(
++        "/api/agents/AG1/workspace/download?path=%2Flocaloctop%2Freports%2Fq3.pdf",
++        { filename: "q3.pdf" },
++      );
++    });
++  });
++
++  it("MessageFileCard does not set target=_blank for same-origin non-auth download URLs", () => {
++    const clickedAnchors: HTMLAnchorElement[] = [];
++    const origClick = HTMLAnchorElement.prototype.click;
++    HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
++      clickedAnchors.push(this);
++    };
++
++    try {
++      render(
++        <MemoryRouter>
++          <MessageFileCard
++            url="/api/downloads/link/tok999"
++            filename="pack.bin"
++            agentId="AG1"
++          />
++        </MemoryRouter>,
++      );
++
++      fireEvent.click(screen.getByLabelText("common.download"));
++      expect(clickedAnchors).toHaveLength(1);
++      expect(clickedAnchors[0].getAttribute("target")).toBeNull();
++      expect(clickedAnchors[0].download).toBe("pack.bin");
++    } finally {
++      HTMLAnchorElement.prototype.click = origClick;
++    }
++  });
++});
+diff --git a/dashboard/src/components/Markdown/ZbsChatLinkAndMedia.tsx b/dashboard/src/components/Markdown/ZbsChatLinkAndMedia.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..3a085c55b0829c1b7264925f5044a38b62bc392e
+--- /dev/null
++++ b/dashboard/src/components/Markdown/ZbsChatLinkAndMedia.tsx
+@@ -0,0 +1,295 @@
++/**
++ * Chat Markdown link router and authenticated local image renderer (ZBS patch 11).
++ *
++ * Keeps Markdown/index.tsx thin by encapsulating:
++ * - 4-way link routing (workspace preview/download, in-page anchor, SPA route, external)
++ * - Authenticated blob-fetch image rendering with deterministic URL.revokeObjectURL cleanup
++ */
++
++import {
++  createContext,
++  useCallback,
++  useContext,
++  useEffect,
++  useMemo,
++  useState,
++  type AnchorHTMLAttributes,
++  type ImgHTMLAttributes,
++  type MouseEvent,
++  type ReactNode,
++} from "react";
++import * as ReactRouterDom from "react-router-dom";
++import { useTranslation } from "react-i18next";
++import { message as antMessage } from "@/utils/antdMessage";
++import { getActiveAgentId, requestBlob } from "../../api/request";
++import { useChatFilePreview } from "../../pages/Chat/ChatFilePreviewContext";
++import { asImageBlob } from "../../utils/toolMediaBlocks";
++import {
++  apiPathForAuthBlob,
++  classifyChatLink,
++  resolveMarkdownImageTarget,
++} from "../../utils/zbsChatLinks";
++import { downloadAuthFile } from "../AuthFileDownloadLink";
++
++const FallbackNavContext = createContext<unknown>(null);
++
++function useSafeSpaNavigate(): (to: string) => void {
++  const navCtx = useContext(
++    (
++      ReactRouterDom as unknown as {
++        UNSAFE_NavigationContext?: React.Context<unknown>;
++      }
++    ).UNSAFE_NavigationContext ?? FallbackNavContext,
++  ) as { navigator?: { push?: (to: string) => void } } | null;
++
++  return useCallback(
++    (to: string) => {
++      if (navCtx?.navigator?.push) {
++        navCtx.navigator.push(to);
++        return;
++      }
++      window.location.assign(to);
++    },
++    [navCtx],
++  );
++}
++
++export function ZbsMarkdownLink({
++  href,
++  agentId,
++  children,
++  onClick,
++  node: _node,
++  ...props
++}: {
++  href?: string;
++  agentId?: string | null;
++  children?: ReactNode;
++  node?: unknown;
++} & AnchorHTMLAttributes<HTMLAnchorElement>) {
++  const { t } = useTranslation();
++  const filePreview = useChatFilePreview();
++  const navigateSpa = useSafeSpaNavigate();
++  const [downloading, setDownloading] = useState(false);
++
++  const effectiveAgentId = (agentId ?? "").trim() || getActiveAgentId();
++  const action = useMemo(
++    () => classifyChatLink(href, { agentId: effectiveAgentId }),
++    [href, effectiveAgentId],
++  );
++
++  const handleWorkspaceClick = useCallback(
++    async (event: MouseEvent<HTMLAnchorElement>) => {
++      onClick?.(event);
++      if (event.defaultPrevented) return;
++      event.preventDefault();
++      event.stopPropagation();
++      if (action.kind !== "workspace-file") return;
++
++      if (action.previewable && filePreview) {
++        filePreview.openFilePreview(action.filePath, action.agentId);
++        return;
++      }
++
++      if (!action.downloadUrl) {
++        antMessage.error(t("chat.downloadFailed", "下载失败，请重试"));
++        return;
++      }
++
++      setDownloading(true);
++      try {
++        await downloadAuthFile(action.downloadUrl, {
++          filename: action.filename,
++        });
++      } catch {
++        antMessage.error(t("chat.downloadFailed", "下载失败，请重试"));
++      } finally {
++        setDownloading(false);
++      }
++    },
++    [action, filePreview, onClick, t],
++  );
++
++  const handleSpaClick = useCallback(
++    (event: MouseEvent<HTMLAnchorElement>) => {
++      onClick?.(event);
++      if (
++        event.defaultPrevented ||
++        event.button !== 0 ||
++        event.metaKey ||
++        event.ctrlKey ||
++        event.shiftKey ||
++        event.altKey
++      ) {
++        return;
++      }
++      if (action.kind !== "spa-route") return;
++      event.preventDefault();
++      navigateSpa(action.to);
++    },
++    [action, navigateSpa, onClick],
++  );
++
++  if (action.kind === "blocked") {
++    return (
++      <span className={props.className} title={props.title}>
++        {children}
++      </span>
++    );
++  }
++
++  if (action.kind === "anchor") {
++    return (
++      <a href={action.href} onClick={onClick} {...props}>
++        {children}
++      </a>
++    );
++  }
++
++  if (action.kind === "spa-route") {
++    return (
++      <a href={action.to} onClick={handleSpaClick} {...props}>
++        {children}
++      </a>
++    );
++  }
++
++  if (action.kind === "same-origin-url") {
++    return (
++      <a href={action.href} onClick={onClick} {...props}>
++        {children}
++      </a>
++    );
++  }
++
++  if (action.kind === "workspace-file") {
++    return (
++      <a
++        href={action.downloadUrl || "#"}
++        onClick={(e) => void handleWorkspaceClick(e)}
++        aria-busy={downloading || undefined}
++        style={downloading ? { cursor: "wait", ...props.style } : props.style}
++        {...props}
++      >
++        {children}
++      </a>
++    );
++  }
++
++  return (
++    <a
++      href={action.href}
++      target="_blank"
++      rel="noreferrer"
++      onClick={onClick}
++      {...props}
++    >
++      {children}
++    </a>
++  );
++}
++
++/**
++ * Markdown image renderer:
++ * - Resolves workspace/local/file:// paths to the authenticated backend
++ *   `/api/agents/{id}/workspace/download` endpoint (never `/api/workspace/media`).
++ * - Fetches via `requestBlob` (with Bearer Authorization header) -> Blob URL.
++ * - Deterministic `URL.revokeObjectURL` on unmount or src change.
++ * - Graceful `[alt || "image"]` fallback on failure.
++ */
++export function ZbsMarkdownImage({
++  src,
++  alt,
++  agentId,
++  style,
++  onError,
++  node: _node,
++  ...props
++}: {
++  src?: string;
++  alt?: string;
++  agentId?: string | null;
++  node?: unknown;
++} & ImgHTMLAttributes<HTMLImageElement>) {
++  const effectiveAgentId = (agentId ?? "").trim() || getActiveAgentId();
++  const target = useMemo(
++    () => resolveMarkdownImageTarget(src, effectiveAgentId),
++    [src, effectiveAgentId],
++  );
++
++  const authUrl = target.kind === "auth-blob" ? target.url : null;
++  const authFilename = target.kind === "auth-blob" ? target.filename : undefined;
++  const directSrc = target.kind === "direct" ? target.src : null;
++
++  const [blobUrl, setBlobUrl] = useState<string | null>(null);
++  const [failed, setFailed] = useState(target.kind === "invalid");
++
++  useEffect(() => {
++    if (!authUrl) {
++      setBlobUrl(null);
++      setFailed(target.kind === "invalid");
++      return;
++    }
++
++    let cancelled = false;
++    let createdObjectUrl: string | null = null;
++    const controller = new AbortController();
++
++    setFailed(false);
++    setBlobUrl(null);
++
++    void requestBlob(apiPathForAuthBlob(authUrl), {
++      cache: "no-store",
++      signal: controller.signal,
++    })
++      .then((blob) => {
++        if (cancelled) return;
++        createdObjectUrl = URL.createObjectURL(asImageBlob(blob, authFilename));
++        setBlobUrl(createdObjectUrl);
++      })
++      .catch(() => {
++        if (!cancelled) {
++          setFailed(true);
++        }
++      });
++
++    return () => {
++      cancelled = true;
++      controller.abort();
++      if (createdObjectUrl) {
++        URL.revokeObjectURL(createdObjectUrl);
++      }
++    };
++  }, [authUrl, authFilename, target.kind]);
++
++  const handleImgError = useCallback(
++    (event: React.SyntheticEvent<HTMLImageElement, Event>) => {
++      setFailed(true);
++      onError?.(event);
++    },
++    [onError],
++  );
++
++  if (failed) {
++    return (
++      <span style={{ color: "var(--fn-text-tertiary, #999)", fontSize: 13 }}>
++        [{alt || "image"}]
++      </span>
++    );
++  }
++
++  const renderSrc = authUrl ? blobUrl : directSrc;
++  if (!renderSrc) {
++    return null;
++  }
++
++  return (
++    <img
++      src={renderSrc}
++      alt={alt}
++      onError={handleImgError}
++      style={{ maxWidth: "100%", borderRadius: 8, ...style }}
++      {...props}
++    />
++  );
++}
+diff --git a/dashboard/src/components/Markdown/index.tsx b/dashboard/src/components/Markdown/index.tsx
+index 0b85202c46d67b5cd1f7a9d1d7870ee64aa9d2cc..f5fc380117fc802571b5187995913f4965dc93a5 100644
+--- a/dashboard/src/components/Markdown/index.tsx
++++ b/dashboard/src/components/Markdown/index.tsx
+@@ -3,7 +3,6 @@ import {
+   useEffect,
+   useRef,
+   useState,
+-  useCallback,
+   useMemo,
+   type CSSProperties,
+   type ReactNode,
+@@ -20,10 +19,12 @@ import {
+ } from "../AuthFileDownloadLink";
+ import { isShellLanguage } from "../../utils/shellCodeBlock";
+ import { copyText } from "../../utils/copyText";
++import { zbsMarkdownUrlTransform } from "../../utils/zbsChatLinks";
+ import { loadMermaid } from "./mermaidLoader";
+ import { HighlightedCode } from "./syntaxHighlight";
+ import { useMathPlugins } from "./mathPlugins";
+ import { stabilizeStreamingMarkdown } from "./stabilizeStreamingMarkdown";
++import { ZbsMarkdownImage, ZbsMarkdownLink } from "./ZbsChatLinkAndMedia";
+ import styles from "./index.module.less";
+ 
+ /* ---- Mermaid block component ---- */
+@@ -112,86 +113,6 @@ function MermaidBlock({ code }: { code: string }) {
+   );
+ }
+ 
+-/**
+- * Convert a file:// URI or absolute path that lives inside the agent workspace
+- * to a browser-accessible URL via the /api/workspace/media endpoint.
+- *
+- * Examples:
+- *   file:///home/wally/.octop/workspace/foo.png  → /api/workspace/media?path=foo.png
+- *   /home/wally/.octop/workspace/sub/bar.jpg     → /api/workspace/media?path=sub/bar.jpg
+- *
+- * Paths that are already HTTP(S) or data URIs are returned unchanged.
+- * Paths outside the workspace are returned unchanged (will fail to load,
+- * which is the correct behaviour — we don't want to expose arbitrary files).
+- */
+-function resolveImageSrc(src: string): string {
+-  if (!src) return src;
+-  // Already a web URL or data URI – keep as-is
+-  if (
+-    /^https?:\/\//i.test(src) ||
+-    src.startsWith("data:") ||
+-    src.startsWith("/api/")
+-  ) {
+-    return src;
+-  }
+-
+-  let filePath = src;
+-  // Decode file:// URI → absolute path
+-  if (src.startsWith("file://")) {
+-    try {
+-      filePath = decodeURIComponent(new URL(src).pathname);
+-    } catch {
+-      filePath = src.replace(/^file:\/\//, "");
+-    }
+-  }
+-
+-  // Match workspace path: ends in /.octop/workspace/<rest>
+-  const workspaceMatch = filePath.match(/[/\\]\.octop[/\\]workspace[/\\](.*)/);
+-  if (workspaceMatch) {
+-    const relPath = workspaceMatch[1].replace(/\\/g, "/");
+-    return `/api/workspace/media?path=${encodeURIComponent(relPath)}`;
+-  }
+-
+-  return src;
+-}
+-
+-/** Markdown image with automatic file:// → /api/workspace/media conversion and error fallback. */
+-function MarkdownImage({
+-  src,
+-  alt,
+-  ...props
+-}: { src?: string; alt?: string } & ImgHTMLAttributes<HTMLImageElement>) {
+-  const resolved = resolveImageSrc(src || "");
+-  const [imgSrc, setImgSrc] = useState(resolved);
+-  const failed = useRef(false);
+-
+-  const handleError = useCallback(() => {
+-    if (failed.current) return;
+-    failed.current = true;
+-    // If the resolved URL also fails (e.g. image not in workspace), show alt text gracefully
+-    setImgSrc("");
+-  }, []);
+-
+-  if (!imgSrc) {
+-    // Render a subtle placeholder instead of a broken image icon
+-    return (
+-      <span style={{ color: "var(--fn-text-tertiary, #999)", fontSize: 13 }}>
+-        [{alt || "image"}]
+-      </span>
+-    );
+-  }
+-
+-  return (
+-    <img
+-      src={imgSrc}
+-      alt={alt}
+-      onError={handleError}
+-      style={{ maxWidth: "100%", borderRadius: 8 }}
+-      {...props}
+-    />
+-  );
+-}
+-
+ function ShellRunButton({
+   code,
+   onRun,
+@@ -255,6 +176,8 @@ export interface MarkdownProps {
+   content: string;
+   className?: string;
+   style?: CSSProperties;
++  /** Optional agent id used to resolve workspace file links & local images. */
++  agentId?: string | null;
+   /** When true, mermaid blocks render as source code to avoid parse errors on incomplete content */
+   isStreaming?: boolean;
+   /** Run shell code blocks in the active terminal */
+@@ -268,6 +191,7 @@ const Markdown = memo(function Markdown({
+   content,
+   className,
+   style,
++  agentId,
+   isStreaming,
+   onRunShellCommand,
+   shellCommandDisabled,
+@@ -294,6 +218,7 @@ const Markdown = memo(function Markdown({
+       style={style}
+     >
+       <ReactMarkdown
++        urlTransform={zbsMarkdownUrlTransform}
+         remarkPlugins={remarkPlugins}
+         rehypePlugins={rehypePlugins}
+         components={{
+@@ -401,8 +326,8 @@ const Markdown = memo(function Markdown({
+             );
+           },
+ 
+-          // Auth-required workspace downloads use blob fetch; other links open
+-          // in a new tab (JWT lives in Authorization, not the browser navigation).
++          // Auth-required workspace downloads use blob fetch; other links route
++          // through ZbsMarkdownLink (workspace preview/download, anchors, SPA, external).
+           a({
+             children,
+             href,
+@@ -419,13 +344,13 @@ const Markdown = memo(function Markdown({
+               );
+             }
+             return (
+-              <a href={href} target="_blank" rel="noreferrer" {...props}>
++              <ZbsMarkdownLink href={href} agentId={agentId} {...props}>
+                 {children}
+-              </a>
++              </ZbsMarkdownLink>
+             );
+           },
+ 
+-          // Images: convert file:// paths to accessible HTTP URLs
++          // Images: resolve workspace/local paths via authenticated workspace download
+           img({
+             src,
+             alt,
+@@ -434,7 +359,9 @@ const Markdown = memo(function Markdown({
+             src?: string;
+             alt?: string;
+           } & ImgHTMLAttributes<HTMLImageElement>) {
+-            return <MarkdownImage src={src} alt={alt} {...props} />;
++            return (
++              <ZbsMarkdownImage src={src} alt={alt} agentId={agentId} {...props} />
++            );
+           },
+         }}
+       >
+diff --git a/dashboard/src/components/PdfDocumentPreview.tsx b/dashboard/src/components/PdfDocumentPreview.tsx
+index b724d6338e0f1076dbe07a523e7c601a043d8fcf..9273cab5c92ca69815426174791b1bef9d476fba 100644
+--- a/dashboard/src/components/PdfDocumentPreview.tsx
++++ b/dashboard/src/components/PdfDocumentPreview.tsx
+@@ -35,6 +35,7 @@ import "react-pdf/dist/Page/AnnotationLayer.css";
+ import "react-pdf/dist/Page/TextLayer.css";
+ 
+ import { useIsMobile } from "../hooks/useIsMobile";
++import { isSafeExternalUrl } from "../utils/zbsChatLinks";
+ import styles from "./PdfDocumentPreview.module.less";
+ import DocumentPreviewLoading from "./DocumentPreviewLoading";
+ 
+@@ -649,7 +650,9 @@ export default function PdfDocumentPreview({
+   const goToOutlineItem = useCallback(
+     async (item: PdfOutlineItem) => {
+       if (item.url) {
+-        window.open(item.url, "_blank", "noopener,noreferrer");
++        if (isSafeExternalUrl(item.url)) {
++          window.open(item.url, "_blank", "noopener,noreferrer");
++        }
+         return;
+       }
+       const pdf = pdfRef.current;
+@@ -680,7 +683,7 @@ export default function PdfDocumentPreview({
+           : styles.pdfOutlineItem;
+         return (
+           <div key={`${depth}-${index}`}>
+-            {item.url ? (
++            {item.url && isSafeExternalUrl(item.url) ? (
+               <a
+                 className={className}
+                 style={{ paddingLeft: 10 + depth * 14 }}
+diff --git a/dashboard/src/pages/Chat/components/MessageBubble.tsx b/dashboard/src/pages/Chat/components/MessageBubble.tsx
+index bf3576e5d1bc323cf84f28722cdff8dea94cfc6e..e4098adbcfeb629055bff7f7d8683b0c8f052668 100644
+--- a/dashboard/src/pages/Chat/components/MessageBubble.tsx
++++ b/dashboard/src/pages/Chat/components/MessageBubble.tsx
+@@ -1009,6 +1009,7 @@ function MessageBubble({
+                 {textContent && (
+                   <Markdown
+                     content={textContent}
++                    agentId={speakerId || agentId}
+                     isStreaming={isStreaming}
+                     onRunShellCommand={onRunShellCommand}
+                     shellCommandDisabled={shellCommandDisabled}
+diff --git a/dashboard/src/pages/Chat/components/MessageFileCard.tsx b/dashboard/src/pages/Chat/components/MessageFileCard.tsx
+index aaf40cb7752119cdda9ae5ad1c1ddd083e11a5c0..5db30968b3436fc7be9e7d62141ca0d1eeee4c17 100644
+--- a/dashboard/src/pages/Chat/components/MessageFileCard.tsx
++++ b/dashboard/src/pages/Chat/components/MessageFileCard.tsx
+@@ -1,14 +1,20 @@
+ import { useCallback, useState } from "react";
+ import { Download, Eye, Paperclip } from "lucide-react";
+ import { useTranslation } from "react-i18next";
++import { getActiveAgentId } from "../../../api/request";
+ import { downloadAuthFile } from "../../../components/AuthFileDownloadLink";
+ import { saveBlobAsFile } from "../../../utils/saveBlobAsFile";
+ import { isDesktopShell } from "../../../utils/desktopChrome";
+ import {
+   isDataUrl,
+   needsAuthBlobFetch,
++  workspaceDownloadUrl,
+   workspacePathFromAccessUrl,
+ } from "../../../utils/toolMediaBlocks";
++import {
++  extractWorkspaceFileTarget,
++  isCrossOriginHttpUrl,
++} from "../../../utils/zbsChatLinks";
+ import { getDocKind } from "../../Agent/Workspace/utils/docKind";
+ import { getMediaKind } from "../../Agent/Workspace/utils/mediaKind";
+ import { isProbablyText } from "../../Agent/Workspace/utils/fileKind";
+@@ -43,18 +49,33 @@ export function MessageFileCard({
+   const [loading, setLoading] = useState(false);
+   const needsAuth = needsAuthBlobFetch(url) || isDataUrl(url);
+   const label = filename || url;
++  const workspaceTarget = needsAuth
++    ? null
++    : extractWorkspaceFileTarget(url, agentId);
++  const effectiveAgentId =
++    workspaceTarget?.agentId || agentId || getActiveAgentId();
++  const effectiveDownloadUrl =
++    !needsAuth && workspaceTarget && effectiveAgentId
++      ? workspaceDownloadUrl(effectiveAgentId, workspaceTarget.filePath)
++      : url;
++  const useAuthDownload =
++    needsAuth || Boolean(workspaceTarget && effectiveAgentId);
+ 
+-  const resolvedPath = workspacePath || workspacePathFromAccessUrl(url) || "";
++  const resolvedPath =
++    workspacePath ||
++    workspacePathFromAccessUrl(url) ||
++    workspaceTarget?.filePath ||
++    "";
+   const previewable = Boolean(
+-    resolvedPath && agentId && isPreviewable(label) && filePreview,
++    resolvedPath && effectiveAgentId && isPreviewable(label) && filePreview,
+   );
+ 
+   const handleDownload = useCallback(async () => {
+-    if (!needsAuth) {
++    if (!useAuthDownload) {
+       if (isDesktopShell()) {
+         setLoading(true);
+         try {
+-          const res = await fetch(url);
++          const res = await fetch(effectiveDownloadUrl);
+           if (!res.ok) throw new Error("download failed");
+           const blob = await res.blob();
+           await saveBlobAsFile(blob, filename || "download");
+@@ -66,10 +87,12 @@ export function MessageFileCard({
+         return;
+       }
+       const a = document.createElement("a");
+-      a.href = url;
++      a.href = effectiveDownloadUrl;
+       a.download = filename || "download";
+-      a.target = "_blank";
+-      a.rel = "noreferrer";
++      if (isCrossOriginHttpUrl(effectiveDownloadUrl, window.location.origin)) {
++        a.target = "_blank";
++        a.rel = "noreferrer";
++      }
+       document.body.appendChild(a);
+       a.click();
+       document.body.removeChild(a);
+@@ -77,19 +100,27 @@ export function MessageFileCard({
+     }
+     setLoading(true);
+     try {
+-      await downloadAuthFile(url, { filename });
++      await downloadAuthFile(effectiveDownloadUrl, {
++        filename: filename || workspaceTarget?.filename,
++      });
+     } catch {
+       antMessage.error(t("chat.downloadFailed", "下载失败，请重试"));
+     } finally {
+       setLoading(false);
+     }
+-  }, [url, filename, needsAuth, t]);
++  }, [
++    effectiveDownloadUrl,
++    filename,
++    useAuthDownload,
++    workspaceTarget?.filename,
++    t,
++  ]);
+ 
+   const openPreview = useCallback(() => {
+     if (previewable && resolvedPath && filePreview) {
+-      filePreview.openFilePreview(resolvedPath, agentId);
++      filePreview.openFilePreview(resolvedPath, effectiveAgentId);
+     }
+-  }, [previewable, resolvedPath, filePreview, agentId]);
++  }, [previewable, resolvedPath, filePreview, effectiveAgentId]);
+ 
+   return (
+     <div className={styles.messageFileCard}>
+diff --git a/dashboard/src/utils/downloadLink.tsx b/dashboard/src/utils/downloadLink.tsx
+index c166cd9f4b32b8b182fab66da98d0b3239680f1d..0377ca66c9a8735ecac9f71d7a3f70c8dfa6f319 100644
+--- a/dashboard/src/utils/downloadLink.tsx
++++ b/dashboard/src/utils/downloadLink.tsx
+@@ -50,8 +50,7 @@ export async function shareDownloadLink(
+         />
+         <Typography.Link
+           href={url}
+-          target="_blank"
+-          rel="noreferrer"
++          download={link.filename}
+           style={{ display: "inline-block", marginTop: 8 }}
+         >
+           {link.filename}
+diff --git a/dashboard/src/utils/zbsChatLinks.test.ts b/dashboard/src/utils/zbsChatLinks.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..190ef813d3ba62e5df76df8b80e44ecef54100c1
+--- /dev/null
++++ b/dashboard/src/utils/zbsChatLinks.test.ts
+@@ -0,0 +1,431 @@
++import { describe, expect, it } from "vitest";
++import {
++  apiPathForAuthBlob,
++  classifyChatLink,
++  extractWorkspaceFileTarget,
++  isCrossOriginHttpUrl,
++  isKnownSpaRoute,
++  isPreviewableChatFile,
++  isSafeExternalUrl,
++  resolveMarkdownImageTarget,
++  zbsMarkdownUrlTransform,
++} from "./zbsChatLinks";
++
++describe("zbsMarkdownUrlTransform", () => {
++  it("preserves file://, local Windows/POSIX paths, relative paths, anchors, and safe protocols", () => {
++    expect(
++      zbsMarkdownUrlTransform(
++        "file:///data/.octop/users/alice/.octop/workspaces/A1/report.md",
++        "href",
++      ),
++    ).toBe("file:///data/.octop/users/alice/.octop/workspaces/A1/report.md");
++    expect(zbsMarkdownUrlTransform("file:///C:/Users/u/a.png", "src")).toBe(
++      "file:///C:/Users/u/a.png",
++    );
++    expect(zbsMarkdownUrlTransform("D:/work/docs/report.pdf", "href")).toBe(
++      "D:/work/docs/report.pdf",
++    );
++    expect(zbsMarkdownUrlTransform("D:\\work\\docs\\report.pdf", "href")).toBe(
++      "D:\\work\\docs\\report.pdf",
++    );
++    expect(zbsMarkdownUrlTransform("/localoctop/report.md", "href")).toBe(
++      "/localoctop/report.md",
++    );
++    expect(zbsMarkdownUrlTransform("docs/a.pdf", "href")).toBe("docs/a.pdf");
++    expect(zbsMarkdownUrlTransform("#section-1", "href")).toBe("#section-1");
++    expect(zbsMarkdownUrlTransform("https://example.com/a", "href")).toBe(
++      "https://example.com/a",
++    );
++    expect(zbsMarkdownUrlTransform("http://example.com", "href")).toBe(
++      "http://example.com",
++    );
++    expect(zbsMarkdownUrlTransform("mailto:test@example.com", "href")).toBe(
++      "mailto:test@example.com",
++    );
++    expect(zbsMarkdownUrlTransform("tel:+8613800138000", "href")).toBe(
++      "tel:+8613800138000",
++    );
++  });
++
++  it("allows data:image/* only for image src and blocks dangerous protocols", () => {
++    expect(
++      zbsMarkdownUrlTransform("data:image/png;base64,iVBORw0KGgo=", "src", {
++        tagName: "img",
++      }),
++    ).toBe("data:image/png;base64,iVBORw0KGgo=");
++    expect(
++      zbsMarkdownUrlTransform("data:image/png;base64,iVBORw0KGgo=", "href", {
++        tagName: "a",
++      }),
++    ).toBe("");
++    expect(
++      zbsMarkdownUrlTransform(
++        "data:text/html,<script>alert(1)</script>",
++        "src",
++        { tagName: "img" },
++      ),
++    ).toBe("");
++    expect(
++      zbsMarkdownUrlTransform(
++        "data:text/html,<script>alert(1)</script>",
++        "href",
++      ),
++    ).toBe("");
++    expect(zbsMarkdownUrlTransform("javascript:alert(1)", "href")).toBe("");
++    expect(zbsMarkdownUrlTransform("  JaVaScRiPt:alert(1)", "href")).toBe("");
++    expect(zbsMarkdownUrlTransform("java\tscript:alert(1)", "href")).toBe("");
++    expect(zbsMarkdownUrlTransform("java\nscript:alert(1)", "href")).toBe("");
++    expect(zbsMarkdownUrlTransform("vbscript:msgbox(1)", "href")).toBe("");
++    expect(zbsMarkdownUrlTransform("view-source:file:///etc/passwd", "href")).toBe(
++      "",
++    );
++  });
++});
++
++describe("extractWorkspaceFileTarget", () => {
++  it("extracts plural .octop/workspaces/<id>/<rel> from file:// and POSIX/Windows paths", () => {
++    expect(
++      extractWorkspaceFileTarget(
++        "file:///data/.octop/users/alice/.octop/workspaces/AGENT9/docs/q1.pdf",
++        "FALLBACK",
++      ),
++    ).toEqual({
++      filePath: "docs/q1.pdf",
++      agentId: "AGENT9",
++      filename: "q1.pdf",
++      isHostAbsolute: false,
++    });
++
++    expect(
++      extractWorkspaceFileTarget(
++        "/.octop/workspaces/A1/%E6%8A%A5%E5%91%8A%201.md",
++        "FALLBACK",
++      ),
++    ).toEqual({
++      filePath: "报告 1.md",
++      agentId: "A1",
++      filename: "报告 1.md",
++      isHostAbsolute: false,
++    });
++
++    expect(
++      extractWorkspaceFileTarget(
++        "file:///C:/Users/alice/.octop/workspaces/WIN1/charts/a.png",
++      ),
++    ).toEqual({
++      filePath: "charts/a.png",
++      agentId: "WIN1",
++      filename: "a.png",
++      isHostAbsolute: false,
++    });
++  });
++
++  it("extracts singular .octop/workspace/, /localoctop/, .octop/agents/, and relative paths", () => {
++    expect(
++      extractWorkspaceFileTarget(
++        "file:///home/wally/.octop/workspace/sub/foo.png",
++        "A2",
++      ),
++    ).toEqual({
++      filePath: "sub/foo.png",
++      agentId: "A2",
++      filename: "foo.png",
++      isHostAbsolute: false,
++    });
++
++    expect(extractWorkspaceFileTarget("/localoctop/reports/q2.xlsx", "A2")).toEqual(
++      {
++        filePath: "/localoctop/reports/q2.xlsx",
++        agentId: "A2",
++        filename: "q2.xlsx",
++        isHostAbsolute: true,
++      },
++    );
++
++    expect(
++      extractWorkspaceFileTarget("file:///localoctop/manual.pdf", "A2"),
++    ).toEqual({
++      filePath: "/localoctop/manual.pdf",
++      agentId: "A2",
++      filename: "manual.pdf",
++      isHostAbsolute: true,
++    });
++
++    expect(
++      extractWorkspaceFileTarget(
++        "file:///data/.octop/users/alice/localoctop/reports/q2.pdf",
++        "A2",
++      ),
++    ).toEqual({
++      filePath: "/localoctop/reports/q2.pdf",
++      agentId: "A2",
++      filename: "q2.pdf",
++      isHostAbsolute: true,
++    });
++
++    expect(
++      extractWorkspaceFileTarget("/.octop/agents/AG7/outbound/out.docx", "A2"),
++    ).toEqual({
++      filePath: "outbound/out.docx",
++      agentId: "AG7",
++      filename: "out.docx",
++      isHostAbsolute: false,
++    });
++
++    expect(extractWorkspaceFileTarget("report.md", "A2")).toEqual({
++      filePath: "report.md",
++      agentId: "A2",
++      filename: "report.md",
++      isHostAbsolute: false,
++    });
++
++    expect(extractWorkspaceFileTarget("./docs/a.pdf", "A2")).toEqual({
++      filePath: "docs/a.pdf",
++      agentId: "A2",
++      filename: "a.pdf",
++      isHostAbsolute: false,
++    });
++  });
++
++  it("handles host-absolute paths while excluding SPA routes and /api/", () => {
++    expect(extractWorkspaceFileTarget("D:/work/notes.md", "A2")).toEqual({
++      filePath: "D:/work/notes.md",
++      agentId: "A2",
++      filename: "notes.md",
++      isHostAbsolute: true,
++    });
++
++    expect(extractWorkspaceFileTarget("file:///tmp/shot.png", "A2")).toEqual({
++      filePath: "/tmp/shot.png",
++      agentId: "A2",
++      filename: "shot.png",
++      isHostAbsolute: true,
++    });
++
++    expect(extractWorkspaceFileTarget("/chat/agent1/thread1", "A2")).toBeNull();
++    expect(extractWorkspaceFileTarget("/experts", "A2")).toBeNull();
++    expect(extractWorkspaceFileTarget("/workspace", "A2")).toBeNull();
++    expect(extractWorkspaceFileTarget("/api/downloads/link/tok", "A2")).toBeNull();
++  });
++});
++
++describe("classifyChatLink", () => {
++  it("routes workspace/local/relative files to workspace-file with previewable flag and auth download url", () => {
++    const md = classifyChatLink("docs/report.md", { agentId: "A1" });
++    expect(md).toEqual({
++      kind: "workspace-file",
++      rawHref: "docs/report.md",
++      filePath: "docs/report.md",
++      agentId: "A1",
++      filename: "report.md",
++      previewable: true,
++      downloadUrl: "/api/agents/A1/workspace/download?path=docs%2Freport.md",
++    });
++
++    const zip = classifyChatLink("/localoctop/pkg/bundle.zip", {
++      agentId: "A1",
++    });
++    expect(zip).toMatchObject({
++      kind: "workspace-file",
++      filePath: "/localoctop/pkg/bundle.zip",
++      agentId: "A1",
++      filename: "bundle.zip",
++      previewable: false,
++      downloadUrl:
++        "/api/agents/A1/workspace/download?path=%2Flocaloctop%2Fpkg%2Fbundle.zip",
++    });
++
++    const crossAgent = classifyChatLink(
++      "file:///data/.octop/users/u/.octop/workspaces/B2/a.pdf",
++      { agentId: "A1" },
++    );
++    expect(crossAgent).toMatchObject({
++      kind: "workspace-file",
++      filePath: "a.pdf",
++      agentId: "B2",
++      previewable: true,
++      downloadUrl: "/api/agents/B2/workspace/download?path=a.pdf",
++    });
++  });
++
++  it("routes anchors, SPA routes, external links, and blocked XSS links accurately", () => {
++    expect(classifyChatLink("#heading-2", { agentId: "A1" })).toEqual({
++      kind: "anchor",
++      href: "#heading-2",
++    });
++
++    expect(classifyChatLink("/chat/A1/T1", { agentId: "A1" })).toEqual({
++      kind: "spa-route",
++      to: "/chat/A1/T1",
++    });
++    expect(classifyChatLink("/experts?tab=market", { agentId: "A1" })).toEqual({
++      kind: "spa-route",
++      to: "/experts?tab=market",
++    });
++    expect(classifyChatLink("/admin/users", { agentId: "A1" })).toEqual({
++      kind: "spa-route",
++      to: "/admin/users",
++    });
++
++    expect(classifyChatLink("https://example.com/doc")).toEqual({
++      kind: "external",
++      href: "https://example.com/doc",
++    });
++    expect(classifyChatLink("mailto:hi@example.com")).toEqual({
++      kind: "external",
++      href: "mailto:hi@example.com",
++    });
++    expect(classifyChatLink("tel:+8613800138000")).toEqual({
++      kind: "external",
++      href: "tel:+8613800138000",
++    });
++
++    expect(classifyChatLink("javascript:alert(1)")).toEqual({
++      kind: "blocked",
++    });
++    expect(classifyChatLink("vbscript:msgbox(1)")).toEqual({
++      kind: "blocked",
++    });
++    expect(classifyChatLink("data:text/html,<svg onload=alert(1)>")).toEqual({
++      kind: "blocked",
++    });
++  });
++});
++
++describe("resolveMarkdownImageTarget", () => {
++  it("resolves workspace, localoctop, file://, and relative images to real /api/agents/{id}/workspace/download", () => {
++    expect(
++      resolveMarkdownImageTarget(
++        "file:///data/.octop/users/u/.octop/workspaces/AG1/charts/bar.png",
++        "OTHER",
++      ),
++    ).toEqual({
++      kind: "auth-blob",
++      url: "/api/agents/AG1/workspace/download?path=charts%2Fbar.png",
++      filename: "bar.png",
++    });
++
++    expect(
++      resolveMarkdownImageTarget(
++        "file:///home/wally/.octop/workspace/foo.jpg",
++        "AG2",
++      ),
++    ).toEqual({
++      kind: "auth-blob",
++      url: "/api/agents/AG2/workspace/download?path=foo.jpg",
++      filename: "foo.jpg",
++    });
++
++    expect(
++      resolveMarkdownImageTarget("/localoctop/images/logo.webp", "AG2"),
++    ).toEqual({
++      kind: "auth-blob",
++      url: "/api/agents/AG2/workspace/download?path=%2Flocaloctop%2Fimages%2Flogo.webp",
++      filename: "logo.webp",
++    });
++
++    expect(
++      resolveMarkdownImageTarget(
++        "file:///data/.octop/users/alice/localoctop/images/shot.png",
++        "AG2",
++      ),
++    ).toEqual({
++      kind: "auth-blob",
++      url: "/api/agents/AG2/workspace/download?path=%2Flocaloctop%2Fimages%2Fshot.png",
++      filename: "shot.png",
++    });
++
++    expect(resolveMarkdownImageTarget("./charts/fig1.png", "AG2")).toEqual({
++      kind: "auth-blob",
++      url: "/api/agents/AG2/workspace/download?path=charts%2Ffig1.png",
++      filename: "fig1.png",
++    });
++
++    // Legacy dead /api/workspace/media path is rewritten to the real endpoint.
++    expect(
++      resolveMarkdownImageTarget("/api/workspace/media?path=old/pic.png", "AG2"),
++    ).toEqual({
++      kind: "auth-blob",
++      url: "/api/agents/AG2/workspace/download?path=old%2Fpic.png",
++      filename: "pic.png",
++    });
++  });
++
++  it("handles existing auth media endpoints, external/data images, and invalid/missing-agent paths", () => {
++    expect(
++      resolveMarkdownImageTarget(
++        "/api/agents/AG1/media/preview?source=outbound%2Fshot.jpg",
++      ),
++    ).toEqual({
++      kind: "auth-blob",
++      url: "/api/agents/AG1/media/preview?source=outbound%2Fshot.jpg",
++      filename: "shot.jpg",
++    });
++
++    expect(
++      resolveMarkdownImageTarget("https://cdn.example.com/a.png"),
++    ).toEqual({
++      kind: "direct",
++      src: "https://cdn.example.com/a.png",
++    });
++
++    expect(
++      resolveMarkdownImageTarget("data:image/png;base64,AAAA"),
++    ).toEqual({
++      kind: "direct",
++      src: "data:image/png;base64,AAAA",
++    });
++
++    expect(
++      resolveMarkdownImageTarget("javascript:alert(1)", "AG1"),
++    ).toEqual({ kind: "invalid" });
++    expect(
++      resolveMarkdownImageTarget("data:text/html,<script>", "AG1"),
++    ).toEqual({ kind: "invalid" });
++    expect(resolveMarkdownImageTarget("./charts/a.png", null)).toEqual({
++      kind: "invalid",
++    });
++  });
++});
++
++describe("utility predicates", () => {
++  it("checks safe external URLs, cross-origin URLs, SPA routes, previewable files, and API path stripping", () => {
++    expect(isSafeExternalUrl("https://example.com")).toBe(true);
++    expect(isSafeExternalUrl("mailto:a@b.com")).toBe(true);
++    expect(isSafeExternalUrl("javascript:alert(1)")).toBe(false);
++    expect(isSafeExternalUrl("/chat/1")).toBe(false);
++
++    expect(
++      isCrossOriginHttpUrl("https://other.example/a.zip", "https://app.example"),
++    ).toBe(true);
++    expect(
++      isCrossOriginHttpUrl(
++        "https://app.example/api/downloads/link/1",
++        "https://app.example",
++      ),
++    ).toBe(false);
++    expect(isCrossOriginHttpUrl("report.pdf", "https://app.example")).toBe(
++      false,
++    );
++
++    expect(isKnownSpaRoute("/chat/agent1")).toBe(true);
++    expect(isKnownSpaRoute("/experts")).toBe(true);
++    expect(isKnownSpaRoute("/localoctop/a.md")).toBe(false);
++    expect(isKnownSpaRoute("/workspace/a.md")).toBe(false);
++    expect(isKnownSpaRoute("/workspace")).toBe(true);
++
++    expect(isPreviewableChatFile("report.md")).toBe(true);
++    expect(isPreviewableChatFile("slides.pdf")).toBe(true);
++    expect(isPreviewableChatFile("photo.png")).toBe(true);
++    expect(isPreviewableChatFile("archive.zip")).toBe(false);
++
++    expect(
++      apiPathForAuthBlob("/api/agents/A1/workspace/download?path=a.png"),
++    ).toBe("/agents/A1/workspace/download?path=a.png");
++    expect(
++      apiPathForAuthBlob(
++        "https://host.example/api/agents/A1/workspace/download?path=a.png",
++      ),
++    ).toBe("/agents/A1/workspace/download?path=a.png");
++  });
++});
+diff --git a/dashboard/src/utils/zbsChatLinks.ts b/dashboard/src/utils/zbsChatLinks.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d6f9a202757410e082a4f2b76c3061cf7318a1eb
+--- /dev/null
++++ b/dashboard/src/utils/zbsChatLinks.ts
+@@ -0,0 +1,629 @@
++/**
++ * Chat Markdown link classification, safe URL transform, and local/workspace
++ * media resolution for Octop dashboard (ZBS patch 11).
++ *
++ * Pure logic lives here so official UI files only keep thin mount points.
++ */
++
++import { getDocKind } from "../pages/Agent/Workspace/utils/docKind";
++import { isProbablyText } from "../pages/Agent/Workspace/utils/fileKind";
++import { getMediaKind } from "../pages/Agent/Workspace/utils/mediaKind";
++import {
++  needsAuthBlobFetch,
++  workspaceDownloadUrl,
++} from "./toolMediaBlocks";
++
++const SAFE_EXTERNAL_PROTOCOL_RE = /^(https?|mailto|tel|ircs?|xmpp)$/i;
++const SAFE_DATA_IMAGE_RE = /^data:image\/[a-z0-9.+-]+[;,]/i;
++const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:[\\/]/;
++const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]+/g;
++
++/** Known dashboard SPA routes (from App.tsx + routes/index.tsx). */
++const EXACT_SPA_ROUTES = new Set([
++  "/",
++  "/workspace",
++  "/setup",
++  "/invite",
++  "/pwa-debug",
++]);
++
++const PREFIX_SPA_ROUTES = [
++  "/chat",
++  "/experts",
++  "/tasks",
++  "/connectors",
++  "/skill-packages",
++  "/knowledge-bases",
++  "/bridge",
++  "/personalization",
++  "/skills",
++  "/token-usage",
++  "/agent-config",
++  "/acp",
++  "/channels",
++  "/workbench",
++  "/terminal",
++  "/remote-browser",
++  "/remote-desktop",
++  "/remote-phone",
++  "/remote-android",
++  "/subagents",
++  "/mbti",
++  "/memory",
++  "/admin",
++  "/models",
++  "/orca",
++  "/octop",
++  "/advanced-settings",
++  "/environments",
++  "/updates",
++  "/plugins",
++  "/sessions",
++  "/cron-jobs",
++  "/login",
++];
++
++const POSIX_HOST_FILE_ROOTS = [
++  "/tmp/",
++  "/home/",
++  "/users/",
++  "/data/",
++  "/var/",
++  "/root/",
++  "/opt/",
++  "/mnt/",
++  "/srv/",
++  "/private/",
++];
++
++const EXTENSIONLESS_FILENAMES = new Set([
++  "dockerfile",
++  "gemfile",
++  "makefile",
++  "procfile",
++  "readme",
++  "license",
++  ".editorconfig",
++  ".gitattributes",
++  ".gitignore",
++  ".npmrc",
++  ".prettierignore",
++  ".prettierrc",
++]);
++
++export interface WorkspaceFileTarget {
++  /** Workspace-relative path (no leading slash) or host-absolute path. */
++  filePath: string;
++  /** Agent id extracted from path, or fallback agent id if provided. */
++  agentId: string | null;
++  /** Display / download basename. */
++  filename: string;
++  /** True when filePath is a host-absolute path outside workspace markers. */
++  isHostAbsolute: boolean;
++}
++
++export type ChatLinkAction =
++  | { kind: "blocked" }
++  | { kind: "anchor"; href: string }
++  | {
++      kind: "workspace-file";
++      rawHref: string;
++      filePath: string;
++      agentId: string | null;
++      filename: string;
++      previewable: boolean;
++      downloadUrl: string | null;
++    }
++  | { kind: "spa-route"; to: string }
++  | { kind: "same-origin-url"; href: string }
++  | { kind: "external"; href: string };
++
++export type MarkdownImageTarget =
++  | { kind: "invalid" }
++  | { kind: "direct"; src: string }
++  | { kind: "auth-blob"; url: string; filename?: string };
++
++function stripControlChars(value: string): string {
++  return value.replace(CONTROL_CHARS_RE, "");
++}
++
++function safeDecodeUri(value: string): string {
++  try {
++    return decodeURIComponent(value);
++  } catch {
++    return value;
++  }
++}
++
++function stripQueryAndHash(raw: string): string {
++  const hashIdx = raw.indexOf("#");
++  const withoutHash = hashIdx >= 0 ? raw.slice(0, hashIdx) : raw;
++  const queryIdx = withoutHash.indexOf("?");
++  return queryIdx >= 0 ? withoutHash.slice(0, queryIdx) : withoutHash;
++}
++
++function extractScheme(value: string): string | null {
++  const cleaned = stripControlChars(value).trim();
++  if (!cleaned) return null;
++  if (WINDOWS_DRIVE_PATH_RE.test(cleaned)) return null;
++  const colon = cleaned.indexOf(":");
++  if (colon <= 0) return null;
++  const slash = cleaned.indexOf("/");
++  const backslash = cleaned.indexOf("\\");
++  const question = cleaned.indexOf("?");
++  const hash = cleaned.indexOf("#");
++  if (
++    (slash !== -1 && colon > slash) ||
++    (backslash !== -1 && colon > backslash) ||
++    (question !== -1 && colon > question) ||
++    (hash !== -1 && colon > hash)
++  ) {
++    return null;
++  }
++  return cleaned.slice(0, colon).replace(/\s+/g, "").toLowerCase();
++}
++
++/**
++ * Custom react-markdown urlTransform:
++ * - Preserves file://, Windows drive paths (D:/...), POSIX paths (/...),
++ *   relative paths, anchors (#...), workspace://, and http/https/mailto/tel.
++ * - Allows data:image/* ONLY for image `src` attributes.
++ * - Blocks dangerous schemes such as javascript:, vbscript:, data:text/html.
++ */
++export function zbsMarkdownUrlTransform(
++  url: string,
++  key?: string,
++  node?: { tagName?: string },
++): string {
++  const trimmed = (url ?? "").trim();
++  if (!trimmed) return "";
++
++  const sanitized = stripControlChars(trimmed).trim();
++  if (!sanitized) return "";
++
++  if (WINDOWS_DRIVE_PATH_RE.test(trimmed)) {
++    return trimmed;
++  }
++
++  const scheme = extractScheme(sanitized);
++  if (scheme === null) {
++    return trimmed;
++  }
++
++  if (
++    SAFE_EXTERNAL_PROTOCOL_RE.test(scheme) ||
++    scheme === "file" ||
++    scheme === "workspace"
++  ) {
++    return trimmed;
++  }
++
++  if (scheme === "data") {
++    const isImageSrc = key === "src" || node?.tagName === "img";
++    if (isImageSrc && SAFE_DATA_IMAGE_RE.test(sanitized)) {
++      return trimmed;
++    }
++    return "";
++  }
++
++  return "";
++}
++
++/** True when *url* uses an allowed external link protocol (http/https/mailto/tel). */
++export function isSafeExternalUrl(url: string | undefined | null): boolean {
++  if (!url) return false;
++  const scheme = extractScheme(url);
++  return scheme !== null && SAFE_EXTERNAL_PROTOCOL_RE.test(scheme);
++}
++
++/** True when *url* is an http(s) URL pointing to a different origin. */
++export function isCrossOriginHttpUrl(
++  url: string | undefined | null,
++  currentOrigin?: string | null,
++): boolean {
++  if (!url) return false;
++  const trimmed = url.trim();
++  if (!/^https?:\/\//i.test(trimmed)) return false;
++  if (!currentOrigin) return true;
++  try {
++    return new URL(trimmed).origin !== currentOrigin;
++  } catch {
++    return false;
++  }
++}
++
++/** True when *href* targets a known dashboard SPA route (must not open _blank). */
++export function isKnownSpaRoute(href: string): boolean {
++  const trimmed = href.trim();
++  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) return false;
++  const pathname = stripQueryAndHash(trimmed);
++  const normalized =
++    pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
++  if (EXACT_SPA_ROUTES.has(normalized)) return true;
++  return PREFIX_SPA_ROUTES.some(
++    (prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`),
++  );
++}
++
++/** Files that ChatFilePreviewContext / FileViewer can preview inline. */
++export function isPreviewableChatFile(filePath: string): boolean {
++  const clean = stripQueryAndHash(filePath).trim();
++  if (!clean) return false;
++  return (
++    isProbablyText(clean) ||
++    getMediaKind(clean) !== null ||
++    getDocKind(clean) !== null
++  );
++}
++
++function basenameOf(filePath: string): string {
++  const clean = stripQueryAndHash(filePath).replace(/\\/g, "/");
++  const parts = clean.split("/").filter(Boolean);
++  return parts[parts.length - 1] || clean || "download";
++}
++
++function hasFileLikeBasename(posixPath: string): boolean {
++  const base = basenameOf(posixPath).toLowerCase();
++  if (!base) return false;
++  if (EXTENSIONLESS_FILENAMES.has(base)) return true;
++  const dot = base.lastIndexOf(".");
++  if (dot <= 0 || dot === base.length - 1) return false;
++  const ext = base.slice(dot + 1);
++  return /^[a-z0-9]{1,10}$/i.test(ext);
++}
++
++function decodeFileUriToPosix(raw: string): string {
++  let body = stripQueryAndHash(raw).trim();
++  if (!/^file:/i.test(body)) return body.replace(/\\/g, "/");
++  body = body.replace(/^file:\/\//i, "");
++  // Strip optional "localhost" authority in file://localhost/...
++  if (/^localhost\//i.test(body)) {
++    body = body.slice("localhost".length);
++  }
++  const decoded = safeDecodeUri(body).replace(/\\/g, "/");
++  // Windows drive form: /C:/Users/... -> C:/Users/...
++  if (/^\/[A-Za-z]:\//.test(decoded)) {
++    return decoded.slice(1);
++  }
++  return decoded;
++}
++
++/**
++ * Match explicit workspace / local bridge markers inside a normalized POSIX path:
++ *   - .octop/workspaces/<agentId>/<rel>
++ *   - .octop/agents/<agentId>/<rel>
++ *   - .octop/workspace/<rel>
++ *   - /localoctop/<rel>
++ *   - /workspace/<rel>
++ */
++function matchExplicitWorkspaceMarker(
++  posixPath: string,
++  fallbackAgentId?: string | null,
++): WorkspaceFileTarget | null {
++  const fallback = (fallbackAgentId ?? "").trim() || null;
++
++  const pluralMatch = posixPath.match(
++    /(?:^|\/)\.octop\/workspaces\/([^/]+)\/(.+)$/i,
++  );
++  if (pluralMatch?.[1] && pluralMatch[2]) {
++    const rel = pluralMatch[2].replace(/^\/+/, "");
++    if (rel) {
++      return {
++        filePath: rel,
++        agentId: pluralMatch[1],
++        filename: basenameOf(rel),
++        isHostAbsolute: false,
++      };
++    }
++  }
++
++  const agentsMatch = posixPath.match(
++    /(?:^|\/)\.octop\/agents\/([^/]+)\/(.+)$/i,
++  );
++  if (agentsMatch?.[1] && agentsMatch[2]) {
++    const rel = agentsMatch[2].replace(/^\/+/, "");
++    if (rel) {
++      return {
++        filePath: rel,
++        agentId: agentsMatch[1],
++        filename: basenameOf(rel),
++        isHostAbsolute: false,
++      };
++    }
++  }
++
++  const singularMatch = posixPath.match(/(?:^|\/)\.octop\/workspace\/(.+)$/i);
++  if (singularMatch?.[1]) {
++    const rel = singularMatch[1].replace(/^\/+/, "");
++    if (rel) {
++      return {
++        filePath: rel,
++        agentId: fallback,
++        filename: basenameOf(rel),
++        isHostAbsolute: false,
++      };
++    }
++  }
++
++  const localOctopMatch = posixPath.match(/(?:^|\/)localoctop\/(.+)$/i);
++  if (localOctopMatch?.[1]) {
++    const rel = localOctopMatch[1].replace(/^\/+/, "");
++    if (rel) {
++      return {
++        filePath: `/localoctop/${rel}`,
++        agentId: fallback,
++        filename: basenameOf(rel),
++        isHostAbsolute: true,
++      };
++    }
++  }
++
++  const virtualRootMatch = posixPath.match(/^\/workspace\/(.+)$/i);
++  if (virtualRootMatch?.[1]) {
++    const rel = virtualRootMatch[1].replace(/^\/+/, "");
++    if (rel) {
++      return {
++        filePath: rel,
++        agentId: fallback,
++        filename: basenameOf(rel),
++        isHostAbsolute: false,
++      };
++    }
++  }
++
++  return null;
++}
++
++/**
++ * Extract a workspace or local file target from a Markdown href / image src /
++ * attachment URL. Returns null for external URLs, anchors, API URLs, or SPA routes.
++ */
++export function extractWorkspaceFileTarget(
++  raw: string | undefined | null,
++  fallbackAgentId?: string | null,
++): WorkspaceFileTarget | null {
++  const trimmed = (raw ?? "").trim();
++  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("?")) {
++    return null;
++  }
++
++  const fallback = (fallbackAgentId ?? "").trim() || null;
++
++  if (/^workspace:\/\//i.test(trimmed)) {
++    const rel = safeDecodeUri(stripQueryAndHash(trimmed).slice("workspace://".length))
++      .replace(/\\/g, "/")
++      .replace(/^\/+/, "");
++    if (!rel) return null;
++    return {
++      filePath: rel,
++      agentId: fallback,
++      filename: basenameOf(rel),
++      isHostAbsolute: false,
++    };
++  }
++
++  if (/^file:\/\//i.test(trimmed)) {
++    const posix = decodeFileUriToPosix(trimmed);
++    if (!posix) return null;
++    const marked = matchExplicitWorkspaceMarker(posix, fallback);
++    if (marked) return marked;
++    return {
++      filePath: posix,
++      agentId: fallback,
++      filename: basenameOf(posix),
++      isHostAbsolute: true,
++    };
++  }
++
++  const scheme = extractScheme(trimmed);
++  if (scheme !== null) {
++    return null;
++  }
++
++  if (trimmed.startsWith("//")) {
++    return null;
++  }
++
++  const stripped = stripQueryAndHash(trimmed);
++  const posix = safeDecodeUri(stripped).replace(/\\/g, "/");
++  if (!posix) return null;
++
++  // Explicit workspace markers take priority over everything else.
++  const marked = matchExplicitWorkspaceMarker(posix, fallback);
++  if (marked) return marked;
++
++  // Windows drive-letter local path (e.g. D:/work/report.md)
++  if (WINDOWS_DRIVE_PATH_RE.test(posix)) {
++    return {
++      filePath: posix,
++      agentId: fallback,
++      filename: basenameOf(posix),
++      isHostAbsolute: true,
++    };
++  }
++
++  // Leading-slash paths: exclude /api/ and known SPA routes.
++  if (posix.startsWith("/")) {
++    if (posix.startsWith("/api/")) return null;
++    if (isKnownSpaRoute(posix)) return null;
++    if (posix.startsWith("/outbound/") || posix.startsWith("/inbound/")) {
++      const rel = posix.slice(1);
++      return {
++        filePath: rel,
++        agentId: fallback,
++        filename: basenameOf(rel),
++        isHostAbsolute: false,
++      };
++    }
++    const lower = posix.toLowerCase();
++    const isHostRoot = POSIX_HOST_FILE_ROOTS.some((root) =>
++      lower.startsWith(root),
++    );
++    if (isHostRoot || hasFileLikeBasename(posix)) {
++      return {
++        filePath: posix,
++        agentId: fallback,
++        filename: basenameOf(posix),
++        isHostAbsolute: true,
++      };
++    }
++    return null;
++  }
++
++  // Pure relative file path (e.g. report.md, docs/a.pdf, ./charts/fig.png)
++  const rel = posix.replace(/^(?:\.\/)+/, "");
++  if (!rel || rel === "." || rel === "..") return null;
++  return {
++    filePath: rel,
++    agentId: fallback,
++    filename: basenameOf(rel),
++    isHostAbsolute: false,
++  };
++}
++
++/**
++ * 4-way classifier for all non-AuthDownload Markdown links:
++ *   1. workspace-file: workspace/local bridge/relative file paths
++ *   2. anchor: in-page `#...` fragment links
++ *   3. spa-route: internal SPA routes (`/chat/...`, `/experts`, etc.)
++ *   4. external: `http/https/mailto/tel` links (safe for `target="_blank"`)
++ * Plus `same-origin-url` (non-auth `/api/...`) and `blocked` (empty/unsafe).
++ */
++export function classifyChatLink(
++  href: string | undefined | null,
++  options?: { agentId?: string | null },
++): ChatLinkAction {
++  const safeHref = zbsMarkdownUrlTransform(href ?? "", "href");
++  if (!safeHref) {
++    return { kind: "blocked" };
++  }
++
++  if (safeHref.startsWith("#")) {
++    return { kind: "anchor", href: safeHref };
++  }
++
++  if (isSafeExternalUrl(safeHref)) {
++    return { kind: "external", href: safeHref };
++  }
++
++  const workspaceTarget = extractWorkspaceFileTarget(
++    safeHref,
++    options?.agentId,
++  );
++  if (workspaceTarget) {
++    const downloadUrl = workspaceTarget.agentId
++      ? workspaceDownloadUrl(workspaceTarget.agentId, workspaceTarget.filePath)
++      : null;
++    return {
++      kind: "workspace-file",
++      rawHref: safeHref,
++      filePath: workspaceTarget.filePath,
++      agentId: workspaceTarget.agentId,
++      filename: workspaceTarget.filename,
++      previewable: isPreviewableChatFile(workspaceTarget.filePath),
++      downloadUrl,
++    };
++  }
++
++  if (safeHref.startsWith("/api/")) {
++    return { kind: "same-origin-url", href: safeHref };
++  }
++
++  if (safeHref.startsWith("/") && !safeHref.startsWith("//")) {
++    return { kind: "spa-route", to: safeHref };
++  }
++
++  return { kind: "blocked" };
++}
++
++/**
++ * Resolve a Markdown `<img src>` into either:
++ * - `direct`: external http(s), safe `data:image/*`, or unauthenticated `/api/`
++ * - `auth-blob`: authenticated backend `/api/agents/{id}/workspace/download`
++ *   (or existing auth media API URL) to be fetched with Authorization header
++ *   and converted to a revocable Blob URL
++ * - `invalid`: unsafe or unresolvable local path (renders graceful alt fallback)
++ */
++export function resolveMarkdownImageTarget(
++  src: string | undefined | null,
++  fallbackAgentId?: string | null,
++): MarkdownImageTarget {
++  const safeSrc = zbsMarkdownUrlTransform(src ?? "", "src", { tagName: "img" });
++  if (!safeSrc) {
++    return { kind: "invalid" };
++  }
++
++  if (SAFE_DATA_IMAGE_RE.test(stripControlChars(safeSrc).trim())) {
++    return { kind: "direct", src: safeSrc };
++  }
++
++  // Rewrite legacy dead /api/workspace/media?path=... URLs when agentId is known.
++  if (safeSrc.startsWith("/api/workspace/media")) {
++    try {
++      const parsed = new URL(safeSrc, "http://octop.local");
++      const rawPath = parsed.searchParams.get("path") || "";
++      const fallback = (fallbackAgentId ?? "").trim() || null;
++      if (rawPath && fallback) {
++        const rel = rawPath.replace(/\\/g, "/").replace(/^\/+/, "");
++        return {
++          kind: "auth-blob",
++          url: workspaceDownloadUrl(fallback, rel),
++          filename: basenameOf(rel),
++        };
++      }
++    } catch {
++      /* fall through to invalid */
++    }
++    return { kind: "invalid" };
++  }
++
++  if (needsAuthBlobFetch(safeSrc)) {
++    let fname: string | undefined;
++    try {
++      const parsed = /^https?:\/\//i.test(safeSrc)
++        ? new URL(safeSrc)
++        : new URL(safeSrc, "http://octop.local");
++      const rawParam =
++        parsed.searchParams.get("path") || parsed.searchParams.get("source");
++      fname = rawParam ? basenameOf(safeDecodeUri(rawParam)) : basenameOf(parsed.pathname);
++    } catch {
++      fname = basenameOf(safeSrc);
++    }
++    return {
++      kind: "auth-blob",
++      url: safeSrc,
++      filename: fname,
++    };
++  }
++
++  if (/^https?:\/\//i.test(safeSrc)) {
++    return { kind: "direct", src: safeSrc };
++  }
++
++  if (safeSrc.startsWith("/api/")) {
++    return { kind: "direct", src: safeSrc };
++  }
++
++  const workspaceTarget = extractWorkspaceFileTarget(safeSrc, fallbackAgentId);
++  if (workspaceTarget && workspaceTarget.agentId) {
++    return {
++      kind: "auth-blob",
++      url: workspaceDownloadUrl(
++        workspaceTarget.agentId,
++        workspaceTarget.filePath,
++      ),
++      filename: workspaceTarget.filename,
++    };
++  }
++
++  return { kind: "invalid" };
++}
++
++/** Strip `/api` prefix for `requestBlob(...)` which prepends the API base. */
++export function apiPathForAuthBlob(url: string): string {
++  if (/^https?:\/\//i.test(url)) {
++    const parsed = new URL(url);
++    return parsed.pathname.replace(/^\/api/, "") + parsed.search;
++  }
++  return url.replace(/^\/api/, "");
++}
